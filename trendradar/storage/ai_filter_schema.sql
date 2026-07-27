@@ -31,6 +31,11 @@ CREATE TABLE IF NOT EXISTS ai_filter_results (
     source_type TEXT NOT NULL DEFAULT 'hotlist',  -- hotlist / rss
     tag_id INTEGER NOT NULL,             -- 引用 ai_filter_tags.id
     relevance_score REAL DEFAULT 0,      -- 相关度 0.0 ~ 1.0
+    content_level TEXT DEFAULT 'title_only', -- full_text / summary / title_only
+    risk_warning TEXT DEFAULT '',        -- 正文降级后的证据风险提示
+    content_excerpt TEXT DEFAULT '',     -- 筛选依据摘录，供后续 AI 聚合摘要复用
+    importance_score REAL DEFAULT 0,     -- 对科研/育种价值的 AI 评分 0.0 ~ 1.0
+    ai_summary TEXT DEFAULT '',          -- 基于当前证据生成的逐条中文摘要
     status TEXT DEFAULT 'active',        -- active / deprecated
     deprecated_at TEXT,
     created_at TEXT NOT NULL,

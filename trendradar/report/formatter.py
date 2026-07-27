@@ -10,6 +10,52 @@ from typing import Dict
 from trendradar.report.helpers import clean_title, html_escape, format_rank_display
 
 
+def _append_ai_details(platform: str, result: str, title_data: Dict) -> str:
+    """为标题追加 Top 标记、逐条 AI 摘要和证据降级风险。"""
+    highlight_rank = title_data.get("highlight_rank")
+    summary = " ".join(str(title_data.get("ai_summary", "")).split())
+    content_level = title_data.get("content_level", "")
+    risk_warning = " ".join(str(title_data.get("risk_warning", "")).split())
+
+    if platform == "feishu":
+        if highlight_rank:
+            result += f" <font color='red'>⭐ TOP {highlight_rank}</font>"
+        if summary:
+            result += f"\n    <font color='grey'>摘要：{html_escape(summary)}</font>"
+        if content_level in {"summary", "title_only"} and risk_warning:
+            result += f"\n    <font color='orange'>风险提示：{html_escape(risk_warning)}</font>"
+    elif platform == "telegram":
+        if highlight_rank:
+            result += f" <b>⭐ TOP {highlight_rank}</b>"
+        if summary:
+            result += f"\n    摘要：{html_escape(summary)}"
+        if content_level in {"summary", "title_only"} and risk_warning:
+            result += f"\n    风险提示：{html_escape(risk_warning)}"
+    elif platform == "slack":
+        if highlight_rank:
+            result += f" *⭐ TOP {highlight_rank}*"
+        if summary:
+            result += f"\n    摘要：{summary}"
+        if content_level in {"summary", "title_only"} and risk_warning:
+            result += f"\n    风险提示：{risk_warning}"
+    elif platform == "html":
+        if highlight_rank:
+            result += f' <span class="highlight-badge">⭐ TOP {highlight_rank}</span>'
+        if summary:
+            result += f'<div class="ai-item-summary">摘要：{html_escape(summary)}</div>'
+        if content_level in {"summary", "title_only"} and risk_warning:
+            result += f'<div class="risk-warning">风险提示：{html_escape(risk_warning)}</div>'
+    else:
+        if highlight_rank:
+            result += f" ⭐ TOP {highlight_rank}"
+        if summary:
+            result += f"\n    摘要：{summary}"
+        if content_level in {"summary", "title_only"} and risk_warning:
+            result += f"\n    风险提示：{risk_warning}"
+
+    return result
+
+
 def format_title_for_platform(
     platform: str, title_data: Dict, show_source: bool = True, show_keyword: bool = False
 ) -> str:
@@ -79,7 +125,7 @@ def format_title_for_platform(
         if title_data["count"] > 1:
             result += f" <font color='green'>({title_data['count']}次)</font>"
 
-        return result
+        return _append_ai_details(platform, result, title_data)
 
     elif platform == "dingtalk":
         if link_url:
@@ -103,7 +149,7 @@ def format_title_for_platform(
         if title_data["count"] > 1:
             result += f" ({title_data['count']}次)"
 
-        return result
+        return _append_ai_details(platform, result, title_data)
 
     elif platform in ("wework", "bark"):
         # WeWork 和 Bark 使用 markdown 格式
@@ -128,7 +174,7 @@ def format_title_for_platform(
         if title_data["count"] > 1:
             result += f" ({title_data['count']}次)"
 
-        return result
+        return _append_ai_details(platform, result, title_data)
 
     elif platform == "telegram":
         if link_url:
@@ -152,7 +198,7 @@ def format_title_for_platform(
         if title_data["count"] > 1:
             result += f" <code>({title_data['count']}次)</code>"
 
-        return result
+        return _append_ai_details(platform, result, title_data)
 
     elif platform == "ntfy":
         if link_url:
@@ -176,7 +222,7 @@ def format_title_for_platform(
         if title_data["count"] > 1:
             result += f" `({title_data['count']}次)`"
 
-        return result
+        return _append_ai_details(platform, result, title_data)
 
     elif platform == "slack":
         # Slack 使用 mrkdwn 格式
@@ -207,7 +253,7 @@ def format_title_for_platform(
         if title_data["count"] > 1:
             result += f" `({title_data['count']}次)`"
 
-        return result
+        return _append_ai_details(platform, result, title_data)
 
     elif platform == "html":
         rank_display = format_rank_display(
@@ -246,7 +292,7 @@ def format_title_for_platform(
         if title_data.get("is_new"):
             formatted_title = f"<div class='new-title'>🆕 {formatted_title}</div>"
 
-        return formatted_title
+        return _append_ai_details(platform, formatted_title, title_data)
 
     else:
         return cleaned_title

@@ -6,9 +6,12 @@ AI 筛选流水线
 标签管理 → 待分类新闻收集 → 批量 AI 分类 → 结果保存 → 报告数据转换
 """
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import local
 from typing import Any, Callable, Dict, List, Optional
 
 from trendradar.ai.filter import AIFilter, AIFilterResult
+from trendradar.crawler.article_content import ArticleContentFetcher
 from trendradar.utils.time import (
     DEFAULT_TIMEZONE,
     convert_time_for_display,
@@ -37,6 +40,9 @@ class AIFilterPipeline:
         rss_config = config.get("RSS", {})
         self._rss_enabled = rss_config.get("ENABLED", False)
         self._rss_feeds = rss_config.get("FEEDS", [])
+        self._rss_use_proxy = rss_config.get("USE_PROXY", False)
+        self._rss_proxy_url = rss_config.get("PROXY_URL", "")
+        self._content_config = self._filter_config.get("CONTENT_ENRICHMENT", {})
 
         freshness_config = rss_config.get("FRESHNESS_FILTER", {})
         self._freshness_enabled = freshness_config.get("ENABLED", True)
@@ -320,6 +326,9 @@ class AIFilterPipeline:
         total_results = []
         batch_count = 0
 
+        pending_news = self._enrich_pending_items(pending_news, "热榜")
+        pending_rss = self._enrich_pending_items(pending_rss, "RSS")
+
         succeeded_news_ids = []
         for i in range(0, len(pending_news), batch_size):
             if batch_count > 0 and batch_interval > 0:
@@ -328,7 +337,15 @@ class AIFilterPipeline:
                 time.sleep(batch_interval)
             batch = pending_news[i:i + batch_size]
             titles_for_ai = [
-                {"id": n["id"], "title": n["title"], "source": n.get("source_name", "")}
+                {
+                    "id": n["id"],
+                    "title": n["title"],
+                    "source": n.get("source_name", ""),
+                    "url": n.get("url", ""),
+                    "content": n.get("content", n["title"]),
+                    "content_level": n.get("content_level", "title_only"),
+                    "risk_warning": n.get("risk_warning", ""),
+                }
                 for n in batch
             ]
             batch_results = ai_filter.classify_batch(titles_for_ai, active_tags, interests_content)
@@ -350,7 +367,15 @@ class AIFilterPipeline:
                 time.sleep(batch_interval)
             batch = pending_rss[i:i + batch_size]
             titles_for_ai = [
-                {"id": n["id"], "title": n["title"], "source": n.get("source_name", "")}
+                {
+                    "id": n["id"],
+                    "title": n["title"],
+                    "source": n.get("source_name", ""),
+                    "url": n.get("url", ""),
+                    "content": n.get("content", n.get("summary") or n["title"]),
+                    "content_level": n.get("content_level", "title_only"),
+                    "risk_warning": n.get("risk_warning", ""),
+                }
                 for n in batch
             ]
             batch_results = ai_filter.classify_batch(titles_for_ai, active_tags, interests_content)
@@ -365,6 +390,76 @@ class AIFilterPipeline:
             print(f"[AI筛选] RSS 批次 {i // batch_size + 1}: {len(batch)} 条 → {len(batch_results)} 条匹配")
 
         return total_results, succeeded_news_ids, succeeded_rss_ids
+
+    def _enrich_pending_items(self, items: List[Dict], label: str) -> List[Dict]:
+        """仅为本次尚未分析的记录抓正文，并携带明确的降级风险。"""
+        if not items:
+            return []
+
+        config = self._content_config
+        enabled = config.get("ENABLED", True)
+        fetch_full_text = config.get("FETCH_FULL_TEXT", True)
+        concurrency = max(1, min(16, int(config.get("CONCURRENCY", 4))))
+        thread_state = local()
+
+        def get_fetcher() -> ArticleContentFetcher:
+            fetcher = getattr(thread_state, "fetcher", None)
+            if fetcher is None:
+                fetcher = ArticleContentFetcher(
+                    timeout=config.get("TIMEOUT", 12),
+                    max_content_chars=config.get("MAX_CONTENT_CHARS", 5000),
+                    min_body_chars=config.get("MIN_BODY_CHARS", 300),
+                    use_proxy=self._rss_use_proxy,
+                    proxy_url=self._rss_proxy_url,
+                )
+                thread_state.fetcher = fetcher
+            return fetcher
+
+        def enrich(item: Dict) -> Dict:
+            enriched = dict(item)
+            request_item = enriched
+            if not enabled or not fetch_full_text:
+                request_item = dict(enriched)
+                request_item["url"] = ""
+                request_item["mobile_url"] = ""
+            try:
+                result = get_fetcher().get(request_item)
+                enriched.update({
+                    "content": result.text,
+                    "content_level": result.level,
+                    "risk_warning": result.risk_warning,
+                    "content_fetch_status": result.fetch_status,
+                })
+            except Exception as exc:
+                enriched.update({
+                    "content": enriched.get("summary") or enriched.get("title", ""),
+                    "content_level": "summary" if enriched.get("summary") else "title_only",
+                    "risk_warning": (
+                        f"内容提取异常（{type(exc).__name__}）；当前依据"
+                        f"{'摘要' if enriched.get('summary') else '标题'}判断，可靠性受限。"
+                    ),
+                    "content_fetch_status": "unexpected_error",
+                })
+            return enriched
+
+        if concurrency == 1:
+            enriched_items = [enrich(item) for item in items]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=concurrency,
+                thread_name_prefix="article-content",
+            ) as executor:
+                enriched_items = list(executor.map(enrich, items))
+
+        counts: Dict[str, int] = {}
+        for item in enriched_items:
+            level = item.get("content_level", "title_only")
+            counts[level] = counts.get(level, 0) + 1
+        print(
+            f"[AI筛选] {label}内容层级: 正文 {counts.get('full_text', 0)}，"
+            f"摘要 {counts.get('summary', 0)}，仅标题 {counts.get('title_only', 0)}"
+        )
+        return enriched_items
 
     def _save_results(self, total_results, succeeded_news_ids, succeeded_rss_ids, effective_interests_file, current_hash):
         if total_results:
@@ -447,8 +542,65 @@ class AIFilterPipeline:
                 "count": r.get("count", 1),
                 "relevance_score": r.get("relevance_score", 0),
                 "source_type": r.get("source_type", "hotlist"),
+                "content_level": r.get("content_level", "title_only"),
+                "risk_warning": r.get("risk_warning", ""),
+                "content_excerpt": r.get("content_excerpt", ""),
+                "importance_score": r.get("importance_score", 0),
+                "ai_summary": r.get("ai_summary", ""),
             })
             tag_groups[tag_name]["count"] += 1
+
+        # 跨标签、跨来源统一选择重点新闻。importance_score 是科研/育种价值，
+        # relevance_score 是与用户兴趣的相关性；证据层级仅用于同分时优先。
+        evidence_weight = {"full_text": 2, "summary": 1, "title_only": 0}
+        min_score = float(self._filter_config.get("MIN_SCORE", 0) or 0)
+        all_items = []
+        for group in tag_groups.values():
+            for item in group.get("items", []):
+                if float(item.get("relevance_score", 0) or 0) < min_score:
+                    continue
+                if (
+                    item.get("source_type") == "rss"
+                    and self._freshness_enabled
+                    and item.get("first_time")
+                ):
+                    feed_id = item.get("source_id", "")
+                    max_days = self._feed_max_age_map.get(
+                        feed_id, self._default_max_age_days
+                    )
+                    if max_days > 0 and not is_within_days(
+                        item["first_time"], max_days, self._timezone
+                    ):
+                        continue
+                all_items.append(item)
+        ranked_items = sorted(
+            all_items,
+            key=lambda item: (
+                float(item.get("importance_score", 0) or 0),
+                float(item.get("relevance_score", 0) or 0),
+                evidence_weight.get(item.get("content_level", "title_only"), 0),
+                item.get("first_time", ""),
+                item.get("title", ""),
+            ),
+            reverse=True,
+        )
+        highlight_top_n = max(
+            0, int(self._filter_config.get("HIGHLIGHT_TOP_N", 5))
+        )
+        highlights = ranked_items[:highlight_top_n]
+        for rank, item in enumerate(highlights, start=1):
+            item["highlight_rank"] = rank
+
+        # 每个标签内优先显示已入选的重点新闻，其余按重要性和相关度排序。
+        for group in tag_groups.values():
+            group["items"].sort(
+                key=lambda item: (
+                    0 if item.get("highlight_rank") else 1,
+                    item.get("highlight_rank", 9999),
+                    -float(item.get("importance_score", 0) or 0),
+                    -float(item.get("relevance_score", 0) or 0),
+                )
+            )
 
         if self._priority_sort_enabled:
             sorted_tags = sorted(
@@ -465,6 +617,7 @@ class AIFilterPipeline:
 
         return AIFilterResult(
             tags=sorted_tags,
+            highlights=highlights,
             total_matched=total_matched,
             total_processed=total_processed,
             success=True,
@@ -568,6 +721,12 @@ class AIFilterPipeline:
                     "is_new": is_new,
                     "time_display": time_display,
                     "matched_keyword": tag_name,
+                    "content_level": item.get("content_level", "title_only"),
+                    "risk_warning": item.get("risk_warning", ""),
+                    "content_excerpt": item.get("content_excerpt", ""),
+                    "importance_score": item.get("importance_score", 0),
+                    "ai_summary": item.get("ai_summary", ""),
+                    "highlight_rank": item.get("highlight_rank"),
                 }
 
                 if source_type == "rss":

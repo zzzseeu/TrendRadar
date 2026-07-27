@@ -26,6 +26,8 @@ class RSSFeedConfig:
     max_items: int = 0          # 最大条目数（0=不限制）
     enabled: bool = True        # 是否启用
     max_age_days: Optional[int] = None  # 文章最大年龄（天），覆盖全局设置；None=使用全局，0=禁用过滤
+    source_type: str = "rss"    # 来源类型：rss | irri_news | web_news | corteva_news
+    fetch_url: str = ""         # 可选抓取地址，对外链接仍使用 url
 
 
 class RSSFetcher:
@@ -95,17 +97,51 @@ class RSSFetcher:
             (条目列表, 错误信息) 元组
         """
         try:
-            response = self.session.get(feed.url, timeout=self.timeout)
+            now = get_configured_time(self.timezone)
+            request_url = (feed.fetch_url or feed.url).format(year=now.year)
+            response = self.session.get(request_url, timeout=self.timeout)
             response.raise_for_status()
 
-            parsed_items = self.parser.parse(response.text, feed.url)
+            if feed.source_type == "irri_news":
+                from .irri import parse_irri_news_html
+                parsed_items = parse_irri_news_html(response.text)
+            elif feed.source_type == "web_news":
+                from .web_news import parse_web_news_html
+                # 部分中文政府/科研站未声明正确编码，requests 会误判为 ISO-8859-1。
+                response.encoding = response.apparent_encoding or response.encoding
+                parsed_items = parse_web_news_html(response.text, feed.id, request_url)
+            elif feed.source_type == "corteva_news":
+                from .web_news import parse_corteva_news_json
+                parsed_items = parse_corteva_news_json(response.text)
+            else:
+                parsed_items = self.parser.parse(response.text, feed.url)
 
             # 限制条目数量（0=不限制）
             if feed.max_items > 0:
                 parsed_items = parsed_items[:feed.max_items]
 
+            # IRRI 列表页会截断长标题，仅对被截断的条目读取详情页补全。
+            if feed.source_type == "irri_news":
+                from .irri import build_irri_translate_url, parse_irri_article_title_html
+                enriched_count = 0
+                for parsed in parsed_items:
+                    if not parsed.title.endswith("..."):
+                        continue
+                    try:
+                        detail_response = self.session.get(
+                            build_irri_translate_url(parsed.url), timeout=self.timeout
+                        )
+                        detail_response.raise_for_status()
+                        full_title = parse_irri_article_title_html(detail_response.text)
+                        if full_title:
+                            parsed.title = full_title
+                            enriched_count += 1
+                    except requests.RequestException as e:
+                        print(f"[RSS] {feed.name}: 标题补全失败 ({parsed.url}): {e}")
+                if enriched_count:
+                    print(f"[RSS] {feed.name}: 补全 {enriched_count} 个长标题")
+
             # 转换为 RSSItem（使用配置的时区）
-            now = get_configured_time(self.timezone)
             crawl_time = now.strftime("%H:%M")
             items = []
 
@@ -247,6 +283,8 @@ class RSSFetcher:
                 max_items=feed_config.get("max_items", 0),  # 0=不限制
                 enabled=feed_config.get("enabled", True),
                 max_age_days=max_age_days,  # None=使用全局，0=禁用，>0=覆盖
+                source_type=feed_config.get("source_type", "rss"),
+                fetch_url=feed_config.get("fetch_url", ""),
             )
             if feed.id and feed.url:
                 feeds.append(feed)

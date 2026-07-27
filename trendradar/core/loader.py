@@ -57,11 +57,16 @@ def _load_crawler_config(config_data: Dict) -> Dict:
     advanced = config_data.get("advanced", {})
     crawler_config = advanced.get("crawler", {})
     platforms_config = config_data.get("platforms", {})
+    rss_config = config_data.get("rss", {})
     return {
         "REQUEST_INTERVAL": crawler_config.get("request_interval", 100),
         "USE_PROXY": crawler_config.get("use_proxy", False),
         "DEFAULT_PROXY": crawler_config.get("default_proxy", ""),
-        "ENABLE_CRAWLER": platforms_config.get("enabled", True),
+        # 热榜和 RSS 是两条独立抓取链路；任一启用都应允许主流程继续。
+        "ENABLE_CRAWLER": (
+            platforms_config.get("enabled", True)
+            or rss_config.get("enabled", False)
+        ),
         "PLATFORMS_API_URL": _get_env_str("PLATFORMS_API_URL") or platforms_config.get("api_url", ""),
     }
 
@@ -289,6 +294,7 @@ def _load_ai_analysis_config(config_data: Dict) -> Dict:
         "INCLUDE_RSS": ai_config.get("include_rss", True),
         "INCLUDE_RANK_TIMELINE": ai_config.get("include_rank_timeline", False),
         "INCLUDE_STANDALONE": ai_config.get("include_standalone", False),
+        "GROUNDING_REVIEW_ENABLED": ai_config.get("grounding_review_enabled", True),
     }
 
 
@@ -315,6 +321,7 @@ def _load_ai_translation_config(config_data: Dict) -> Dict:
 def _load_ai_filter_config(config_data: Dict) -> Dict:
     """加载 AI 智能筛选配置（由 filter.method 控制是否启用）"""
     ai_filter = config_data.get("ai_filter", {})
+    content = ai_filter.get("content_enrichment", {})
 
     return {
         "BATCH_SIZE": ai_filter.get("batch_size", 200),
@@ -325,6 +332,18 @@ def _load_ai_filter_config(config_data: Dict) -> Dict:
         "UPDATE_TAGS_PROMPT_FILE": ai_filter.get("update_tags_prompt_file", "update_tags_prompt.txt"),
         "RECLASSIFY_THRESHOLD": ai_filter.get("reclassify_threshold", 0.6),
         "MIN_SCORE": float(ai_filter.get("min_score", 0)),
+        "HIGHLIGHT_TOP_N": max(0, int(ai_filter.get("highlight_top_n", 5))),
+        "SUMMARY_GROUNDING_REVIEW_ENABLED": ai_filter.get(
+            "summary_grounding_review_enabled", True
+        ),
+        "CONTENT_ENRICHMENT": {
+            "ENABLED": content.get("enabled", True),
+            "FETCH_FULL_TEXT": content.get("fetch_full_text", True),
+            "TIMEOUT": int(content.get("timeout", 12)),
+            "MAX_CONTENT_CHARS": int(content.get("max_content_chars", 5000)),
+            "MIN_BODY_CHARS": int(content.get("min_body_chars", 300)),
+            "CONCURRENCY": int(content.get("concurrency", 4)),
+        },
     }
 
 
@@ -571,7 +590,11 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
     # 平台配置
     platforms_config = config_data.get("platforms", {})
-    config["PLATFORMS"] = [p for p in platforms_config.get("sources", []) if p.get("enabled", True)]
+    config["PLATFORMS"] = (
+        [p for p in platforms_config.get("sources", []) if p.get("enabled", True)]
+        if platforms_config.get("enabled", True)
+        else []
+    )
 
     # RSS 配置
     config["RSS"] = _load_rss_config(config_data)

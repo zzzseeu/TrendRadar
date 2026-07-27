@@ -62,7 +62,7 @@ schedule:
 #     只要 api_url 不是你自己部署的实例，都推荐配置 expected_domain
 # ===============================================================
 platforms:
-  enabled: true                         # 是否启用热榜平台抓取（true=启用, false=关闭）
+  enabled: false                        # 当前只监控已配置的育种网站，不抓取大众热榜
   api_url: ""                            # 热榜数据 API 地址（留空使用默认地址）
                                         # 如果你自行部署了 newsnow，填入你的地址，如: https://your-domain.com/api/s
   sources:
@@ -109,6 +109,8 @@ platforms:
 # 每个源配置：id(唯一标识)、name(显示名称)、url(订阅地址)
 # enabled: 可选，默认 true
 # max_age_days: 可选，覆盖全局 freshness_filter.max_age_days
+# source_type: 可选，rss（默认）| irri_news | web_news | corteva_news
+# fetch_url: 可选，仅用于抓取；通知中的文章链接仍使用官网地址
 # ===============================================================
 rss:
   enabled: true                       # 是否启用 RSS 抓取（true=启用, false=关闭）
@@ -118,7 +120,7 @@ rss:
   freshness_filter:
     enabled: true                     # 是否启用新鲜度过滤（true=启用, false=关闭）
 
-    max_age_days: 1                   # 最大文章年龄（天）
+    max_age_days: 7                   # 最大文章年龄（天）
                                       # - 正整数：只推送 N 天内的文章
                                       # - 0：禁用过滤，推送所有文章
 
@@ -130,16 +132,201 @@ rss:
     - id: "hacker-news"
       name: "Hacker News"
       url: "https://hnrss.org/frontpage"
+      enabled: false                  # 当前仅监控育种相关来源
+      max_items: 30
+      max_age_days: 7
 
     - id: "ruanyifeng"
       name: "阮一峰的网络日志"
       url: "http://www.ruanyifeng.com/blog/atom.xml"
       enabled: false                  # 禁用
-      # max_age_days: 3               # 示例：推送 3 天内的文章（更新较慢的博客）
+      max_items: 30
+      max_age_days: 7
      
     - id: "yahoo-finance"
       name: "雅虎财经"
       url: "https://finance.yahoo.com/news/rssindex"
+      enabled: false                  # 当前仅监控育种相关来源
+      max_items: 30
+      max_age_days: 7
+
+    - id: "irri-news"
+      name: "IRRI News"
+      url: "https://www.irri.org/news-and-events/news"
+      source_type: "irri_news"
+      # IRRI 主站当前会拒绝本运行环境的 CloudFront 出口，通过 Google 代理读取官方页面。
+      # 解析后保留的仍是 www.irri.org 官方文章链接。
+      fetch_url: "https://www-irri-org.translate.goog/news-and-events/news?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
+      max_items: 30
+      max_age_days: 7
+
+    # ── 国际期刊与预印本 ──────────────────────────────────────
+    - id: "nature-plants"
+      name: "Nature Plants"
+      url: "https://www.nature.com/nplants.rss"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "nature-genetics"
+      name: "Nature Genetics"
+      url: "https://www.nature.com/ng.rss"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "nature-biotechnology"
+      name: "Nature Biotechnology"
+      url: "https://www.nature.com/nbt.rss"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "science"
+      name: "Science"
+      url: "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "molecular-plant"
+      name: "Molecular Plant"
+      url: "https://rss.sciencedirect.com/publication/science/16742052"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "plant-communications"
+      name: "Plant Communications"
+      url: "https://rss.sciencedirect.com/publication/science/25903462"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "rice-science"
+      name: "Rice Science"
+      url: "https://rss.sciencedirect.com/publication/science/16726308"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "crop-journal"
+      name: "The Crop Journal"
+      url: "https://rss.sciencedirect.com/publication/science/22145141"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "biorxiv-plant-biology"
+      name: "bioRxiv Plant Biology"
+      url: "https://connect.biorxiv.org/biorxiv_xml.php?subject=plant_biology"
+      max_items: 30
+      max_age_days: 7
+
+    # ── 育种数据库动态 ────────────────────────────────────────
+    - id: "gramene-news"
+      name: "Gramene News"
+      url: "https://news.gramene.org/rss.xml"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "ensembl-news"
+      name: "Ensembl News"
+      url: "https://www.ensembl.info/feed/"
+      max_items: 30
+      max_age_days: 7
+
+    # ── 国内水稻与作物育种科研机构 ────────────────────────────
+    - id: "cnrri-research"
+      name: "中国水稻研究所科研进展"
+      url: "https://cnrri.caas.cn/kyjz/index.htm"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "hzau-crop-lab"
+      name: "华中农大作物遗传改良实验室"
+      url: "https://croplab.hzau.edu.cn/"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "cemps-research"
+      name: "中科院分子植物卓越中心科研进展"
+      url: "https://cemps.cas.cn/kyjz/"
+      source_type: "web_news"
+      fetch_url: "https://cemps.cas.cn/kyjz/kyjz{year}/"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "caas-crop-research"
+      name: "中国农科院作科所科研进展"
+      url: "https://ics.caas.cn/xwdt/kyjz1/index.htm"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    # ── 种业政策与生物技术监管 ────────────────────────────────
+    - id: "moa-seed-news"
+      name: "农业农村部种业管理司工作动态"
+      url: "https://zys.moa.gov.cn/gzdt/"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "moa-seed-notices"
+      name: "农业农村部种业管理司公示公告"
+      url: "https://zys.moa.gov.cn/gsgg/"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "moa-seed-policy"
+      name: "农业农村部种业管理司政策文件"
+      url: "https://zys.moa.gov.cn/zcwj/"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "aphis-biotech"
+      name: "USDA APHIS Biotechnology"
+      url: "https://www.aphis.usda.gov/biotechnology"
+      source_type: "web_news"
+      # APHIS 主站在当前出口连接不稳定，代理只用于读取，文章链接会还原为官方域名。
+      fetch_url: "https://www-aphis-usda-gov.translate.goog/biotechnology?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "eu-plants-policy"
+      name: "欧盟植物与 NGT 政策"
+      url: "https://food.ec.europa.eu/plants_en"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "cgiar-news"
+      name: "CGIAR News"
+      url: "https://www.cgiar.org/news"
+      source_type: "web_news"
+      # CGIAR 的直接请求返回 403，代理只用于读取，文章链接会还原为官方域名。
+      fetch_url: "https://www-cgiar-org.translate.goog/news?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
+      max_items: 30
+      max_age_days: 7
+
+    # ── 种业企业（仍需同时命中育种技术词，避免财报和人事消息） ──
+    - id: "winall-news"
+      name: "荃银高科"
+      url: "https://www.winallseed.com/"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "syngenta-news"
+      name: "Syngenta Group Newsroom"
+      url: "https://www.syngentagroup.com/newsroom"
+      source_type: "web_news"
+      max_items: 30
+      max_age_days: 7
+
+    - id: "corteva-news"
+      name: "Corteva Media Center"
+      url: "https://www.corteva.com/resources/media-center.html"
+      source_type: "corteva_news"
+      fetch_url: "https://www.corteva.com/content/corteva/corporate/our-homepage/resources/media-center/jcr:content/root/responsivegrid/navheadertabs/News-%26-Media/columncontrol/8-4-col-1/articlefilter.mediacenter.json"
+      max_items: 30
+      max_age_days: 7
 
     # 自定义源示例
     # - id: "custom-feed"
@@ -175,7 +362,7 @@ report:
 # 4.5 筛选策略
 # ===============================================================
 filter:
-  method: "keyword"                     # 筛选方式（二选一）
+  method: "ai"                          # 筛选方式（二选一）
                                        # keyword = 关键词匹配，不调用 AI，不消耗 token，但规则固定
                                        #           词组定义在 config/frequency_words.txt
                                        # ai = AI 智能分类，更灵活但每次运行消耗 token
@@ -190,11 +377,13 @@ filter:
 # 4.6 AI 智能筛选配置（仅 filter.method=ai 时生效）
 # ===============================================================
 ai_filter:
-  batch_size: 200                         # 每批发送给 AI 的标题数，超过此数量自动分批
+  batch_size: 10                          # 正文输入较长，小批处理可避免超出模型上下文
   batch_interval: 2                       # 分批间隔（秒），避免触发 API 限流，0=不等待
 
   min_score: 0.7                          # 推送最低分数阈值（0.0~1.0），值越高越严格
                                           # 推荐 0.5~0.7 起步，0=不过滤
+  highlight_top_n: 5                      # 在全部入选新闻中按育种价值重点标记前 N 条
+  summary_grounding_review_enabled: true  # 逐条摘要二次证据校审（每批增加 1 次模型调用）
 
   # 兴趣描述文件（默认 config/ai_interests.txt，无需配置）
   # 自定义文件放入 config/custom/ai/ 目录，然后指定文件名：
@@ -204,7 +393,16 @@ ai_filter:
                                           # 越低越倾向全量重分类（更准但更耗 token）
                                           # 越高越倾向增量更新（更省但可能不够新）
 
-  # 以下提示词模板一般无需修改（不建议动）
+  # AI 判断依据：正文优先；正文不可用时降级为摘要；再不可用时仅使用标题并附风险提示
+  content_enrichment:
+    enabled: true
+    fetch_full_text: true
+    timeout: 12                           # 单篇正文请求超时（秒）
+    max_content_chars: 5000               # 每篇送入 AI 的正文最大字符数
+    min_body_chars: 300                   # 少于此长度不视为有效正文
+    concurrency: 4                        # 正文并发抓取数，避免对网站造成过大压力
+
+  # 以下提示词模板
 
   # 分类提示词模板
   prompt_file: "prompt.txt"
@@ -245,9 +443,9 @@ display:
   # 独立展示区：将指定平台/RSS 完整展示，不受关键词过滤
   # 推送展示由 regions.standalone 控制，AI 分析由 ai_analysis.include_standalone 控制
   standalone:
-    platforms: ["zhihu", "wallstreetcn-hot"]     # 热榜平台 ID 列表（如 ["zhihu", "weibo"]）
+    platforms: []                                # 热榜平台 ID 列表（如 ["zhihu", "weibo"]）
     rss_feeds: []                                # RSS 源 ID 列表（如 ["hacker-news"]）
-    max_items: 20                                # 每个源最多展示条数（0=不限制）
+    max_items: 5                                 # 每个源最多展示条数（0=不限制）
 
 
 # ===============================================================
@@ -273,7 +471,7 @@ notification:
 
     wework:
       webhook_url: ""                 # 企业微信机器人 webhook URL
-      msg_type: "markdown"            # 消息类型：markdown(群机器人) | text(个人微信应用)
+      msg_type: "text"                # 消息类型：markdown(群机器人) | text(个人微信应用)
 
     telegram:
       bot_token: ""                   # Telegram Bot Token
@@ -393,7 +591,7 @@ ai:
   temperature: 1.0                  # 采样温度 (0.0-2.0)
                                     # 注意：部分模型(如 gpt-5)可能要求必须为 1.0，否则会报错
   
-  max_tokens: 5000                  # 最大生成 token 数
+  max_tokens: 10000                  # 最大生成 token 数
                                     # 注意：如果 API 不支持此参数(报 HTTP 400)，请设为 0 以禁用发送
   # 高级选项
   num_retries: 1                    # 失败重试次数
@@ -424,8 +622,9 @@ ai_analysis:
   max_news_for_analysis: 150        # 参与分析的新闻数量上限（控制 token 成本的关键项）
                                     # 热榜优先占用配额，RSS 用剩余配额，独立展示区不受此限制
 
-  include_rss: false                # 是否包含 RSS 内容进行分析（true=包含, false=不包含）
-  include_standalone: true          # 是否纳入独立展示区数据（true=纳入, false=不纳入）
+  include_rss: true                 # 是否包含 RSS 内容进行分析（true=包含, false=不包含）
+  include_standalone: false         # 是否纳入独立展示区数据（true=纳入, false=不纳入）
+  grounding_review_enabled: true    # 二次证据校审，删除原始输入无法支持的具体细节
 
   include_rank_timeline: true       # 排名时间线详细程度
                                     # true = 完整轨迹（如 1(09:30)→2(10:00)），AI 分析更准但多耗 0.5~1 倍 token

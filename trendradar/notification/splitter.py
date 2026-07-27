@@ -242,18 +242,29 @@ def split_content_into_batches(
         total_news_line += f"（新增 {new_count} + {rss_new_count}）"
     base_header += f"{total_news_line}\n"
 
-    # 2. 热榜
-    hotlist_info = f"{b_s}热榜：{b_e} {total_hotlist_count}/{hotlist_total}"
-    if platform_total > 0:
-        hotlist_info += f"（平台 {platform_success}/{platform_total}）"
-    base_header += f"{hotlist_info}\n"
+    # 2. 热榜。RSS-only 模式下平台和结果均为空，不显示“热榜 0/0”。
+    if total_hotlist_count > 0 or hotlist_total > 0 or platform_total > 0:
+        hotlist_info = f"{b_s}热榜：{b_e} {total_hotlist_count}/{hotlist_total}"
+        if platform_total > 0:
+            hotlist_info += f"（平台 {platform_success}/{platform_total}）"
+        base_header += f"{hotlist_info}\n"
 
     # 3. RSS
     if rss_source_total > 0:
         rss_info = f"{b_s}RSS：{b_e} {rss_matched}/{rss_total_items}（源 {rss_source_success}/{rss_source_total}）"
         base_header += f"{rss_info}\n"
 
-    # 4. 独立展示区（仅在有数据时显示）
+    # 4. AI 重点新闻（跨热榜/RSS，以 highlight_rank 去重计数）
+    highlight_ranks = {
+        title.get("highlight_rank")
+        for stat in list(report_data.get("stats", [])) + list(rss_items or [])
+        for title in stat.get("titles", [])
+        if title.get("highlight_rank")
+    }
+    if highlight_ranks:
+        base_header += f"{b_s}重点：{b_e} {len(highlight_ranks)} 条（AI育种价值排序）\n"
+
+    # 5. 独立展示区（仅在有数据时显示）
     if standalone_data:
         sa_platform_count = sum(len(p.get("items", [])) for p in standalone_data.get("platforms", []))
         sa_rss_count = sum(len(f.get("items", [])) for f in standalone_data.get("rss_feeds", []))
@@ -266,7 +277,7 @@ def split_content_into_batches(
                 sa_parts.append(f"RSS {sa_rss_count}")
             base_header += f"{b_s}独立展示：{b_e} {sa_total} 条（{' + '.join(sa_parts)}）\n"
 
-    # 5. AI 分析（仅在有分析数据时显示）
+    # 6. AI 分析（仅在有分析数据时显示）
     standalone_analyzed = ai_stats.get("standalone_analyzed", 0) if ai_stats else 0
     ai_has_data = ai_stats and (ai_stats.get("analyzed_news", 0) > 0 or standalone_analyzed > 0)
     if ai_has_data:
@@ -1437,6 +1448,8 @@ def _format_rss_item_line(
     title = item.get("title", "")
     url = item.get("url", "")
     published_at = item.get("published_at", "")
+    content_level = item.get("content_level", "")
+    risk_warning = item.get("risk_warning", "")
 
     # 使用友好时间格式
     if published_at:
@@ -1468,6 +1481,8 @@ def _format_rss_item_line(
             item_line += f" `{friendly_time}`"
 
     item_line += "\n"
+    if content_level in {"summary", "title_only"} and risk_warning:
+        item_line += f"    风险提示：{risk_warning}\n"
     return item_line
 
 

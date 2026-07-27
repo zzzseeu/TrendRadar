@@ -751,6 +751,37 @@ def render_html_content(
                 overflow: hidden;
             }
 
+            .ai-item-summary {
+                margin-top: 7px;
+                color: #4b5563;
+                font-size: 13px;
+                line-height: 1.55;
+            }
+
+            .risk-warning {
+                margin-top: 5px;
+                color: #b45309;
+                font-size: 12px;
+                line-height: 1.5;
+            }
+
+            .highlight-badge {
+                display: inline-block;
+                margin-left: 6px;
+                padding: 1px 6px;
+                border-radius: 999px;
+                color: #b91c1c;
+                background: #fee2e2;
+                font-size: 11px;
+                font-weight: 700;
+            }
+
+            .news-item.highlighted,
+            .rss-item.highlighted {
+                border-left-color: #f59e0b;
+                background: #fffbeb;
+            }
+
             /* 独立展示区样式 - 复用热点词汇统计区样式 */
             .standalone-section {
                 margin-top: 32px;
@@ -1616,9 +1647,10 @@ def render_html_content(
             for j, title_data in enumerate(stat["titles"], 1):
                 is_new = title_data.get("is_new", False)
                 new_class = "new" if is_new else ""
+                highlight_class = " highlighted" if title_data.get("highlight_rank") else ""
 
                 stats_html += f"""
-                    <div class="news-item {new_class}">
+                    <div class="news-item {new_class}{highlight_class}">
                         <div class="news-number">{j}</div>
                         <div class="news-content">
                             <div class="news-header">"""
@@ -1682,6 +1714,10 @@ def render_html_content(
                 if count_info > 1:
                     stats_html += f'<span class="count-info">{count_info}次</span>'
 
+                highlight_rank = title_data.get("highlight_rank")
+                if highlight_rank:
+                    stats_html += f'<span class="highlight-badge">⭐ TOP {highlight_rank}</span>'
+
                 stats_html += """
                             </div>
                             <div class="news-title">"""
@@ -1695,6 +1731,15 @@ def render_html_content(
                     stats_html += f'<a href="{escaped_url}" target="_blank" class="news-link">{escaped_title}</a>'
                 else:
                     stats_html += escaped_title
+
+                ai_summary = " ".join(str(title_data.get("ai_summary", "")).split())
+                if ai_summary:
+                    stats_html += f'<div class="ai-item-summary">摘要：{html_escape(ai_summary)}</div>'
+
+                content_level = title_data.get("content_level", "")
+                risk_warning = " ".join(str(title_data.get("risk_warning", "")).split())
+                if content_level in {"summary", "title_only"} and risk_warning:
+                    stats_html += f'<div class="risk-warning">风险提示：{html_escape(risk_warning)}</div>'
 
                 stats_html += """
                             </div>
@@ -1839,9 +1884,10 @@ def render_html_content(
                 time_display = title_data.get("time_display", "")
                 source_name = title_data.get("source_name", "")
                 is_new = title_data.get("is_new", False)
+                highlight_class = " highlighted" if title_data.get("highlight_rank") else ""
 
-                rss_html += """
-                        <div class="rss-item">
+                rss_html += f"""
+                        <div class="rss-item{highlight_class}">
                             <div class="rss-meta">"""
 
                 if time_display:
@@ -1853,6 +1899,10 @@ def render_html_content(
                 if is_new:
                     rss_html += '<span class="rss-author" style="color: #dc2626;">NEW</span>'
 
+                highlight_rank = title_data.get("highlight_rank")
+                if highlight_rank:
+                    rss_html += f'<span class="highlight-badge">⭐ TOP {highlight_rank}</span>'
+
                 rss_html += """
                             </div>
                             <div class="rss-title">"""
@@ -1863,6 +1913,15 @@ def render_html_content(
                     rss_html += f'<a href="{escaped_url}" target="_blank" class="rss-link">{escaped_title}</a>'
                 else:
                     rss_html += escaped_title
+
+                ai_summary = " ".join(str(title_data.get("ai_summary", "")).split())
+                if ai_summary:
+                    rss_html += f'<div class="ai-item-summary">摘要：{html_escape(ai_summary)}</div>'
+
+                content_level = title_data.get("content_level", "")
+                risk_warning = " ".join(str(title_data.get("risk_warning", "")).split())
+                if content_level in {"summary", "title_only"} and risk_warning:
+                    rss_html += f'<div class="risk-warning">风险提示：{html_escape(risk_warning)}</div>'
 
                 rss_html += """
                             </div>

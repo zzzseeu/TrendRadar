@@ -95,6 +95,7 @@ class SQLiteStorageMixin:
             if ai_filter_schema.exists():
                 with open(ai_filter_schema, "r", encoding="utf-8") as f:
                     conn.executescript(f.read())
+                self._migrate_ai_filter_schema(conn)
 
         if db_type == "rss":
             self._migrate_rss_schema(conn)
@@ -111,6 +112,45 @@ class SQLiteStorageMixin:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_guid_feed
                 ON rss_items(guid, feed_id) WHERE guid != ''
             """)
+
+    def _migrate_ai_filter_schema(self, conn: sqlite3.Connection) -> None:
+        """为已有新闻数据库补充 AI 筛选证据、评分和逐条摘要字段。"""
+        cursor = conn.execute("PRAGMA table_info(ai_filter_results)")
+        columns = {row[1] for row in cursor.fetchall()}
+        requires_reclassification = False
+        if "content_level" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_filter_results "
+                "ADD COLUMN content_level TEXT DEFAULT 'title_only'"
+            )
+        if "risk_warning" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_filter_results "
+                "ADD COLUMN risk_warning TEXT DEFAULT ''"
+            )
+        if "content_excerpt" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_filter_results "
+                "ADD COLUMN content_excerpt TEXT DEFAULT ''"
+            )
+        if "importance_score" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_filter_results "
+                "ADD COLUMN importance_score REAL DEFAULT 0"
+            )
+            requires_reclassification = True
+        if "ai_summary" not in columns:
+            conn.execute(
+                "ALTER TABLE ai_filter_results "
+                "ADD COLUMN ai_summary TEXT DEFAULT ''"
+            )
+            requires_reclassification = True
+
+        # 旧分类结果没有逐条摘要和重要性评分。仅在首次升级表结构时清理
+        # 分类缓存，使现有新闻在下一轮按新提示词重新分析。
+        if requires_reclassification:
+            conn.execute("DELETE FROM ai_filter_results")
+            conn.execute("DELETE FROM ai_filter_analyzed_news")
 
     # ========================================
     # 新闻数据存储
@@ -1559,13 +1599,20 @@ class SQLiteStorageMixin:
                 try:
                     cursor.execute("""
                         INSERT INTO ai_filter_results
-                        (news_item_id, source_type, tag_id, relevance_score, created_at)
-                        VALUES (?, ?, ?, ?, ?)
+                        (news_item_id, source_type, tag_id, relevance_score,
+                         content_level, risk_warning, content_excerpt,
+                         importance_score, ai_summary, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         r["news_item_id"],
                         r.get("source_type", "hotlist"),
                         r["tag_id"],
                         r.get("relevance_score", 0.0),
+                        r.get("content_level", "title_only"),
+                        r.get("risk_warning", ""),
+                        r.get("content_excerpt", ""),
+                        r.get("importance_score", 0.0),
+                        r.get("ai_summary", ""),
                         now_str,
                     ))
                     count += 1
@@ -1588,10 +1635,12 @@ class SQLiteStorageMixin:
             cursor.execute("""
                 SELECT
                     r.news_item_id, r.source_type, r.tag_id, r.relevance_score,
+                    r.content_level, r.risk_warning,
                     t.tag, t.description as tag_description, t.priority,
                     n.title, n.platform_id as source_id, p.name as source_name,
                     n.url, n.mobile_url, n.rank,
-                    n.first_crawl_time, n.last_crawl_time, n.crawl_count
+                    n.first_crawl_time, n.last_crawl_time, n.crawl_count,
+                    r.content_excerpt, r.importance_score, r.ai_summary
                 FROM ai_filter_results r
                 JOIN ai_filter_tags t ON r.tag_id = t.id
                 JOIN news_items n ON r.news_item_id = n.id
@@ -1607,13 +1656,18 @@ class SQLiteStorageMixin:
                 results.append({
                     "news_item_id": row[0], "source_type": row[1],
                     "tag_id": row[2], "relevance_score": row[3],
-                    "tag": row[4], "tag_description": row[5], "tag_priority": row[6],
-                    "title": row[7], "source_id": row[8],
-                    "source_name": row[9] or row[8],
-                    "url": row[10] or "", "mobile_url": row[11] or "",
-                    "rank": row[12],
-                    "first_time": row[13], "last_time": row[14],
-                    "count": row[15],
+                    "content_level": row[4] or "title_only",
+                    "risk_warning": row[5] or "",
+                    "tag": row[6], "tag_description": row[7], "tag_priority": row[8],
+                    "title": row[9], "source_id": row[10],
+                    "source_name": row[11] or row[10],
+                    "url": row[12] or "", "mobile_url": row[13] or "",
+                    "rank": row[14],
+                    "first_time": row[15], "last_time": row[16],
+                    "count": row[17],
+                    "content_excerpt": row[18] or "",
+                    "importance_score": row[19] or 0.0,
+                    "ai_summary": row[20] or "",
                 })
                 hotlist_news_ids.append(row[0])
 
@@ -1662,7 +1716,9 @@ class SQLiteStorageMixin:
                 # 从 news 库获取 rss 类型的分类结果 ID
                 cursor.execute("""
                     SELECT r.news_item_id, r.tag_id, r.relevance_score,
-                           t.tag, t.description, t.priority
+                           r.content_level, r.risk_warning,
+                           t.tag, t.description, t.priority,
+                           r.content_excerpt, r.importance_score, r.ai_summary
                     FROM ai_filter_results r
                     JOIN ai_filter_tags t ON r.tag_id = t.id
                     WHERE r.status = 'active' AND r.source_type = 'rss'
@@ -1693,9 +1749,14 @@ class SQLiteStorageMixin:
                                 "source_type": "rss",
                                 "tag_id": fr_row[1],
                                 "relevance_score": fr_row[2],
-                                "tag": fr_row[3],
-                                "tag_description": fr_row[4],
-                                "tag_priority": fr_row[5],
+                                "content_level": fr_row[3] or "title_only",
+                                "risk_warning": fr_row[4] or "",
+                                "tag": fr_row[5],
+                                "tag_description": fr_row[6],
+                                "tag_priority": fr_row[7],
+                                "content_excerpt": fr_row[8] or "",
+                                "importance_score": fr_row[9] or 0.0,
+                                "ai_summary": fr_row[10] or "",
                                 "title": info[1],
                                 "source_id": info[2],
                                 "source_name": info[3] or info[2],
@@ -1716,13 +1777,14 @@ class SQLiteStorageMixin:
             return []
 
     def _get_all_news_ids_impl(self, date: Optional[str] = None) -> List[Dict]:
-        """获取当日所有新闻的 id 和标题（用于 AI 筛选分类）"""
+        """获取当日热榜新闻及链接（用于 AI 筛选分类与正文提取）"""
         try:
             conn = self._get_connection(date)
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT n.id, n.title, n.platform_id, p.name as platform_name
+                SELECT n.id, n.title, n.platform_id, p.name as platform_name,
+                       n.url, n.mobile_url
                 FROM news_items n
                 LEFT JOIN platforms p ON n.platform_id = p.id
                 ORDER BY n.id
@@ -1732,6 +1794,8 @@ class SQLiteStorageMixin:
                 {
                     "id": row[0], "title": row[1],
                     "source_id": row[2], "source_name": row[3] or row[2],
+                    "url": row[4] or "", "mobile_url": row[5] or "",
+                    "summary": "",
                 }
                 for row in cursor.fetchall()
             ]
@@ -1740,13 +1804,14 @@ class SQLiteStorageMixin:
             return []
 
     def _get_all_rss_ids_impl(self, date: Optional[str] = None) -> List[Dict]:
-        """获取当日所有 RSS 条目的 id 和标题（用于 AI 筛选分类）"""
+        """获取当日 RSS 条目、链接和摘要（用于 AI 筛选分类与正文提取）"""
         try:
             conn = self._get_connection(date, db_type="rss")
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT i.id, i.title, i.feed_id, f.name as feed_name, i.published_at
+                SELECT i.id, i.title, i.feed_id, f.name as feed_name,
+                       i.published_at, i.url, i.summary, i.author
                 FROM rss_items i
                 LEFT JOIN rss_feeds f ON i.feed_id = f.id
                 ORDER BY i.id
@@ -1757,6 +1822,8 @@ class SQLiteStorageMixin:
                     "id": row[0], "title": row[1],
                     "source_id": row[2], "source_name": row[3] or row[2],
                     "published_at": row[4] or "",
+                    "url": row[5] or "", "mobile_url": "",
+                    "summary": row[6] or "", "author": row[7] or "",
                 }
                 for row in cursor.fetchall()
             ]

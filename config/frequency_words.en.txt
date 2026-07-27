@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════
 #                TrendRadar Frequency-words Configuration
-#                         Version: 1.1.0
+#                         Version: 1.2.0
 # ═══════════════════════════════════════════════════════════════
 
 # Visual config editor: https://sansan0.github.io/TrendRadar/
@@ -28,8 +28,30 @@
 #   /foo|bar/         Wrap with /.../ to match multiple words (separated by |)
 
 [GLOBAL_FILTER]
-# Filter clickbait headlines
+# Filter clickbait and obvious promotional headlines
 震惊
+重磅突发
+刚刚
+竟然
+颠覆
+付费课程
+培训招生
+招生简章
+培训班
+研修班
+course
+workshop
+webinar
+training
+cancer
+tumor
+patients
+clinical trial
+plasma protein
+board of directors
+quarterly dividend
+financial results
+chief executive officer
 
 
 
@@ -150,109 +172,68 @@
 [WORD_GROUPS]
 
 # ═══════════════════════════════════════════════════════════════
-#                         Companies & Brands
+#                   Rice Breeding & Smart Breeding
 # ═══════════════════════════════════════════════════════════════
 
-/胖东来|于东来/ => 胖东来
+[Rice Traits & Breeding]
+/水稻育种|稻米育种|水稻新品种|水稻品种|水稻产量|水稻株型|水稻粒型|抗倒伏|氮肥利用效率|直播适应性|直播稻|\brice breeding\b|\brice cultivars?\b|\brice variet(?:y|ies)\b|\brice yield\b|\bgrain yield in rice\b|\bOryza sativa\b|\bdirect seed(?:ing|ed)\b/
 
-/深度求索|幻方量化|梁文锋|\bDeepSeek\b/ => DeepSeek
+[Wild Rice & Germplasm]
+/野生稻|种质资源|优异等位基因|渗入片段|远缘杂交|染色体片段置换系|\bCSSLs?\b|\bwild rice\b|\bgermplasm\b|\bintrogression\b|\bchromosome segment substitution lines?\b/
 
-/华为|任正非|余承东|鸿蒙|海思|昇腾|鲲鹏|\bHUAWEI\b|\bHarmonyOS\b|\bHiSilicon\b/ => Huawei
+[Rice Genomics & Pangenomics]
+/水稻基因组|泛基因组|图泛基因组|端粒到端粒|结构变异|存在缺失变异|转座元件|单倍型|\bpan-?genome\b|\bgraph pan-?genome\b|\btelomere-to-telomere\b|\bT2T genome\b|\bstructural variants?\b|\bpresence.absence variants?\b|\btransposable elements?\b|\bhaplotypes?\b/
 
-/比亚迪|王传福|方程豹|腾势|仰望|弗迪|刀片电池|云辇|\bBYD\b|\bDenza\b|\bYangwang\b/ => BYD
+[Genomic Selection & Smart Breeding]
+/基因组选择|基因组预测|育种值|亲本选择|杂交组合预测|多环境预测|跨群体预测|\bgenomic selection\b|\bgenomic prediction\b|\bbreeding values?\b|\bparent selection\b|\bcross prediction\b|\bmulti-environment prediction\b|\bcross-population prediction\b/
 
-/大疆|汪滔|灵眸|如影|\bDJI\b|\bRoboMaster\b|\bMavic\b|\bZenmuse\b/ => DJI
+[AI & DNA Foundation Models]
+/DNA基础模型|基因组基础模型|核酸语言模型|序列基础模型|\bDNA foundation models?\b|\bgenomic foundation models?\b|\bnucleotide language models?\b|\bNucleotide Transformer\b|\bHyenaDNA\b|\bDNABERT\b|\bPlantCaduceus\b|\bCaduceus\b|\bEvo 2?\b/
 
-/宇树|王兴兴|\bUnitree\b/ => Unitree Robotics
+[Candidate Genes & Causal Variants]
+/候选基因|因果基因|因果变异|数量性状位点|精细定位|连锁分析|选择扫描|共定位|孟德尔随机化|\bGWAS\b|\bQTLs?\b|\bQTL-seq\b|\bBSA-seq\b|\bfine mapping\b|\blinkage analysis\b|\bselection sweep\b|\bcolocali[sz]ation\b|\bMendelian randomi[sz]ation\b|\bcandidate genes?\b|\bcausal variants?\b/
 
-/智元|灵犀|稚晖君|彭志辉|AgiBot/ => Agibot Robotics
-/众擎|EngineAI|赵同阳/ => EngineAI Robotics
+[Rice Disease & Pest Resistance]
+/稻瘟病|白叶枯病|纹枯病|稻曲病|褐飞虱|白背飞虱|稻纵卷叶螟|抗病虫育种|抗性基因|持久抗性|\brice blast\b|\bbacterial blight\b|\bsheath blight\b|\bfalse smut\b|\bbrown planthopper\b|\bwhite-backed planthopper\b|\brice leaf folder\b|\bdurable resistance\b|\bdisease resistance gene\b/
 
-/黑神话|冯骥/ => Black Myth: Wukong
+[Genome Editing & Design Breeding]
+/基因编辑|碱基编辑|先导编辑|启动子编辑|多位点编辑|分子设计育种|\bCRISPR.Cas\b|\bgenome editing\b|\bbase editing\b|\bprime editing\b|\bpromoter editing\b|\bmultiplex editing\b|\bde novo domestication\b|\bdesign breeding\b/
 
-/影之刃零|梁其伟/ => Blade of Fate
+[Multi-omics & Regulation]
+/多组学|单细胞转录组|空间转录组|表观基因组|染色质可及性|甲基化组|蛋白质组|代谢组|调控网络|\bmulti-omics\b|\bsingle-cell transcriptom|\bspatial transcriptom|\bepigenom|\bchromatin accessibility\b|\bmethylom|\bproteom|\bmetabolom|\bregulatory network\b/
 
-/三体|流浪地球|刘慈欣|郭帆/ => Three-Body / Wandering Earth
+[Phenomics & High-throughput Phenotyping]
+/表型组|高通量表型|无人机表型|高光谱|三维重建|根系成像|田间传感器|\bphenomics\b|\bhigh-throughput phenotyp|\bUAV phenotyp|\bhyperspectral\b|\b3D reconstruction\b|\broot imaging\b|\bfield sensors?\b/
 
-申奥
+[Multi-environment Trials & G×E]
+/多环境试验|多年多点试验|环境分型|基因型.环境互作|反应规范模型|品种稳定性|区域化布局|\bmulti-environment trials?\b|\bmulti-location trials?\b|\benvirotyping\b|\bG(?:x|×)E\b|\bgenotype.environment interaction\b|\breaction norm\b|\bcultivar stability\b/
 
-/京东|刘强东|\bJD\b|\bJingdong\b/ => JD.com
+[Hybrid Breeding & Population Design]
+/杂交稻|两系育种|三系育种|恢复系|保持系|不育系|杂种优势|配合力|双单倍体|巢式关联群体|多亲本群体|\bhybrid rice\b|\btwo-line breeding\b|\bthree-line breeding\b|\brestorer lines?\b|\bmaintainer lines?\b|\bmale sterile lines?\b|\bheterosis\b|\bcombining ability\b|\bdoubled haploids?\b|\bMAGIC population\b|\bNAM population\b/
 
-/字节|张一鸣|梁汝波|抖音|\bByteDance\b|\bTikTok\b|\bDouyin\b|\bLark\b|\bCapCut\b/ => ByteDance
+[Rice Quality & Nutrition]
+/水稻品质|稻米品质|食味品质|香味基因|直链淀粉|胶稠度|糊化温度|营养强化|重金属积累|\brice quality\b|\bgrain quality\b|\beating quality\b|\bamylose content\b|\bgel consistency\b|\bgelatini[sz]ation temperature\b|\baroma gene\b|\bbiofortification\b|\bheavy metal accumulation\b/
 
-/腾讯|鹅厂|马化腾|微信|QQ|天美|阅文集团|微众银行|\bTencent\b|\bPony Ma\b|\bWeChat\b|\bLightSpeed\b|\bWeBank\b/ => Tencent
+[Bioinformatics Tools & Data Resources]
+/水稻数据库|种质数据库|变异数据库|表型数据库|育种软件|育种数据集|\bRiceVarMap\b|\bSNP-Seek\b|\bOryzabase\b|\bRAP-DB\b|\bGramene\b|\bEnsembl Plants\b|\brice database\b|\bgermplasm database\b|\bbreeding software\b|\bbreeding datasets?\b|\bcrop genomic database\b/
 
-/qwen|minimax|glm/ => Chinese Open-source Models
+[Breeding LLMs & Research Agents]
+/育种大模型|农业大模型|农业知识图谱|育种智能体|科研智能体|自动文献挖掘|基因.性状知识抽取|候选基因排序|\bbreeding language models?\b|\bagricultural language models?\b|\bagricultural knowledge graphs?\b|\bresearch agents?\b|\bscientific agents?\b|\bliterature mining\b|\bgene.trait extraction\b|\bcandidate gene ranking\b/
 
-/特斯拉|马斯克|\bTesla\b|\bElon Musk\b|\bCybertruck\b|\bModel 3\b|\bModel Y\b|\bModel S\b|\bModel X\b|\bFSD\b/ => Tesla
+[Seed Industry & Breeding Platforms]
++/隆平高科|荃银高科|先正达|拜耳|科迪华|\bLongping High-Tech\b|\bWinall Hi-tech Seed\b|\bSyngenta\b|\bBayer\b|\bCorteva\b/
+/水稻|稻米|种子|种业|育种|品种|种质|基因编辑|生物技术|杂交|\brice\b|\bseeds?\b|\bbreeding\b|\bvariet(?:y|ies)\b|\bgermplasm\b|\bgene editing\b|\bgenome editing\b|\bbiotechnology\b|\bhybrids?\b|\bgenetics?\b/
 
-/英伟达|黄仁勋|\bNVIDIA\b|\bGeForce\b|\bRTX\b|\bCUDA\b|\bJensen Huang\b/ => NVIDIA
-/苏姿丰|锐龙|霄龙|\bAMD\b|\bRyzen\b|\bEPYC\b|\bRadeon\b|\bLisa Su\b/ => AMD
+[Major Rice Projects & Institutions]
++/中国农业科学院|中国水稻研究所|中国农业大学|华中农业大学|华南农业大学|南京农业大学|浙江大学|扬州大学|国际水稻研究所|\bCAAS\b|\bChina National Rice Research Institute\b|\bCNRRI\b|\bChina Agricultural University\b|\bHuazhong Agricultural University\b|\bSouth China Agricultural University\b|\bNanjing Agricultural University\b|\bZhejiang University\b|\bYangzhou University\b|\bInternational Rice Research Institute\b|\bIRRI\b|\bCGIAR\b|\bAfricaRice\b/
+/水稻|稻米|基因|育种|种质|作物|农业|\brice\b|\bgene\b|\bgenom|\bbreed|\bgermplasm\b|\bcrop\b|\bagricultur/
 
-/微软|\bMicrosoft\b|\bWindows\b|\bAzure\b|\bSatya Nadella\b|\bCopilot\b/ => Microsoft
-/谷歌|皮查伊|安卓|油管|\bGoogle\b|\bAlphabet\b|\bAndroid\b|\bChrome\b|\bYouTube\b|\bGemini\b|\bDeepMind\b|\bWaymo\b/ => Google
-/库克|\biPhone\b|\biPad\b|\bMacBook\b|\biOS\b|\bVision Pro\b|\bAirPods\b|\bApple\b|\bTim Cook\b/ => Apple
+[Agricultural Policy & Seed Regulation]
+/种业振兴|种质资源保护|生物育种产业化|转基因监管|基因编辑监管|遗传工程|转基因作物|生物安全|品种审定|品种登记|实质性派生品种|植物繁殖材料|植物新品种权|种子法|农业科研政策|\bseed industry policy\b|\bgermplasm conservation\b|\bbiotech breeding\b|\bgenome editing regulation\b|\bGM crop regulation\b|\bgenetic engineering\b|\bgenetically modified\b|\bGMO authori[sz]ation\b|\bderegulat(?:e|es|ed|ion)\b|\bregulatory status\b|\bnew genomic techniques?\b|\bNGT plants?\b|\bplant reproductive materials?\b|\bpublic consultations?\b|\bessentially derived variet(?:y|ies)\b|\bvariety registration\b|\bplant variety rights?\b|\bseed law\b|\bagricultural research policy\b/
 
-/\bOpenAI\b|\bChatGPT\b|\bSora\b|\bDALL-E\b|\bSam Altman\b|\bGreg Brockman\b/ => OpenAI
-/\bAnthropic\b|\bClaude\b|\bDario Amodei\b/ => Claude
+[Smart Agriculture & Breeding Infrastructure]
+/育种数据平台|田间试验管理|自动化温室|农业机器人|智能农机|育种云平台|育种算力|农业高性能计算|\bbreeding data platforms?\b|\bfield trial management\b|\bautomated greenhouses?\b|\bagricultural robots?\b|\bsmart farm machinery\b|\bbreeding cloud\b|\bhigh-performance computing for breeding\b|\bGPU.*breeding\b/
 
-
-# ═══════════════════════════════════════════════════════════════
-#                         Countries & Regions
-# ═══════════════════════════════════════════════════════════════
-
-[China]
-国产
-中国
-
-[East Asia]
-日本
-朝鲜
-韩国
-
-[North America]
-美国
-加拿大
-
-[Western Europe]
-法国
-英国
-
-/俄罗斯|俄国/ => Russia
-
-印度
-
-
-# ═══════════════════════════════════════════════════════════════
-#                         Tech Domains
-# ═══════════════════════════════════════════════════════════════
-
-[AI]
-/(?<![a-zA-Z])ai(?![a-zA-Z])/
-人工智能
-
-[Chips]
-芯片
-光刻机
-半导体
-
-/水电|雅鲁藏布江/ => Hydropower
-/光伏|太阳能/ => Solar Power
-核能
-能源
-
-/自动驾驶|无人驾驶|智驾/ => Autonomous Driving
-
-机器人
-/机械狗|四足/ => Robot Dog
-具身智能
-
-/月球|登月|火星|宇宙|飞船|航天|空间站|卫星/ => Aerospace
-
-# Frontier tech
-量子
-脑机
-基因
-
-# Industrial policy
-生产力
+[Transferable Advances from Other Crops]
++/玉米|小麦|大豆|马铃薯|油菜|棉花|\bmaize\b|\bcorn\b|\bwheat\b|\bsoybeans?\b|\bpotato(?:es)?\b|\brapeseed\b|\bcanola\b|\bcotton\b/
+/泛基因组|基因组选择|基因组预测|基因编辑|杂种优势|单倍型设计|智能育种|\bpan-?genome\b|\bgenomic selection\b|\bgenomic prediction\b|\bgenome editing\b|\bheterosis\b|\bhaplotype design\b|\bsmart breeding\b/

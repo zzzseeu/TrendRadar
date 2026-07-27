@@ -718,7 +718,7 @@ class NewsAnalyzer:
         # AI 分析（如果启用，用于 HTML 报告）
         ai_result = None
         ai_config = self.ctx.config.get("AI_ANALYSIS", {})
-        if ai_config.get("ENABLED", False) and stats:
+        if ai_config.get("ENABLED", False) and (stats or rss_items):
             # 获取模式策略来确定报告类型
             mode_strategy = self._get_mode_strategy()
             report_type = mode_strategy["report_type"]
@@ -1033,6 +1033,8 @@ class NewsAnalyzer:
                     max_items=feed_config.get("max_items", 50),
                     enabled=feed_config.get("enabled", True),
                     max_age_days=max_age_days,  # None=使用全局，0=禁用，>0=覆盖
+                    source_type=feed_config.get("source_type", "rss"),
+                    fetch_url=feed_config.get("fetch_url", ""),
                 )
                 if feed.id and feed.url and feed.enabled:
                     feeds.append(feed)
@@ -1484,8 +1486,33 @@ class NewsAnalyzer:
                 title_info = historical_title_info
                 results = all_results
             else:
-                print("❌ 严重错误：无法读取刚保存的数据文件")
-                raise RuntimeError("数据一致性检查失败：保存后立即读取失败")
+                if results:
+                    print("❌ 严重错误：无法读取刚保存的数据文件")
+                    raise RuntimeError("数据一致性检查失败：保存后立即读取失败")
+
+                # RSS-only 模式下热榜数据库为空是正常状态，直接使用本轮
+                # RSS 数据继续 AI 筛选、报告生成和通知发送。
+                print("current模式：热榜已关闭，使用本轮 RSS 数据继续分析")
+                title_info = self._prepare_current_title_info(results, time_info)
+                standalone_data = self._prepare_standalone_data(
+                    results, id_to_name, title_info, raw_rss_items
+                )
+                stats, html_file, ai_result, rss_items, standalone_data, rss_new_items = self._run_analysis_pipeline(
+                    results,
+                    self.report_mode,
+                    title_info,
+                    new_titles,
+                    word_groups,
+                    filter_words,
+                    id_to_name,
+                    failed_ids=failed_ids,
+                    global_filters=global_filters,
+                    rss_items=rss_items,
+                    rss_new_items=rss_new_items,
+                    standalone_data=standalone_data,
+                    schedule=schedule,
+                    rss_new_urls=rss_new_urls,
+                )
         elif self.report_mode == "daily":
             # daily 模式：使用全天累计数据
             analysis_data = self._load_analysis_data()
