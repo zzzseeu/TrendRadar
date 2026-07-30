@@ -2,9 +2,9 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 为 Rice Science 推送和 HTML 报告增加「官方原文 + 备用阅读」双链接，同时保持抓取、存储、去重和 AI 分析行为不变。
+**目标：** 为 Rice Science 推送和 HTML 报告增加「官方原文 + 备用检索」双链接，同时保持抓取、存储、去重和 AI 分析行为不变。
 
-**架构：** 新建一个纯链接转换模块，只为 `rice-science` 的标准 ScienceDirect PII URL 生成 Jina Reader URL。转换结果通过现有 RSS 字典和 AI 报告数据传递到展示层，由企业微信 Markdown 与 HTML 渲染器选择性追加备用链接；生成过程不发起网络请求。
+**架构：** 使用纯链接转换模块，只为 `rice-science` 的标准 ScienceDirect PII URL 和非空完整标题生成 Semantic Scholar 标题检索 URL。转换结果通过现有 RSS 字典和 AI 报告数据传递到展示层，由企业微信 Markdown 与 HTML 渲染器选择性追加备用链接；生成过程不发起网络请求。
 
 **技术栈：** Python 3.12、标准库 `urllib.parse`、`unittest`、TrendRadar 现有 Markdown/HTML 渲染器、Docker 容器内 `uv.lock` 环境。
 
@@ -17,11 +17,13 @@
 - 修改 `trendradar/__main__.py`：原始 RSS 条目转换时写入 `reader_url`。
 - 修改 `trendradar/core/analyzer.py`：非 AI RSS 统计保留 `reader_url`。
 - 修改 `trendradar/ai/filter_pipeline.py`：AI RSS 报告条目生成并保留 `reader_url`。
-- 修改 `trendradar/report/formatter.py`：企业微信标题格式追加备用阅读链接。
+- 修改 `trendradar/report/formatter.py`：企业微信标题格式追加备用检索链接。
 - 修改 `trendradar/notification/wework_pdf.py`：可选 PDF 简报模式的重点新闻展示备用链接。
 - 修改 `trendradar/report/html.py`：主 HTML 报告的 RSS 区域展示备用链接。
 - 修改 `trendradar/report/rss_html.py`：RSS 专用 HTML 报告展示备用链接。
 - 修改 `tests/test_wework_pdf.py`：验证可选 PDF 简报中的双链接。
+
+> **2026-07-30 修订：** 任务 1–4 记录首次 Jina Reader 方案的 TDD 实现历史。真实验收发现 Jina 首次返回 HTTP 401，重试的 HTTP 200 正文仍是 `Are you a robot?` 反爬页，不包含论文内容，因此该方案已失效。现行替代方案和验收步骤以任务 5 为准；旧代码片段与旧预期仅用于追溯，不得用于新实现。
 
 ### 任务 1：实现严格的备用链接生成器
 
@@ -567,17 +569,17 @@ git diff --check -- \
 
 预期：`git diff --check` 无输出；敏感信息扫描无匹配。
 
-- [ ] **步骤 4：抽查真实备用阅读 URL**
+- [ ] **步骤 4：抽查真实备用检索 URL**
 
 使用容器项目 `.venv` 请求测试文章：
 
 ```bash
 docker compose -f docker/docker-compose.yml exec -T trendradar \
   /app/.venv/bin/python -c \
-  'import requests; u="https://r.jina.ai/http://www.sciencedirect.com/science/article/pii/S1672630826000879"; s=requests.Session(); s.trust_env=False; r=s.get(u, timeout=(10,45)); print(r.status_code, len(r.text)); r.raise_for_status()'
+  'import requests; from urllib.parse import quote; t="Induction Effect of Chelerythrine on Apoptosis of Sf9 Cells: A Preliminary Investigation Based on Cell Morphology and Activity"; u="https://www.semanticscholar.org/search?q="+quote(t, safe=""); s=requests.Session(); s.trust_env=False; r=s.get(u, timeout=(10,45)); print(r.status_code, len(r.text), t in r.text); r.raise_for_status(); assert t in r.text'
 ```
 
-预期：HTTP 状态码为 `200`，文本长度大于 `1000`。
+预期：HTTP 状态码为 `200`，且响应包含目标论文完整标题。
 
 - [ ] **步骤 5：确认提交范围**
 
@@ -587,3 +589,46 @@ git log -4 --oneline
 ```
 
 预期：实现相关文件均已提交；原有 `index.html`、`output/` 和未纳入本功能的文档仍保持未暂存状态。
+
+### 任务 5：用 Semantic Scholar 标题检索替换失效的 Jina 入口
+
+**文件：**
+
+- 修改：`trendradar/utils/article_links.py`
+- 修改：`trendradar/__main__.py`
+- 修改：`trendradar/ai/filter_pipeline.py`
+- 修改：`trendradar/report/formatter.py`
+- 修改：`trendradar/notification/wework_pdf.py`
+- 修改：`trendradar/report/html.py`
+- 修改：`trendradar/report/rss_html.py`
+- 修改：`tests/test_rice_science_links.py`
+- 修改：`tests/test_wework_pdf.py`
+- 修改：设计文档和本计划
+
+- [ ] **步骤 1：先修改测试并确认 RED**
+
+覆盖标题 URL 编码、空标题、原始 RSS 和 AI 数据流传标题、全部渲染文案、缺失 `reader_url` 兼容，以及主 HTML 独立 RSS 分支的特殊字符 URL 转义。使用容器内 `/app/.venv` 运行目标测试，预期旧两参数函数、Jina URL 和「📖 备用阅读」断言失败。
+
+- [ ] **步骤 2：最小实现 Semantic Scholar 检索 URL**
+
+将纯函数签名更新为：
+
+```python
+def build_reader_url(source_id: str, url: str, title: str) -> str:
+```
+
+仅在来源、ScienceDirect 主机、PII 路径和非空标题全部校验通过时返回：
+
+```text
+https://www.semanticscholar.org/search?q=<完整标题的 URL 编码>
+```
+
+所有数据流调用传入对应标题。`reader_url` 仍不参与存储、去重、新增判断、排序或 AI prompt。
+
+- [ ] **步骤 3：更新展示文案并确认 GREEN**
+
+企业微信 Markdown、可选 PDF 预览、主 HTML RSS 区域、主 HTML 独立 RSS 区域和 RSS 专用 HTML 均使用「🔎 备用检索」。HTML URL 继续使用 `html_escape()` 并带 `target="_blank"`；缺少 `reader_url` 时只显示官方链接。
+
+- [ ] **步骤 4：完整验证**
+
+运行目标测试、全部 `unittest`、`tests/test_portable_deployment.sh`、`git diff --check`、敏感信息扫描，并用任务 4 步骤 4 的命令真实抽查 Semantic Scholar 检索页包含目标标题。

@@ -12,16 +12,19 @@ from trendradar.utils.article_links import build_reader_url
 
 
 class RiceScienceReaderUrlTests(unittest.TestCase):
-    def test_builds_reader_url_and_removes_tracking_query(self):
+    title = "Rice breeding & genetics"
+
+    def test_builds_title_search_url_and_removes_tracking_query(self):
         result = build_reader_url(
             "rice-science",
             "https://www.sciencedirect.com/science/article/pii/"
             "S1672630826000879?dgcid=rss_sd_all",
+            self.title,
         )
         self.assertEqual(
             result,
-            "https://r.jina.ai/http://www.sciencedirect.com/science/article/pii/"
-            "S1672630826000879",
+            "https://www.semanticscholar.org/search?q="
+            "Rice%20breeding%20%26%20genetics",
         )
 
     def test_rejects_other_feeds_hosts_and_paths(self):
@@ -29,6 +32,7 @@ class RiceScienceReaderUrlTests(unittest.TestCase):
             build_reader_url(
                 "molecular-plant",
                 "https://www.sciencedirect.com/science/article/pii/S1672630826000879",
+                self.title,
             ),
             "",
         )
@@ -36,6 +40,7 @@ class RiceScienceReaderUrlTests(unittest.TestCase):
             build_reader_url(
                 "rice-science",
                 "https://example.com/science/article/pii/S1672630826000879",
+                self.title,
             ),
             "",
         )
@@ -43,19 +48,29 @@ class RiceScienceReaderUrlTests(unittest.TestCase):
             build_reader_url(
                 "rice-science",
                 "https://www.sciencedirect.com/journal/rice-science",
+                self.title,
             ),
             "",
         )
 
+    def test_rejects_empty_or_whitespace_title(self):
+        url = (
+            "https://www.sciencedirect.com/science/article/pii/"
+            "S1672630826000879"
+        )
+        self.assertEqual(build_reader_url("rice-science", url, ""), "")
+        self.assertEqual(build_reader_url("rice-science", url, "   \n"), "")
+
 
 class RiceScienceReaderUrlPropagationTests(unittest.TestCase):
+    title = "Rice breeding & genetics"
     url = (
         "https://www.sciencedirect.com/science/article/pii/"
         "S1672630826000879?dgcid=rss_sd_all"
     )
     reader_url = (
-        "https://r.jina.ai/http://www.sciencedirect.com/science/article/pii/"
-        "S1672630826000879"
+        "https://www.semanticscholar.org/search?q="
+        "Rice%20breeding%20%26%20genetics"
     )
 
     def test_raw_rss_conversion_adds_reader_url(self):
@@ -71,7 +86,7 @@ class RiceScienceReaderUrlPropagationTests(unittest.TestCase):
             {
                 "rice-science": [
                     RSSItem(
-                        title="Test",
+                        title=self.title,
                         feed_id="rice-science",
                         url=self.url,
                     )
@@ -84,7 +99,7 @@ class RiceScienceReaderUrlPropagationTests(unittest.TestCase):
     def test_keyword_stats_preserve_reader_url(self):
         stats, _ = count_rss_frequency(
             [{
-                "title": "Rice breeding",
+                "title": self.title,
                 "feed_id": "rice-science",
                 "feed_name": "Rice Science",
                 "url": self.url,
@@ -115,7 +130,7 @@ class RiceScienceReaderUrlPropagationTests(unittest.TestCase):
         result = pipeline._build_filter_result(
             raw_results=[{
                 "tag": "水稻",
-                "title": "Rice breeding",
+                "title": self.title,
                 "source_id": "rice-science",
                 "source_name": "Rice Science",
                 "source_type": "rss",
@@ -138,8 +153,7 @@ class RiceScienceDualLinkRenderingTests(unittest.TestCase):
         "https://www.sciencedirect.com/science/article/pii/S1672630826000879"
     )
     reader_url = (
-        "https://r.jina.ai/http://www.sciencedirect.com/science/article/pii/"
-        "S1672630826000879"
+        "https://www.semanticscholar.org/search?q=Rice%20breeding"
     )
 
     def _title_data(self):
@@ -159,12 +173,14 @@ class RiceScienceDualLinkRenderingTests(unittest.TestCase):
     def test_wework_title_contains_official_and_reader_links(self):
         content = format_title_for_platform("wework", self._title_data())
         self.assertIn(f"[Rice breeding]({self.official_url})", content)
-        self.assertIn(f"[📖 备用阅读]({self.reader_url})", content)
+        self.assertIn(f"[🔎 备用检索]({self.reader_url})", content)
+        self.assertNotIn("备用阅读", content)
 
     def test_wework_without_reader_url_keeps_single_link(self):
         item = self._title_data()
         item["reader_url"] = ""
         content = format_title_for_platform("wework", item)
+        self.assertNotIn("备用检索", content)
         self.assertNotIn("备用阅读", content)
 
     def test_main_and_rss_html_contain_reader_link(self):
@@ -190,7 +206,8 @@ class RiceScienceDualLinkRenderingTests(unittest.TestCase):
             total_count=1,
         )
         for content in (report_html, rss_html):
-            self.assertIn("📖 备用阅读", content)
+            self.assertIn("🔎 备用检索", content)
+            self.assertNotIn("备用阅读", content)
             self.assertIn(self.reader_url, content)
 
     def test_rss_html_without_reader_url_keeps_single_link(self):
@@ -204,20 +221,46 @@ class RiceScienceDualLinkRenderingTests(unittest.TestCase):
             total_count=1,
         )
         self.assertIn("https://example.com/article", content)
+        self.assertNotIn("备用检索", content)
         self.assertNotIn("备用阅读", content)
 
-    def test_rss_html_escapes_reader_url(self):
-        content = render_rss_html_content(
+    def test_rss_html_and_main_standalone_escape_reader_url(self):
+        special_url = 'https://example.com/search?q=rice&year="2026"'
+        rss_html = render_rss_html_content(
             [{
                 "title": "Rice breeding",
                 "feed_id": "rice-science",
                 "feed_name": "Rice Science",
                 "url": self.official_url,
-                "reader_url": 'https://example.com/?a=1&b="x"',
+                "reader_url": special_url,
             }],
             total_count=1,
         )
-        self.assertIn(
-            "https://example.com/?a=1&amp;b=&quot;x&quot;",
-            content,
+        standalone_html = render_html_content(
+            {
+                "stats": [],
+                "new_titles": [],
+                "failed_ids": [],
+                "total_new_count": 0,
+            },
+            total_titles=1,
+            standalone_data={
+                "platforms": [],
+                "rss_feeds": [{
+                    "id": "rice-science",
+                    "name": "Rice Science",
+                    "items": [{
+                        "title": "Rice breeding",
+                        "url": self.official_url,
+                        "reader_url": special_url,
+                    }],
+                }],
+            },
         )
+        for content in (rss_html, standalone_html):
+            self.assertIn(
+                "https://example.com/search?q=rice&amp;year=&quot;2026&quot;",
+                content,
+            )
+            self.assertIn('target="_blank"', content)
+            self.assertIn("🔎 备用检索", content)

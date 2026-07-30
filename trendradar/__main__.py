@@ -1316,7 +1316,7 @@ class NewsAnalyzer:
                     "feed_id": feed_id,
                     "feed_name": id_to_name.get(feed_id, feed_id),
                     "url": item.url,
-                    "reader_url": build_reader_url(feed_id, item.url),
+                    "reader_url": build_reader_url(feed_id, item.url, item.title),
                     "published_at": item.published_at,
                     "summary": item.summary,
                     "author": item.author,

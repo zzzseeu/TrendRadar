@@ -78,8 +78,7 @@ class WeWorkPdfPreviewTests(unittest.TestCase):
             core_trends="育种行业关注点集中在种质创新、抗逆性与基因编辑监管。",
         )
         self.items[0]["reader_url"] = (
-            "https://r.jina.ai/http://www.sciencedirect.com/science/article/pii/"
-            "S1672630826000879"
+            "https://www.semanticscholar.org/search?q=Rice%20breeding"
         )
 
         preview = build_wework_pdf_preview(
@@ -97,7 +96,8 @@ class WeWorkPdfPreviewTests(unittest.TestCase):
             self.assertIn(f"重点新闻 {rank}", preview)
         self.assertNotIn("重点新闻 6", preview)
         self.assertIn("完整报告见 PDF 附件", preview)
-        self.assertIn("📖 备用阅读", preview)
+        self.assertIn("🔎 备用检索", preview)
+        self.assertNotIn("备用阅读", preview)
         self.assertIn(self.items[0]["reader_url"], preview)
         self.assertLessEqual(len(preview.encode("utf-8")), 4000)
 

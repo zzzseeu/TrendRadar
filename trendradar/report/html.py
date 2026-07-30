@@ -1942,7 +1942,7 @@ def render_html_content(
                 if reader_url:
                     rss_html += (
                         f' <a href="{html_escape(reader_url)}" target="_blank" '
-                        'class="rss-link">📖 备用阅读</a>'
+                        'class="rss-link">🔎 备用检索</a>'
                     )
 
                 ai_summary = " ".join(str(title_data.get("ai_summary", "")).split())
@@ -2210,7 +2210,7 @@ def render_html_content(
                 if reader_url:
                     standalone_html += (
                         f' <a href="{html_escape(reader_url)}" target="_blank" '
-                        'class="news-link">📖 备用阅读</a>'
+                        'class="news-link">🔎 备用检索</a>'
                     )
 
                 standalone_html += """

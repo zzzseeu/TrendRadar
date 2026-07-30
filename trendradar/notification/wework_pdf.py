@@ -119,7 +119,7 @@ def _render_preview(
             lines.append(f"{index}. {title}")
         reader_url = _clean_text(item.get("reader_url"))
         if reader_url:
-            lines.append(f"   [📖 备用阅读]({reader_url})")
+            lines.append(f"   [🔎 备用检索]({reader_url})")
         if source:
             lines.append(f"   来源：{source}")
         if summary_bytes > 0:

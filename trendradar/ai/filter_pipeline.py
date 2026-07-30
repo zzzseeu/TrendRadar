@@ -538,6 +538,7 @@ class AIFilterPipeline:
                 "reader_url": build_reader_url(
                     r.get("source_id", ""),
                     r.get("url", ""),
+                    title,
                 ),
                 "mobile_url": r.get("mobile_url", ""),
                 "rank": r.get("rank", 0),

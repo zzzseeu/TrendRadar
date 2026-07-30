@@ -379,7 +379,7 @@ def render_rss_html_content(
             if reader_url:
                 html += (
                     f' <a href="{html_escape(reader_url)}" target="_blank" '
-                    'class="rss-link">📖 备用阅读</a>'
+                    'class="rss-link">🔎 备用检索</a>'
                 )
 
             html += """

@@ -159,7 +159,7 @@ def format_title_for_platform(
         else:
             formatted_title = cleaned_title
         if reader_url:
-            formatted_title += f" [📖 备用阅读]({reader_url})"
+            formatted_title += f" [🔎 备用检索]({reader_url})"
 
         title_prefix = "🆕 " if title_data.get("is_new") else ""
 
