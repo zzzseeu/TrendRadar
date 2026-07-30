@@ -96,6 +96,7 @@ def format_title_for_platform(
     )
 
     link_url = title_data["mobile_url"] or title_data["url"]
+    reader_url = title_data.get("reader_url", "")
     cleaned_title = clean_title(title_data["title"])
     if not cleaned_title:
         cleaned_title = link_url or title_data["url"] or ""
@@ -157,6 +158,8 @@ def format_title_for_platform(
             formatted_title = f"[{cleaned_title}]({link_url})"
         else:
             formatted_title = cleaned_title
+        if reader_url:
+            formatted_title += f" [📖 备用阅读]({reader_url})"
 
         title_prefix = "🆕 " if title_data.get("is_new") else ""
 

@@ -1938,6 +1938,12 @@ def render_html_content(
                     rss_html += f'<a href="{escaped_url}" target="_blank" class="rss-link">{escaped_title}</a>'
                 else:
                     rss_html += escaped_title
+                reader_url = title_data.get("reader_url", "")
+                if reader_url:
+                    rss_html += (
+                        f' <a href="{html_escape(reader_url)}" target="_blank" '
+                        'class="rss-link">📖 备用阅读</a>'
+                    )
 
                 ai_summary = " ".join(str(title_data.get("ai_summary", "")).split())
                 if ai_summary:
@@ -2200,6 +2206,12 @@ def render_html_content(
                     standalone_html += f'<a href="{escaped_url}" target="_blank" class="news-link">{escaped_title}</a>'
                 else:
                     standalone_html += escaped_title
+                reader_url = item.get("reader_url", "")
+                if reader_url:
+                    standalone_html += (
+                        f' <a href="{html_escape(reader_url)}" target="_blank" '
+                        'class="news-link">📖 备用阅读</a>'
+                    )
 
                 standalone_html += """
                                 </div>

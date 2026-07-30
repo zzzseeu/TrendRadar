@@ -375,6 +375,12 @@ def render_rss_html_content(
                 html += f'<a href="{escaped_url}" target="_blank" class="rss-link">{escaped_title}</a>'
             else:
                 html += escaped_title
+            reader_url = item.get("reader_url", "")
+            if reader_url:
+                html += (
+                    f' <a href="{html_escape(reader_url)}" target="_blank" '
+                    'class="rss-link">📖 备用阅读</a>'
+                )
 
             html += """
                         </div>"""
