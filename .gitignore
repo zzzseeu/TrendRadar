@@ -3,3 +3,6 @@
 
 # Local Docker credentials and deployment overrides
 docker/.env
+
+# Local isolated development worktrees
+.worktrees/
