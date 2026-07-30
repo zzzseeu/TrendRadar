@@ -23,7 +23,7 @@ def build_reader_url(source_id: str, url: str, title: str) -> str:
         return ""
     if not parsed.path.startswith(PII_PATH_PREFIX):
         return ""
-    pii = parsed.path[len(PII_PATH_PREFIX):].strip("/")
-    if not pii or "/" in pii or not pii.isalnum():
+    pii = parsed.path[len(PII_PATH_PREFIX):]
+    if not pii or not pii.isascii() or not pii.isalnum():
         return ""
     return f"{SEMANTIC_SCHOLAR_SEARCH_PREFIX}{quote(search_title, safe='')}"

@@ -626,6 +626,7 @@ class NewsAnalyzer:
                     feed_items_map[feed_id]["items"].append({
                         "title": item.get("title", ""),
                         "url": item.get("url", ""),
+                        "reader_url": item.get("reader_url", ""),
                         "published_at": item.get("published_at", ""),
                         "author": item.get("author", ""),
                     })

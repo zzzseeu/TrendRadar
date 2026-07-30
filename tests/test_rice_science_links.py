@@ -61,6 +61,19 @@ class RiceScienceReaderUrlTests(unittest.TestCase):
         self.assertEqual(build_reader_url("rice-science", url, ""), "")
         self.assertEqual(build_reader_url("rice-science", url, "   \n"), "")
 
+    def test_rejects_noncanonical_or_non_ascii_pii(self):
+        invalid_urls = [
+            "https://www.sciencedirect.com/science/article/pii//S1672630826000879",
+            "https://www.sciencedirect.com/science/article/pii/S1672630826000879//",
+            "https://www.sciencedirect.com/science/article/pii/水稻2026",
+        ]
+        for url in invalid_urls:
+            with self.subTest(url=url):
+                self.assertEqual(
+                    build_reader_url("rice-science", url, self.title),
+                    "",
+                )
+
 
 class RiceScienceReaderUrlPropagationTests(unittest.TestCase):
     title = "Rice breeding & genetics"
@@ -264,3 +277,51 @@ class RiceScienceDualLinkRenderingTests(unittest.TestCase):
             )
             self.assertIn('target="_blank"', content)
             self.assertIn("🔎 备用检索", content)
+
+    def test_prepared_standalone_rss_preserves_and_renders_reader_url(self):
+        special_url = 'https://example.com/search?q=rice&year="2026"'
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={
+                "DISPLAY": {
+                    "STANDALONE": {
+                        "PLATFORMS": [],
+                        "RSS_FEEDS": ["rice-science"],
+                        "MAX_ITEMS": 20,
+                    }
+                }
+            }
+        )
+        standalone_data = analyzer._prepare_standalone_data(
+            {},
+            {},
+            rss_items=[{
+                "title": "Rice breeding",
+                "feed_id": "rice-science",
+                "feed_name": "Rice Science",
+                "url": self.official_url,
+                "reader_url": special_url,
+                "published_at": "",
+                "author": "",
+            }],
+        )
+
+        prepared_item = standalone_data["rss_feeds"][0]["items"][0]
+        self.assertEqual(prepared_item["reader_url"], special_url)
+
+        content = render_html_content(
+            {
+                "stats": [],
+                "new_titles": [],
+                "failed_ids": [],
+                "total_new_count": 0,
+            },
+            total_titles=1,
+            standalone_data=standalone_data,
+        )
+        self.assertIn(
+            "https://example.com/search?q=rice&amp;year=&quot;2026&quot;",
+            content,
+        )
+        self.assertIn('target="_blank"', content)
+        self.assertIn("🔎 备用检索", content)
