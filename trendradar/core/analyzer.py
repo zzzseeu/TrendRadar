@@ -650,6 +650,7 @@ def count_rss_frequency(
                     "ranks": [rank],
                     "rank_threshold": rank_threshold,
                     "url": url,
+                    "reader_url": item.get("reader_url", ""),
                     "mobile_url": "",
                     "is_new": is_new,
                 }

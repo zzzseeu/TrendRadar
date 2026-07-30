@@ -18,6 +18,7 @@ from trendradar.core import load_config
 from trendradar.core.analyzer import convert_keyword_stats_to_platform_stats
 from trendradar.crawler import DataFetcher
 from trendradar.storage import convert_crawl_results_to_news_data
+from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import DEFAULT_TIMEZONE, is_within_days, calculate_days_old
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.core.scheduler import ResolvedSchedule
@@ -1315,6 +1316,7 @@ class NewsAnalyzer:
                     "feed_id": feed_id,
                     "feed_name": id_to_name.get(feed_id, feed_id),
                     "url": item.url,
+                    "reader_url": build_reader_url(feed_id, item.url),
                     "published_at": item.published_at,
                     "summary": item.summary,
                     "author": item.author,

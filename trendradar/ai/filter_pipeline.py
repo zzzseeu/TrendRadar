@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from trendradar.ai.filter import AIFilter, AIFilterResult
 from trendradar.crawler.article_content import ArticleContentFetcher
+from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import (
     DEFAULT_TIMEZONE,
     convert_time_for_display,
@@ -534,6 +535,10 @@ class AIFilterPipeline:
                 "source_id": r.get("source_id", ""),
                 "source_name": r.get("source_name", ""),
                 "url": r.get("url", ""),
+                "reader_url": build_reader_url(
+                    r.get("source_id", ""),
+                    r.get("url", ""),
+                ),
                 "mobile_url": r.get("mobile_url", ""),
                 "rank": r.get("rank", 0),
                 "ranks": r.get("ranks", []),
@@ -714,6 +719,7 @@ class AIFilterPipeline:
                     "title": item.get("title", ""),
                     "source_name": item.get("source_name", ""),
                     "url": item.get("url", ""),
+                    "reader_url": item.get("reader_url", ""),
                     "mobile_url": item.get("mobile_url", ""),
                     "ranks": item.get("ranks", []),
                     "rank_threshold": self._rank_threshold,
