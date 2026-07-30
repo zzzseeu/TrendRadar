@@ -15,6 +15,8 @@ from urllib.parse import urlsplit
 
 import requests
 
+from trendradar.crawler.http import DirectFirstSession
+
 
 _BLOCKED_TAGS = {
     "aside", "button", "footer", "form", "header", "menu", "nav",
@@ -176,14 +178,15 @@ class ArticleContentFetcher:
         self.timeout = max(1, int(timeout))
         self.max_content_chars = max(500, int(max_content_chars))
         self.min_body_chars = max(100, int(min_body_chars))
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "TrendRadar/6.10 Article Reader",
-            "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        })
-        if use_proxy and proxy_url:
-            self.session.proxies.update({"http": proxy_url, "https": proxy_url})
+        self.session = DirectFirstSession(
+            headers={
+                "User-Agent": "TrendRadar/6.10 Article Reader",
+                "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
+            use_proxy=use_proxy,
+            proxy_url=proxy_url,
+        )
 
     def get(self, item: Dict) -> ArticleContent:
         title = _clean_text(str(item.get("title", "")))

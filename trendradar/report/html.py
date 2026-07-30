@@ -1440,6 +1440,31 @@ def render_html_content(
             body.dark-mode .badge-new {
                 background: linear-gradient(135deg, #be185d, #9333ea);
             }
+
+            @media print {
+                body {
+                    padding: 0;
+                    background: #fff;
+                }
+                .container {
+                    max-width: none;
+                    box-shadow: none;
+                }
+                .save-buttons,
+                .search-bar,
+                .reading-progress,
+                .fab-bar,
+                .toggle-wide-btn,
+                .tab-bar-wrapper,
+                .standalone-tab-bar {
+                    display: none !important;
+                }
+                .news-item,
+                .new-item,
+                .ai-analysis-section {
+                    break-inside: avoid;
+                }
+            }
         </style>
     </head>
     <body>

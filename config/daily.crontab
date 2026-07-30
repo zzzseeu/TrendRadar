@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+TZ=Asia/Shanghai
+
+# 每天北京时间 11:30，抓取并推送截至执行时最近 24 小时的新闻。
+30 11 * * * cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1

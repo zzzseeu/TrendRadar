@@ -314,7 +314,7 @@ class NotificationDispatcher:
         if self.config.get("WEWORK_WEBHOOK_URL"):
             results["wework"] = self._send_wework(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, html_file_path
             )
 
         # Telegram（需要配对验证）
@@ -511,6 +511,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        html_file_path: Optional[str] = None,
     ) -> bool:
         """发送到企业微信（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
         rd, ri, rn, ai, sd = self._apply_display_regions(
@@ -537,6 +538,9 @@ class NotificationDispatcher:
                 ai_analysis=ai,
                 display_regions=display_regions or {},
                 standalone_data=sd,
+                html_file_path=html_file_path,
+                pdf_enabled=self.config.get("WEWORK_PDF_ENABLED", False),
+                pdf_top_n=self.config.get("WEWORK_PDF_TOP_N", 5),
             ),
         )
 
@@ -830,4 +834,3 @@ class NotificationDispatcher:
             custom_smtp_port=self.config.get("EMAIL_SMTP_PORT", ""),
             get_time_func=self.get_time_func,
         )
-

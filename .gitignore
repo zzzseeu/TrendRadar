@@ -1,2 +1,5 @@
 # Python bytecode
 *.pyc
+
+# Local Docker credentials and deployment overrides
+docker/.env

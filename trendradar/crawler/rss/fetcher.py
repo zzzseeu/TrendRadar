@@ -12,6 +12,7 @@ from typing import List, Dict, Optional, Tuple
 
 import requests
 
+from trendradar.crawler.http import DirectFirstSession
 from .parser import RSSParser
 from trendradar.storage.base import RSSItem, RSSData
 from trendradar.utils.time import get_configured_time, is_within_days, DEFAULT_TIMEZONE
@@ -69,22 +70,17 @@ class RSSFetcher:
         self.parser = RSSParser()
         self.session = self._create_session()
 
-    def _create_session(self) -> requests.Session:
+    def _create_session(self) -> DirectFirstSession:
         """创建请求会话"""
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "TrendRadar/2.0 RSS Reader (https://github.com/trendradar)",
-            "Accept": "application/feed+json, application/json, application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
-            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        })
-
-        if self.use_proxy and self.proxy_url:
-            session.proxies = {
-                "http": self.proxy_url,
-                "https": self.proxy_url,
-            }
-
-        return session
+        return DirectFirstSession(
+            headers={
+                "User-Agent": "TrendRadar/2.0 RSS Reader (https://github.com/trendradar)",
+                "Accept": "application/feed+json, application/json, application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
+            use_proxy=self.use_proxy,
+            proxy_url=self.proxy_url,
+        )
 
     def fetch_feed(self, feed: RSSFeedConfig) -> Tuple[List[RSSItem], Optional[str]]:
         """

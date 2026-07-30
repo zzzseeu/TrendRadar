@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+assert_contains() {
+    local file="$1"
+    local expected="$2"
+    if ! grep -Fq -- "${expected}" "${file}"; then
+        echo "FAIL: ${file} 缺少: ${expected}" >&2
+        exit 1
+    fi
+}
+
+assert_not_contains() {
+    local file="$1"
+    local unexpected="$2"
+    if grep -Fq -- "${unexpected}" "${file}"; then
+        echo "FAIL: ${file} 仍包含: ${unexpected}" >&2
+        exit 1
+    fi
+}
+
+SCHEDULER="${PROJECT_ROOT}/scripts/start_daily_scheduler.sh"
+CRONTAB="${PROJECT_ROOT}/config/daily.crontab"
+COMPOSE="${PROJECT_ROOT}/docker/docker-compose.yml"
+DOCKER_ENV_EXAMPLE="${PROJECT_ROOT}/docker/.env.example"
+GITIGNORE="${PROJECT_ROOT}/.gitignore"
+CONFIG="${PROJECT_ROOT}/config/config.yaml"
+
+bash -n "${SCHEDULER}"
+assert_not_contains "${SCHEDULER}" "/share/"
+assert_not_contains "${CRONTAB}" "/share/"
+assert_contains "${SCHEDULER}" 'BASH_SOURCE[0]'
+assert_contains "${SCHEDULER}" 'command -v supercronic'
+assert_contains "${SCHEDULER}" 'command -v uv'
+assert_contains "${CRONTAB}" '"$PROJECT_DIR"'
+assert_contains "${CRONTAB}" '"$UV_BIN"'
+assert_contains "${CRONTAB}" '30 11 * * *'
+assert_contains "${SCHEDULER}" '每天 11:30'
+assert_contains "${COMPOSE}" 'dockerfile: docker/Dockerfile'
+assert_not_contains "${COMPOSE}" 'image: wantcat/trendradar:latest'
+assert_contains "${COMPOSE}" 'HTTP_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'HTTPS_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'http_proxy: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'https_proxy: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'HTTP_PROXY=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'HTTPS_PROXY=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'http_proxy=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'https_proxy=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'NEWS_PROXY_URL=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE}" 'NO_PROXY=${DOCKER_NO_PROXY:-apigw.hnaicc.cn,qyapi.weixin.qq.com}'
+assert_contains "${COMPOSE}" 'no_proxy=${DOCKER_NO_PROXY:-apigw.hnaicc.cn,qyapi.weixin.qq.com}'
+assert_contains "${COMPOSE}" '"host.docker.internal:host-gateway"'
+assert_contains "${GITIGNORE}" 'docker/.env'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'DOCKER_PROXY_URL=http://host.docker.internal:7892'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'DOCKER_NO_PROXY=apigw.hnaicc.cn,qyapi.weixin.qq.com'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'CRON_SCHEDULE="30 11 * * *"'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'IMMEDIATE_RUN=false'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'WEWORK_WEBHOOK_URL='
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'WEWORK_PDF_ENABLED=false'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'WEWORK_PDF_TOP_N=5'
+assert_contains "${COMPOSE}" 'WEWORK_PDF_ENABLED=${WEWORK_PDF_ENABLED:-false}'
+assert_contains "${COMPOSE}" 'WEWORK_PDF_TOP_N=${WEWORK_PDF_TOP_N:-5}'
+assert_contains "${PROJECT_ROOT}/docker/Dockerfile" 'chromium fonts-noto-cjk'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'AI_API_KEY='
+assert_contains "${CONFIG}" '  api_key: ""'
+assert_contains "${CONFIG}" '  model: "openai//data/minimax-2.5-fp8"'
+assert_contains "${CONFIG}" '  fallback_models: ["openai//models/DeepSeek-R1-G2-static"]'
+
+if grep -Eq '^(WEWORK_WEBHOOK_URL|AI_API_KEY|EMAIL_PASSWORD|S3_SECRET_ACCESS_KEY)=.+' \
+    "${DOCKER_ENV_EXAMPLE}"; then
+    echo "FAIL: ${DOCKER_ENV_EXAMPLE} 包含非空敏感值" >&2
+    exit 1
+fi
+
+if git -C "${PROJECT_ROOT}" ls-files --error-unmatch docker/.env >/dev/null 2>&1; then
+    echo "FAIL: docker/.env 仍被 Git 跟踪" >&2
+    exit 1
+fi
+
+if [[ -f "${PROJECT_ROOT}/docker/.env" ]]; then
+    ai_model="$(
+        sed -n 's/^AI_MODEL=//p' "${PROJECT_ROOT}/docker/.env" | tail -n 1
+    )"
+    ai_model="${ai_model#\"}"
+    ai_model="${ai_model%\"}"
+    if [[ -n "${ai_model}" && ! "${ai_model}" =~ ^[[:alnum:]_.-]+/.+ ]]; then
+        echo "FAIL: docker/.env 的 AI_MODEL 缺少 LiteLLM Provider 前缀" >&2
+        exit 1
+    fi
+fi
+
+echo "PASS: 本地部署路径可移植性检查通过"

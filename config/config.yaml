@@ -120,7 +120,7 @@ rss:
   freshness_filter:
     enabled: true                     # 是否启用新鲜度过滤（true=启用, false=关闭）
 
-    max_age_days: 7                   # 最大文章年龄（天）
+    max_age_days: 1                   # 最大文章年龄（天）
                                       # - 正整数：只推送 N 天内的文章
                                       # - 0：禁用过滤，推送所有文章
 
@@ -134,21 +134,21 @@ rss:
       url: "https://hnrss.org/frontpage"
       enabled: false                  # 当前仅监控育种相关来源
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "ruanyifeng"
       name: "阮一峰的网络日志"
       url: "http://www.ruanyifeng.com/blog/atom.xml"
       enabled: false                  # 禁用
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
      
     - id: "yahoo-finance"
       name: "雅虎财经"
       url: "https://finance.yahoo.com/news/rssindex"
       enabled: false                  # 当前仅监控育种相关来源
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "irri-news"
       name: "IRRI News"
@@ -158,75 +158,75 @@ rss:
       # 解析后保留的仍是 www.irri.org 官方文章链接。
       fetch_url: "https://www-irri-org.translate.goog/news-and-events/news?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     # ── 国际期刊与预印本 ──────────────────────────────────────
     - id: "nature-plants"
       name: "Nature Plants"
       url: "https://www.nature.com/nplants.rss"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "nature-genetics"
       name: "Nature Genetics"
       url: "https://www.nature.com/ng.rss"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "nature-biotechnology"
       name: "Nature Biotechnology"
       url: "https://www.nature.com/nbt.rss"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "science"
       name: "Science"
       url: "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "molecular-plant"
       name: "Molecular Plant"
       url: "https://rss.sciencedirect.com/publication/science/16742052"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "plant-communications"
       name: "Plant Communications"
       url: "https://rss.sciencedirect.com/publication/science/25903462"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "rice-science"
       name: "Rice Science"
       url: "https://rss.sciencedirect.com/publication/science/16726308"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "crop-journal"
       name: "The Crop Journal"
       url: "https://rss.sciencedirect.com/publication/science/22145141"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "biorxiv-plant-biology"
       name: "bioRxiv Plant Biology"
       url: "https://connect.biorxiv.org/biorxiv_xml.php?subject=plant_biology"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     # ── 育种数据库动态 ────────────────────────────────────────
     - id: "gramene-news"
       name: "Gramene News"
       url: "https://news.gramene.org/rss.xml"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "ensembl-news"
       name: "Ensembl News"
       url: "https://www.ensembl.info/feed/"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     # ── 国内水稻与作物育种科研机构 ────────────────────────────
     - id: "cnrri-research"
@@ -234,14 +234,14 @@ rss:
       url: "https://cnrri.caas.cn/kyjz/index.htm"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "hzau-crop-lab"
       name: "华中农大作物遗传改良实验室"
       url: "https://croplab.hzau.edu.cn/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "cemps-research"
       name: "中科院分子植物卓越中心科研进展"
@@ -249,14 +249,14 @@ rss:
       source_type: "web_news"
       fetch_url: "https://cemps.cas.cn/kyjz/kyjz{year}/"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "caas-crop-research"
       name: "中国农科院作科所科研进展"
       url: "https://ics.caas.cn/xwdt/kyjz1/index.htm"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     # ── 种业政策与生物技术监管 ────────────────────────────────
     - id: "moa-seed-news"
@@ -264,21 +264,21 @@ rss:
       url: "https://zys.moa.gov.cn/gzdt/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "moa-seed-notices"
       name: "农业农村部种业管理司公示公告"
       url: "https://zys.moa.gov.cn/gsgg/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "moa-seed-policy"
       name: "农业农村部种业管理司政策文件"
       url: "https://zys.moa.gov.cn/zcwj/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "aphis-biotech"
       name: "USDA APHIS Biotechnology"
@@ -287,14 +287,14 @@ rss:
       # APHIS 主站在当前出口连接不稳定，代理只用于读取，文章链接会还原为官方域名。
       fetch_url: "https://www-aphis-usda-gov.translate.goog/biotechnology?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "eu-plants-policy"
       name: "欧盟植物与 NGT 政策"
       url: "https://food.ec.europa.eu/plants_en"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "cgiar-news"
       name: "CGIAR News"
@@ -303,7 +303,7 @@ rss:
       # CGIAR 的直接请求返回 403，代理只用于读取，文章链接会还原为官方域名。
       fetch_url: "https://www-cgiar-org.translate.goog/news?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     # ── 种业企业（仍需同时命中育种技术词，避免财报和人事消息） ──
     - id: "winall-news"
@@ -311,14 +311,14 @@ rss:
       url: "https://www.winallseed.com/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "syngenta-news"
       name: "Syngenta Group Newsroom"
       url: "https://www.syngentagroup.com/newsroom"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     - id: "corteva-news"
       name: "Corteva Media Center"
@@ -326,7 +326,7 @@ rss:
       source_type: "corteva_news"
       fetch_url: "https://www.corteva.com/content/corteva/corporate/our-homepage/resources/media-center/jcr:content/root/responsivegrid/navheadertabs/News-%26-Media/columncontrol/8-4-col-1/articlefilter.mediacenter.json"
       max_items: 30
-      max_age_days: 7
+      max_age_days: 1
 
     # 自定义源示例
     # - id: "custom-feed"
@@ -472,6 +472,8 @@ notification:
     wework:
       webhook_url: ""                 # 企业微信机器人 webhook URL
       msg_type: "text"                # 消息类型：markdown(群机器人) | text(个人微信应用)
+      pdf_enabled: false              # 群机器人模式：发送简短摘要和完整 PDF 附件
+      pdf_top_n: 5                    # 摘要中展示的重点新闻数量（1-10）
 
     telegram:
       bot_token: ""                   # Telegram Bot Token
@@ -561,11 +563,11 @@ ai:
   # 完整列表: https://docs.litellm.ai/docs/providers
   # 如果你对于看英文文档比较头疼，那么可以点击页面右下角的 【Ask AI】 ,用中文询问怎么配置
 
-  model: "deepseek/deepseek-v4-flash"
+  model: "openai//data/minimax-2.5-fp8"
 
-  api_key: ""                       # API Key（建议使用环境变量 AI_API_KEY）
+  api_key: ""
   
-  api_base: ""                      # 自定义 API 地址（可选，绝大多数情况留空即可）
+  api_base: "https://apigw.hnaicc.cn:18880/v1"                      # 自定义 API 地址（可选，绝大多数情况留空即可）
                                     #
                                     # ❓ 什么时候需要填？
                                     #    当你使用的 AI 服务商不在上方支持列表中时。
@@ -595,7 +597,7 @@ ai:
                                     # 注意：如果 API 不支持此参数(报 HTTP 400)，请设为 0 以禁用发送
   # 高级选项
   num_retries: 1                    # 失败重试次数
-  fallback_models: []               # 备用模型列表（可选）
+  fallback_models: ["openai//models/DeepSeek-R1-G2-static"]        # 备用模型列表（可选）
                                     # 示例: ["openai/gpt-4o-mini", "openai/deepseek-ai/DeepSeek-V3"]
 
   # 额外参数（一般无需修改，删掉 # 号即可启用）

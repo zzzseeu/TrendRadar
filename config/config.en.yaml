@@ -275,6 +275,8 @@ notification:
     wework:
       webhook_url: ""                 # WeCom (Enterprise WeChat) bot webhook URL
       msg_type: "markdown"            # Message type: markdown (group bot) | text (personal WeCom app)
+      pdf_enabled: false              # Group bot: send a brief summary plus full PDF attachment
+      pdf_top_n: 5                    # Number of highlighted stories in the summary (1-10)
 
     telegram:
       bot_token: ""                   # Telegram Bot Token
