@@ -17,7 +17,9 @@ from trendradar import __version__
 from trendradar.core import load_config
 from trendradar.core.analyzer import convert_keyword_stats_to_platform_stats
 from trendradar.crawler import DataFetcher
+from trendradar.crawler.news_search import AgriculturalNewsSearch, canonicalize_url
 from trendradar.storage import convert_crawl_results_to_news_data
+from trendradar.storage.base import RSSItem
 from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import DEFAULT_TIMEZONE, is_within_days, calculate_days_old
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
@@ -25,6 +27,38 @@ from trendradar.core.scheduler import ResolvedSchedule
 from trendradar.commands import check_all_versions, run_doctor, run_test_notification, handle_status_commands
 from trendradar.commands.version import _fetch_remote_version, _parse_version
 
+
+
+SEARCH_FEED_ID = "agri-breeding-search"
+SEARCH_FEED_NAME = "农业育种热点搜索"
+
+
+def merge_news_search_into_rss(rss_data, search_result) -> None:
+    """Merge discovered breeding hotspots into an isolated synthetic RSS feed."""
+    if not search_result.items:
+        return
+
+    rss_data.id_to_name[SEARCH_FEED_ID] = SEARCH_FEED_NAME
+    rss_data.items[SEARCH_FEED_ID] = [
+        RSSItem(
+            title=item.title,
+            feed_id=SEARCH_FEED_ID,
+            feed_name=SEARCH_FEED_NAME,
+            url=item.url,
+            guid=canonicalize_url(item.url),
+            published_at=item.published_at,
+            summary=item.summary,
+            author=item.publisher,
+            source_count=item.source_count,
+            pre_hot_score=item.pre_hot_score,
+            search_topic=item.topic,
+            search_providers=",".join(sorted(item.providers)),
+            crawl_time=rss_data.crawl_time,
+            first_time=rss_data.crawl_time,
+            last_time=rss_data.crawl_time,
+        )
+        for item in search_result.items
+    ]
 
 
 # === 主分析器 ===
@@ -1072,6 +1106,29 @@ class NewsAnalyzer:
 
             self._rss_source_total = len(feeds)
             self._rss_source_failed = len(rss_data.failed_ids)
+
+            news_search_config = rss_config.get("NEWS_SEARCH", {})
+            if news_search_config.get("ENABLED", False):
+                try:
+                    news_search = AgriculturalNewsSearch(
+                        topics=news_search_config.get("TOPICS", []),
+                        max_results_per_provider=news_search_config.get(
+                            "MAX_RESULTS_PER_PROVIDER", 50
+                        ),
+                        similarity_threshold=news_search_config.get(
+                            "SIMILARITY_THRESHOLD", 0.86
+                        ),
+                        authority_domains=news_search_config.get(
+                            "AUTHORITY_DOMAINS", []
+                        ),
+                    )
+                    search_result = news_search.search()
+                    if search_result.failed_providers:
+                        failed = ", ".join(search_result.failed_providers)
+                        print(f"[新闻搜索] 部分来源失败: {failed}")
+                    merge_news_search_into_rss(rss_data, search_result)
+                except Exception as e:
+                    print(f"[新闻搜索] 搜索失败，继续使用固定 RSS: {e}")
 
             # 保存到存储后端
             if self.storage_manager.save_rss_data(rss_data):
