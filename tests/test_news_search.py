@@ -41,6 +41,20 @@ class ProviderParsingTests(unittest.TestCase):
         self.assertEqual(article.topic, "genomic-breeding")
         self.assertEqual(article.providers, {"gdelt"})
 
+    def test_gdelt_normalizes_language_and_publisher_domain(self):
+        payload = {"articles": [{
+            "title": "Wheat update",
+            "url": "https://www.reuters.com/wheat",
+            "domain": "WWW.Reuters.COM",
+            "language": "English",
+            "seendate": "20260731T080000Z",
+        }]}
+
+        article = GDELTClient().parse(payload, "genomic-breeding")[0]
+
+        self.assertEqual(article.language, "en")
+        self.assertEqual(article.publisher_domain, "reuters.com")
+
     def test_gdelt_skips_incomplete_items_and_parses_iso_timestamp(self):
         payload = {"articles": [
             {"title": "Missing URL", "seendate": "20260731T080000Z"},
@@ -76,6 +90,15 @@ class ProviderParsingTests(unittest.TestCase):
         self.assertTrue(article.published_at.endswith("+00:00"))
         self.assertEqual(article.url, "https://news.google.com/rss/articles/example")
         self.assertEqual(article.providers, {"google_news"})
+
+    def test_google_rss_uses_source_domain_and_normalized_language(self):
+        content = GOOGLE_RSS.replace("https://example.cn", "https://www.reuters.com")
+
+        article = GoogleNewsRSSClient().parse(content, "gene-editing", "zh")[0]
+
+        self.assertEqual(article.language, "zh")
+        self.assertEqual(article.publisher_domain, "reuters.com")
+        self.assertEqual(article.url, "https://news.google.com/rss/articles/example")
 
     def test_google_rss_skips_title_empty_after_source_suffix_removal(self):
         content = GOOGLE_RSS.replace(
@@ -170,16 +193,20 @@ def article(
     publisher: str = "Example News",
     language: str = "en",
     providers: set[str] | None = None,
+    publisher_domain: str = "",
 ) -> SearchArticle:
-    return SearchArticle(
-        title=title,
-        url=url,
-        published_at=published_at,
-        publisher=publisher,
-        language=language,
-        topic="gene-editing",
-        providers=providers or {"gdelt"},
-    )
+    values = {
+        "title": title,
+        "url": url,
+        "published_at": published_at,
+        "publisher": publisher,
+        "language": language,
+        "topic": "gene-editing",
+        "providers": providers or {"gdelt"},
+    }
+    if publisher_domain:
+        values["publisher_domain"] = publisher_domain
+    return SearchArticle(**values)
 
 
 class SearchAggregationTests(unittest.TestCase):
@@ -216,6 +243,7 @@ class SearchAggregationTests(unittest.TestCase):
                 "2026-07-31T12:00:00+00:00",
                 url="https://www.reuters.com/world/rice",
                 publisher="Reuters",
+                publisher_domain="reuters.com",
                 providers={"google_news"},
             ),
         ])
@@ -243,11 +271,134 @@ class SearchAggregationTests(unittest.TestCase):
                 "2026-07-31T03:00:00+00:00",
                 url="https://other.example/rice",
                 publisher="Other News",
+                publisher_domain="other.example",
                 providers={"google_news"},
             ),
         ])
 
         self.assertEqual(result[0].pre_hot_score, 0.7333)
+
+    def test_merges_english_provider_labels_and_deduplicates_media_domain(self):
+        result = self.coordinator.aggregate([
+            article(
+                "Rice gene editing advances",
+                "2026-07-31T14:00:00+00:00",
+                url="https://www.reuters.com/rice",
+                publisher="Reuters",
+                publisher_domain="reuters.com",
+                language="English",
+                providers={"gdelt"},
+            ),
+            article(
+                "Rice gene-editing advances",
+                "2026-07-31T13:00:00+00:00",
+                url="https://news.google.com/rss/articles/reuters-rice",
+                publisher="Reuters",
+                publisher_domain="www.reuters.com",
+                language="en",
+                providers={"google_news"},
+            ),
+        ])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].source_count, 1)
+        self.assertEqual(result[0].publisher_domain, "reuters.com")
+
+    def test_merges_chinese_provider_labels(self):
+        result = self.coordinator.aggregate([
+            article(
+                "水稻基因编辑取得新进展",
+                "2026-07-31T14:00:00+00:00",
+                language="Chinese",
+            ),
+            article(
+                "水稻基因编辑取得新进展！",
+                "2026-07-31T13:00:00+00:00",
+                url="https://other.example/rice",
+                language="zh",
+                publisher="Other News",
+                publisher_domain="other.example",
+                providers={"google_news"},
+            ),
+        ])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].language, "zh")
+
+    def test_keeps_google_jump_link_when_its_publisher_is_authoritative(self):
+        result = self.coordinator.aggregate([
+            article(
+                "Rice breeding advances",
+                "2026-07-31T14:00:00+00:00",
+                url="https://example.com/rice",
+                publisher="Example News",
+                publisher_domain="example.com",
+            ),
+            article(
+                "Rice breeding advances!",
+                "2026-07-31T13:00:00+00:00",
+                url="https://news.google.com/rss/articles/reuters-rice",
+                publisher="Reuters",
+                publisher_domain="reuters.com",
+                providers={"google_news"},
+            ),
+        ])
+
+        self.assertEqual(result[0].url, "https://news.google.com/rss/articles/reuters-rice")
+        self.assertEqual(result[0].publisher_domain, "reuters.com")
+
+    def test_does_not_merge_title_similarity_across_languages(self):
+        result = self.coordinator.aggregate([
+            article("Rice breeding update", "2026-07-31T14:00:00+00:00", language="en"),
+            article(
+                "Rice breeding update",
+                "2026-07-31T14:00:00+00:00",
+                url="https://example.com/translated",
+                language="zh",
+            ),
+        ])
+
+        self.assertEqual(len(result), 2)
+
+    def test_merges_canonical_urls_even_when_languages_differ(self):
+        result = self.coordinator.aggregate([
+            article(
+                "Rice breeding update",
+                "2026-07-31T14:00:00+00:00",
+                url="https://example.com/rice/?utm_source=gdelt",
+                language="en",
+            ),
+            article(
+                "水稻育种进展",
+                "2026-07-31T13:00:00+00:00",
+                url="https://example.com/rice#google",
+                language="zh",
+                providers={"google_news"},
+            ),
+        ])
+
+        self.assertEqual(len(result), 1)
+
+    def test_accepts_exactly_zero_and_twenty_four_hour_ages(self):
+        result = self.coordinator.aggregate([
+            article("new", "2026-07-31T15:00:00+00:00"),
+            article("boundary", "2026-07-30T15:00:00+00:00", url="https://example.com/old"),
+        ])
+
+        self.assertEqual([item.title for item in result], ["new", "boundary"])
+
+    def test_uses_newest_primary_when_no_publisher_is_authoritative(self):
+        result = self.coordinator.aggregate([
+            article("Rice breeding update", "2026-07-31T12:00:00+00:00"),
+            article(
+                "Rice breeding update!",
+                "2026-07-31T14:00:00+00:00",
+                url="https://other.example/rice",
+                publisher="Other News",
+            ),
+        ])
+
+        self.assertEqual(result[0].url, "https://other.example/rice")
 
 
 class SearchFailureToleranceTests(unittest.TestCase):
@@ -272,6 +423,65 @@ class SearchFailureToleranceTests(unittest.TestCase):
         self.assertEqual(result.failed_providers, ["gdelt"])
         self.assertEqual(len(result.items), 1)
         self.assertEqual(google.fetch.call_count, 2)
+
+    def test_limits_google_results_per_query(self):
+        gdelt = MagicMock()
+        gdelt.fetch.return_value = []
+        google = MagicMock()
+        google.fetch.side_effect = [
+            [
+                article("Chinese first", "2026-07-31T14:00:00+00:00"),
+                article("Chinese second", "2026-07-31T14:00:00+00:00", url="https://example.com/2"),
+            ],
+            [
+                article("English first", "2026-07-31T14:00:00+00:00", url="https://example.com/3"),
+                article("English second", "2026-07-31T14:00:00+00:00", url="https://example.com/4"),
+            ],
+        ]
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            topics=[{"id": "gene-editing", "zh": "水稻 基因编辑", "en": "rice gene editing"}],
+            max_results_per_provider=1,
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+        result = coordinator.search()
+
+        self.assertEqual([item.title for item in result.items], ["Chinese first", "English first"])
+
+    def test_google_failure_is_deduplicated_and_other_provider_results_survive(self):
+        gdelt = MagicMock()
+        gdelt.fetch.return_value = [article("GDELT result", "2026-07-31T14:00:00+00:00")]
+        google = MagicMock()
+        google.fetch.side_effect = RuntimeError("Google unavailable")
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+        result = coordinator.search()
+
+        self.assertEqual(result.failed_providers, ["google_news"])
+        self.assertEqual([item.title for item in result.items], ["GDELT result"])
+
+    def test_both_provider_failures_return_empty_result(self):
+        gdelt = MagicMock()
+        gdelt.fetch.side_effect = RuntimeError("GDELT unavailable")
+        google = MagicMock()
+        google.fetch.side_effect = RuntimeError("Google unavailable")
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+        )
+
+        result = coordinator.search()
+
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.failed_providers, ["gdelt", "google_news"])
 
 
 if __name__ == "__main__":

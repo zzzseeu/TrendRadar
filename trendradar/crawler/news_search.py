@@ -29,6 +29,7 @@ class SearchArticle:
     summary: str = ""
     source_count: int = 1
     pre_hot_score: float = 0.0
+    publisher_domain: str = ""
 
 
 @dataclass
@@ -40,6 +41,15 @@ class NewsSearchResult:
 
 
 TRACKING_KEYS = {"utm_source", "utm_medium", "utm_campaign", "gclid", "fbclid"}
+LANGUAGE_ALIASES = {
+    "en": "en",
+    "english": "en",
+    "en-us": "en",
+    "zh": "zh",
+    "chinese": "zh",
+    "zh-cn": "zh",
+    "zh-hans": "zh",
+}
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -79,6 +89,25 @@ def _publisher_from_url(url: str) -> str:
         return urlsplit(url).netloc
     except ValueError:
         return ""
+
+
+def _normalize_language(language: str) -> str:
+    """Map provider-specific language labels to a shared language code."""
+    normalized = language.strip().casefold().replace("_", "-")
+    return LANGUAGE_ALIASES.get(normalized, normalized)
+
+
+def _normalize_publisher_domain(value: str) -> str:
+    """Return a lowercase publisher hostname without a leading ``www``."""
+    raw = value.strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw if "://" in raw else f"//{raw}")
+        hostname = (parts.hostname or "").lower()
+    except ValueError:
+        return ""
+    return hostname.removeprefix("www.")
 
 
 def canonicalize_url(url: str) -> str:
@@ -133,21 +162,27 @@ class AgriculturalNewsSearch:
         self.max_results_per_provider = max_results_per_provider
         self.similarity_threshold = similarity_threshold
         self.authority_domains = {
-            domain.lower().strip().lstrip(".")
+            _normalize_publisher_domain(domain)
             for domain in authority_domains
-            if domain and domain.strip()
+            if domain and _normalize_publisher_domain(domain)
         }
         self.now_func = now_func or (lambda: datetime.now(timezone.utc))
 
-    def _is_authority_url(self, url: str) -> bool:
-        try:
-            hostname = (urlsplit(url).hostname or "").lower()
-        except ValueError:
-            return False
+    def _is_authority_domain(self, domain: str) -> bool:
+        hostname = _normalize_publisher_domain(domain)
         return any(
             hostname == domain or hostname.endswith(f".{domain}")
             for domain in self.authority_domains
         )
+
+    @staticmethod
+    def _article_publisher_domain(article: SearchArticle) -> str:
+        domain = _normalize_publisher_domain(article.publisher_domain)
+        if domain:
+            return domain
+        if "google_news" in article.providers:
+            return ""
+        return _normalize_publisher_domain(article.url)
 
     @staticmethod
     def _newer(left: SearchArticle, right: SearchArticle) -> bool:
@@ -156,8 +191,8 @@ class AgriculturalNewsSearch:
         return bool(left_time and right_time and left_time > right_time)
 
     def _prefer_primary(self, current: SearchArticle, candidate: SearchArticle) -> bool:
-        current_authority = self._is_authority_url(current.url)
-        candidate_authority = self._is_authority_url(candidate.url)
+        current_authority = self._is_authority_domain(current.publisher_domain)
+        candidate_authority = self._is_authority_domain(candidate.publisher_domain)
         if candidate_authority != current_authority:
             return candidate_authority
         return self._newer(candidate, current)
@@ -167,7 +202,7 @@ class AgriculturalNewsSearch:
             return True
         primary = group["primary"]
         return (
-            primary.language.casefold() == article.language.casefold()
+            _normalize_language(primary.language) == _normalize_language(article.language)
             and title_similarity(primary.title, article.title) >= self.similarity_threshold
         )
 
@@ -204,6 +239,8 @@ class AgriculturalNewsSearch:
             normalized = replace(
                 article,
                 url=canonicalize_url(article.url),
+                language=_normalize_language(article.language),
+                publisher_domain=self._article_publisher_domain(article),
                 providers=set(article.providers),
                 related_publishers=set(article.related_publishers),
             )
@@ -216,12 +253,19 @@ class AgriculturalNewsSearch:
                     "primary": normalized,
                     "urls": {normalized.url},
                     "providers": set(normalized.providers),
+                    "publisher_domains": (
+                        {normalized.publisher_domain}
+                        if normalized.publisher_domain
+                        else set()
+                    ),
                     "publishers": {normalized.publisher} if normalized.publisher else set(),
                 })
                 continue
 
             group["urls"].add(normalized.url)
             group["providers"].update(normalized.providers)
+            if normalized.publisher_domain:
+                group["publisher_domains"].add(normalized.publisher_domain)
             if normalized.publisher:
                 group["publishers"].add(normalized.publisher)
             if self._prefer_primary(group["primary"], normalized):
@@ -231,16 +275,17 @@ class AgriculturalNewsSearch:
         for group in groups:
             primary = group["primary"]
             publishers = group["publishers"]
+            publisher_domains = group["publisher_domains"]
             published_at = _parse_timestamp(primary.published_at)
             age_hours = (current_time - published_at).total_seconds() / 3600
-            coverage = min(len(publishers) / 3, 1.0)
-            authority = 1.0 if self._is_authority_url(primary.url) else 0.0
+            coverage = min(len(publisher_domains) / 3, 1.0)
+            authority = 1.0 if self._is_authority_domain(primary.publisher_domain) else 0.0
             recency = max(0.0, 1.0 - age_hours / 24.0)
             results.append(replace(
                 primary,
                 providers=group["providers"],
                 related_publishers=publishers - {primary.publisher},
-                source_count=len(publishers),
+                source_count=len(publisher_domains),
                 pre_hot_score=round(0.5 * coverage + 0.3 * authority + 0.2 * recency, 4),
             ))
         return results
@@ -269,7 +314,11 @@ class AgriculturalNewsSearch:
                 if not query:
                     continue
                 try:
-                    articles.extend(self.google_news_client.fetch(query, topic_id, language))
+                    articles.extend(
+                        self.google_news_client.fetch(query, topic_id, language)[
+                            :self.max_results_per_provider
+                        ]
+                    )
                 except Exception:
                     record_failure("google_news")
 
@@ -324,15 +373,17 @@ class GDELTClient:
                 continue
 
             publisher = str(item.get("domain") or "").strip()
+            publisher_domain = _normalize_publisher_domain(publisher)
             parsed_articles.append(
                 SearchArticle(
                     title=title,
                     url=url,
                     published_at=published_at,
                     publisher=publisher or _publisher_from_url(url),
-                    language=str(item.get("language") or "").strip(),
+                    language=_normalize_language(str(item.get("language") or "")),
                     topic=topic,
                     providers={"gdelt"},
+                    publisher_domain=publisher_domain or _normalize_publisher_domain(url),
                 )
             )
         return parsed_articles
@@ -378,6 +429,7 @@ class GoogleNewsRSSClient:
 
             source = entry.get("source") or {}
             publisher = str(source.get("title") or "").strip()
+            source_url = str(source.get("href") or source.get("url") or "").strip()
             suffix = f" - {publisher}"
             if publisher and title.endswith(suffix):
                 title = title[: -len(suffix)]
@@ -393,10 +445,11 @@ class GoogleNewsRSSClient:
                     title=title,
                     url=url,
                     published_at=published_at,
-                    publisher=publisher or _publisher_from_url(url),
-                    language=language,
+                    publisher=publisher or _publisher_from_url(source_url),
+                    language=_normalize_language(language),
                     topic=topic,
                     providers={"google_news"},
+                    publisher_domain=_normalize_publisher_domain(source_url),
                 )
             )
         return parsed_articles
