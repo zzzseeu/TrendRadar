@@ -195,9 +195,22 @@ def _load_rss_config(config_data: Dict) -> Dict:
     # 新鲜度过滤配置
     freshness_filter = rss.get("freshness_filter", {})
     news_search = rss.get("news_search", {})
-    max_results = max(1, min(int(news_search.get("max_results_per_provider", 50)), 100))
-    max_hotspots = max(1, min(int(news_search.get("max_hotspots", 5)), 20))
-    similarity = max(0.5, min(float(news_search.get("similarity_threshold", 0.86)), 1.0))
+    try:
+        max_results = int(news_search.get("max_results_per_provider", 50))
+    except (TypeError, ValueError):
+        max_results = 50
+    try:
+        max_hotspots = int(news_search.get("max_hotspots", 5))
+    except (TypeError, ValueError):
+        max_hotspots = 5
+    try:
+        similarity = float(news_search.get("similarity_threshold", 0.86))
+    except (TypeError, ValueError):
+        similarity = 0.86
+
+    max_results = max(1, min(max_results, 100))
+    max_hotspots = max(1, min(max_hotspots, 20))
+    similarity = max(0.5, min(similarity, 1.0))
 
     runtime_news_search = {
         "ENABLED": bool(news_search.get("enabled", False)),

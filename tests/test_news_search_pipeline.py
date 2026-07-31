@@ -26,3 +26,19 @@ class NewsSearchConfigTests(unittest.TestCase):
         self.assertEqual(search["MAX_RESULTS_PER_PROVIDER"], 40)
         self.assertEqual(search["MAX_HOTSPOTS"], 5)
         self.assertEqual(search["TOPICS"][0]["id"], "gene-editing")
+
+    def test_loader_falls_back_for_non_numeric_news_search_limits(self):
+        loaded = _load_rss_config({
+            "rss": {
+                "news_search": {
+                    "max_results_per_provider": "many",
+                    "max_hotspots": "several",
+                    "similarity_threshold": "high",
+                }
+            }
+        })
+
+        search = loaded["NEWS_SEARCH"]
+        self.assertEqual(search["MAX_RESULTS_PER_PROVIDER"], 50)
+        self.assertEqual(search["MAX_HOTSPOTS"], 5)
+        self.assertEqual(search["SIMILARITY_THRESHOLD"], 0.86)
