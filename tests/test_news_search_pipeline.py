@@ -72,6 +72,52 @@ class NewsSearchConfigTests(unittest.TestCase):
         self.assertEqual(search["MAX_HOTSPOTS"], 5)
         self.assertEqual(search["SIMILARITY_THRESHOLD"], 0.86)
 
+    def test_loader_tolerates_null_and_non_mapping_rss_sections(self):
+        for value in (None, []):
+            with self.subTest(rss=value):
+                loaded = _load_rss_config({"rss": value})
+
+                self.assertFalse(loaded["NEWS_SEARCH"]["ENABLED"])
+                self.assertEqual(
+                    loaded["NEWS_SEARCH"]["PROVIDERS"],
+                    {"gdelt": True, "google_news": True},
+                )
+                self.assertEqual(loaded["NEWS_SEARCH"]["TOPICS"], [])
+                self.assertEqual(loaded["NEWS_SEARCH"]["AUTHORITY_DOMAINS"], [])
+
+    def test_loader_normalizes_malformed_news_search_collections(self):
+        loaded = _load_rss_config({
+            "rss": {
+                "news_search": {
+                    "enabled": True,
+                    "providers": ["gdelt"],
+                    "topics": {"id": "not-a-list"},
+                    "authority_domains": "reuters.com",
+                }
+            }
+        })
+
+        search = loaded["NEWS_SEARCH"]
+        self.assertTrue(search["ENABLED"])
+        self.assertEqual(
+            search["PROVIDERS"],
+            {"gdelt": True, "google_news": True},
+        )
+        self.assertEqual(search["TOPICS"], [])
+        self.assertEqual(search["AUTHORITY_DOMAINS"], [])
+
+    def test_loader_treats_null_news_search_as_disabled_defaults(self):
+        loaded = _load_rss_config({"rss": {"news_search": None}})
+
+        search = loaded["NEWS_SEARCH"]
+        self.assertFalse(search["ENABLED"])
+        self.assertEqual(
+            search["PROVIDERS"],
+            {"gdelt": True, "google_news": True},
+        )
+        self.assertEqual(search["TOPICS"], [])
+        self.assertEqual(search["AUTHORITY_DOMAINS"], [])
+
 
 class NewsSearchStorageTests(unittest.TestCase):
     def test_search_metadata_survives_rss_item_round_trip(self):
@@ -257,6 +303,58 @@ class NewsSearchRSSMergeTests(unittest.TestCase):
         self.assertEqual(rss_data.items, {"regular": [regular]})
         self.assertEqual(rss_data.id_to_name, {"regular": "Regular feed"})
 
+    def test_merge_collision_preserves_existing_fixed_source_and_warns(self):
+        fixed = RSSItem(
+            title="Fixed source item",
+            feed_id=SEARCH_FEED_ID,
+            url="https://fixed.example/item",
+        )
+        rss_data = RSSData(
+            date="2026-07-31",
+            crawl_time="15:00",
+            items={SEARCH_FEED_ID: [fixed]},
+            id_to_name={SEARCH_FEED_ID: "Existing fixed feed"},
+            failed_ids=["fixed-failure"],
+        )
+
+        output = StringIO()
+        with redirect_stdout(output):
+            merge_news_search_into_rss(
+                rss_data,
+                NewsSearchResult(items=[SEARCH_HOTSPOT]),
+            )
+
+        self.assertEqual(rss_data.items[SEARCH_FEED_ID], [fixed])
+        self.assertEqual(rss_data.id_to_name[SEARCH_FEED_ID], "Existing fixed feed")
+        self.assertEqual(rss_data.failed_ids, ["fixed-failure"])
+        self.assertIn("[新闻搜索]", output.getvalue())
+        self.assertIn("冲突", output.getvalue())
+
+    def test_merge_name_only_collision_does_not_create_synthetic_items(self):
+        rss_data = RSSData(
+            date="2026-07-31",
+            crawl_time="15:00",
+            items={"regular": [RSSItem(title="Regular", feed_id="regular")]},
+            id_to_name={
+                "regular": "Regular feed",
+                SEARCH_FEED_ID: "Reserved fixed feed name",
+            },
+        )
+
+        output = StringIO()
+        with redirect_stdout(output):
+            merge_news_search_into_rss(
+                rss_data,
+                NewsSearchResult(items=[SEARCH_HOTSPOT]),
+            )
+
+        self.assertNotIn(SEARCH_FEED_ID, rss_data.items)
+        self.assertEqual(
+            rss_data.id_to_name[SEARCH_FEED_ID],
+            "Reserved fixed feed name",
+        )
+        self.assertIn("[新闻搜索]", output.getvalue())
+
 
 class _StorageStub:
     def __init__(self):
@@ -352,12 +450,83 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
             max_results_per_provider=40,
             similarity_threshold=0.9,
             authority_domains=["example.org"],
+            providers={"gdelt": True, "google_news": True},
         )
         search_class.return_value.search.assert_called_once_with()
         saved = analyzer.storage_manager.saved[0]
         self.assertIn("regular", saved.items)
         self.assertEqual(saved.items[SEARCH_FEED_ID][0].title, SEARCH_HOTSPOT.title)
         self.assertEqual(analyzer._rss_source_failed, 1)
+
+    @patch("trendradar.__main__.AgriculturalNewsSearch")
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_runtime_null_news_search_still_saves_fixed_rss(
+        self, fetcher_class, search_class
+    ):
+        analyzer = self._analyzer(enabled=True)
+        analyzer.ctx.rss_config["NEWS_SEARCH"] = None
+        fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
+
+        analyzer._crawl_rss_data()
+
+        search_class.assert_not_called()
+        saved = analyzer.storage_manager.saved[0]
+        self.assertEqual(list(saved.items), ["regular"])
+        self.assertEqual(saved.failed_ids, ["fixed-failure"])
+        analyzer._process_rss_data_by_mode.assert_called_once_with(saved)
+
+    @patch("trendradar.crawler.news_search.GoogleNewsRSSClient.fetch")
+    @patch("trendradar.crawler.news_search.GDELTClient.fetch")
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_both_disabled_providers_make_zero_calls_and_preserve_fixed_rss(
+        self, fetcher_class, gdelt_fetch, google_fetch
+    ):
+        analyzer = self._analyzer(enabled=True)
+        analyzer.ctx.rss_config["NEWS_SEARCH"]["PROVIDERS"] = {
+            "gdelt": False,
+            "google_news": False,
+        }
+        fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
+
+        analyzer._crawl_rss_data()
+
+        gdelt_fetch.assert_not_called()
+        google_fetch.assert_not_called()
+        saved = analyzer.storage_manager.saved[0]
+        self.assertEqual(list(saved.items), ["regular"])
+        self.assertEqual(saved.id_to_name, {"regular": "Regular feed"})
+        self.assertEqual(saved.failed_ids, ["fixed-failure"])
+
+    @patch("trendradar.__main__.AgriculturalNewsSearch")
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_runtime_collision_preserves_fixed_source_and_failure_stats(
+        self, fetcher_class, search_class
+    ):
+        analyzer = self._analyzer(enabled=True)
+        fixed = self._fixed_rss_data()
+        collision_item = RSSItem(
+            title="Configured fixed search feed",
+            feed_id=SEARCH_FEED_ID,
+            url="https://fixed.example/item",
+        )
+        fixed.items[SEARCH_FEED_ID] = [collision_item]
+        fixed.id_to_name[SEARCH_FEED_ID] = "Configured fixed feed"
+        fetcher_class.return_value.fetch_all.return_value = fixed
+        search_class.return_value.search.return_value = NewsSearchResult(
+            items=[SEARCH_HOTSPOT]
+        )
+
+        output = StringIO()
+        with redirect_stdout(output):
+            analyzer._crawl_rss_data()
+
+        saved = analyzer.storage_manager.saved[0]
+        self.assertEqual(saved.items[SEARCH_FEED_ID], [collision_item])
+        self.assertEqual(saved.id_to_name[SEARCH_FEED_ID], "Configured fixed feed")
+        self.assertEqual(saved.failed_ids, ["fixed-failure"])
+        self.assertEqual(analyzer._rss_source_failed, 1)
+        self.assertIn("[新闻搜索]", output.getvalue())
+        self.assertIn("冲突", output.getvalue())
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")

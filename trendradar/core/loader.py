@@ -7,7 +7,7 @@
 
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Mapping, Optional
 
 import yaml
 
@@ -180,10 +180,21 @@ def _load_weight_config(config_data: Dict) -> Dict:
 
 def _load_rss_config(config_data: Dict) -> Dict:
     """加载 RSS 配置"""
-    rss = config_data.get("rss", {})
-    advanced = config_data.get("advanced", {})
-    advanced_rss = advanced.get("rss", {})
-    advanced_crawler = advanced.get("crawler", {})
+    config_data = config_data if isinstance(config_data, Mapping) else {}
+    rss_value = config_data.get("rss", {})
+    rss = rss_value if isinstance(rss_value, Mapping) else {}
+    advanced_value = config_data.get("advanced", {})
+    advanced = advanced_value if isinstance(advanced_value, Mapping) else {}
+    advanced_rss_value = advanced.get("rss", {})
+    advanced_rss = (
+        advanced_rss_value if isinstance(advanced_rss_value, Mapping) else {}
+    )
+    advanced_crawler_value = advanced.get("crawler", {})
+    advanced_crawler = (
+        advanced_crawler_value
+        if isinstance(advanced_crawler_value, Mapping)
+        else {}
+    )
 
     # 容器可通过 NEWS_PROXY_URL 提供宿主机代理，作为新闻直连失败后的回退。
     rss_proxy_url = (
@@ -193,8 +204,16 @@ def _load_rss_config(config_data: Dict) -> Dict:
     )
 
     # 新鲜度过滤配置
-    freshness_filter = rss.get("freshness_filter", {})
-    news_search = rss.get("news_search", {})
+    freshness_filter_value = rss.get("freshness_filter", {})
+    freshness_filter = (
+        freshness_filter_value
+        if isinstance(freshness_filter_value, Mapping)
+        else {}
+    )
+    news_search_value = rss.get("news_search", {})
+    news_search = (
+        news_search_value if isinstance(news_search_value, Mapping) else {}
+    )
     try:
         max_results = int(news_search.get("max_results_per_provider", 50))
     except (TypeError, ValueError):
@@ -212,14 +231,34 @@ def _load_rss_config(config_data: Dict) -> Dict:
     max_hotspots = max(1, min(max_hotspots, 20))
     similarity = max(0.5, min(similarity, 1.0))
 
+    providers_value = news_search.get("providers", {})
+    providers = providers_value if isinstance(providers_value, Mapping) else {}
+    topics_value = news_search.get("topics", [])
+    topics = (
+        [dict(topic) for topic in topics_value if isinstance(topic, Mapping)]
+        if isinstance(topics_value, list)
+        else []
+    )
+    authority_value = news_search.get("authority_domains", [])
+    authority_domains = (
+        [domain for domain in authority_value if isinstance(domain, str) and domain]
+        if isinstance(authority_value, list)
+        else []
+    )
+    feeds_value = rss.get("feeds", [])
+    feeds = feeds_value if isinstance(feeds_value, list) else []
+
     runtime_news_search = {
         "ENABLED": bool(news_search.get("enabled", False)),
         "MAX_RESULTS_PER_PROVIDER": max_results,
         "MAX_HOTSPOTS": max_hotspots,
         "SIMILARITY_THRESHOLD": similarity,
-        "PROVIDERS": news_search.get("providers", {"gdelt": True, "google_news": True}),
-        "AUTHORITY_DOMAINS": news_search.get("authority_domains", []),
-        "TOPICS": news_search.get("topics", []),
+        "PROVIDERS": {
+            "gdelt": bool(providers.get("gdelt", True)),
+            "google_news": bool(providers.get("google_news", True)),
+        },
+        "AUTHORITY_DOMAINS": authority_domains,
+        "TOPICS": topics,
     }
 
     # 验证并设置 max_age_days 默认值
@@ -239,7 +278,7 @@ def _load_rss_config(config_data: Dict) -> Dict:
         "TIMEOUT": advanced_rss.get("timeout", 15),
         "USE_PROXY": advanced_rss.get("use_proxy", False),
         "PROXY_URL": rss_proxy_url,
-        "FEEDS": rss.get("feeds", []),
+        "FEEDS": feeds,
         "FRESHNESS_FILTER": {
             "ENABLED": freshness_filter.get("enabled", True),  # 默认启用
             "MAX_AGE_DAYS": max_age_days,

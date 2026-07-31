@@ -9,6 +9,7 @@ TrendRadar 主程序
 import argparse
 import os
 import webbrowser
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -36,6 +37,14 @@ SEARCH_FEED_NAME = "农业育种热点搜索"
 def merge_news_search_into_rss(rss_data, search_result) -> None:
     """Merge discovered breeding hotspots into an isolated synthetic RSS feed."""
     if not search_result.items:
+        return
+    if (
+        SEARCH_FEED_ID in rss_data.items
+        or SEARCH_FEED_ID in rss_data.id_to_name
+    ):
+        print(
+            f"[新闻搜索] 合成源 ID 冲突，保留现有固定 RSS: {SEARCH_FEED_ID}"
+        )
         return
 
     rss_data.id_to_name[SEARCH_FEED_ID] = SEARCH_FEED_NAME
@@ -1107,20 +1116,40 @@ class NewsAnalyzer:
             self._rss_source_total = len(feeds)
             self._rss_source_failed = len(rss_data.failed_ids)
 
-            news_search_config = rss_config.get("NEWS_SEARCH", {})
+            news_search_value = rss_config.get("NEWS_SEARCH", {})
+            news_search_config = (
+                news_search_value
+                if isinstance(news_search_value, Mapping)
+                else {}
+            )
             if news_search_config.get("ENABLED", False):
                 try:
+                    providers_value = news_search_config.get("PROVIDERS", {})
+                    providers = (
+                        providers_value
+                        if isinstance(providers_value, Mapping)
+                        else {}
+                    )
+                    topics_value = news_search_config.get("TOPICS", [])
+                    topics = topics_value if isinstance(topics_value, list) else []
+                    authority_value = news_search_config.get(
+                        "AUTHORITY_DOMAINS", []
+                    )
+                    authority_domains = (
+                        authority_value
+                        if isinstance(authority_value, list)
+                        else []
+                    )
                     news_search = AgriculturalNewsSearch(
-                        topics=news_search_config.get("TOPICS", []),
+                        topics=topics,
                         max_results_per_provider=news_search_config.get(
                             "MAX_RESULTS_PER_PROVIDER", 50
                         ),
                         similarity_threshold=news_search_config.get(
                             "SIMILARITY_THRESHOLD", 0.86
                         ),
-                        authority_domains=news_search_config.get(
-                            "AUTHORITY_DOMAINS", []
-                        ),
+                        authority_domains=authority_domains,
+                        providers=providers,
                     )
                     search_result = news_search.search()
                     if search_result.failed_providers:

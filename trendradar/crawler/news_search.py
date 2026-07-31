@@ -155,16 +155,31 @@ class AgriculturalNewsSearch:
         similarity_threshold: float = 0.86,
         authority_domains: tuple[str, ...] | list[str] = (),
         now_func: Any | None = None,
+        providers: Mapping[str, bool] | None = None,
     ):
         self.gdelt_client = gdelt_client or GDELTClient()
         self.google_news_client = google_news_client or GoogleNewsRSSClient()
-        self.topics = topics or []
+        self.topics = [
+            topic for topic in (topics or []) if isinstance(topic, Mapping)
+        ]
         self.max_results_per_provider = max_results_per_provider
         self.similarity_threshold = similarity_threshold
+        provider_config = providers if isinstance(providers, Mapping) else {}
+        self.providers = {
+            "gdelt": bool(provider_config.get("gdelt", True)),
+            "google_news": bool(provider_config.get("google_news", True)),
+        }
+        authority_values = (
+            authority_domains
+            if isinstance(authority_domains, (tuple, list, set))
+            else ()
+        )
         self.authority_domains = {
             _normalize_publisher_domain(domain)
-            for domain in authority_domains
-            if domain and _normalize_publisher_domain(domain)
+            for domain in authority_values
+            if isinstance(domain, str)
+            and domain
+            and _normalize_publisher_domain(domain)
         }
         self.now_func = now_func or (lambda: datetime.now(timezone.utc))
 
@@ -303,13 +318,15 @@ class AgriculturalNewsSearch:
             topic_id = str(topic.get("id") or "")
             english_query = str(topic.get("en") or "").strip()
             chinese_query = str(topic.get("zh") or "").strip()
-            if english_query:
+            if english_query and self.providers["gdelt"]:
                 try:
                     articles.extend(self.gdelt_client.fetch(
                         english_query, topic_id, self.max_results_per_provider
                     ))
                 except Exception:
                     record_failure("gdelt")
+            if not self.providers["google_news"]:
+                continue
             for query, language in ((chinese_query, "zh"), (english_query, "en")):
                 if not query:
                     continue

@@ -402,6 +402,40 @@ class SearchAggregationTests(unittest.TestCase):
 
 
 class SearchFailureToleranceTests(unittest.TestCase):
+    def test_disabled_gdelt_provider_is_never_called(self):
+        gdelt = MagicMock()
+        google = MagicMock()
+        google.fetch.return_value = []
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            providers={"gdelt": False, "google_news": True},
+            topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+        )
+
+        result = coordinator.search()
+
+        gdelt.fetch.assert_not_called()
+        self.assertEqual(google.fetch.call_count, 2)
+        self.assertEqual(result.failed_providers, [])
+
+    def test_both_disabled_providers_make_zero_calls(self):
+        gdelt = MagicMock()
+        google = MagicMock()
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            providers={"gdelt": False, "google_news": False},
+            topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+        )
+
+        result = coordinator.search()
+
+        gdelt.fetch.assert_not_called()
+        google.fetch.assert_not_called()
+        self.assertEqual(result.items, [])
+        self.assertEqual(result.failed_providers, [])
+
     def test_one_provider_failure_does_not_drop_other_results(self):
         gdelt = MagicMock()
         gdelt.fetch.side_effect = RuntimeError("GDELT unavailable")
