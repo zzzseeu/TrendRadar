@@ -1813,8 +1813,11 @@ class SQLiteStorageMixin:
                                 "search_topic": info[8] or "",
                                 "search_providers": info[9] or "",
                             })
-            except Exception:
-                pass  # RSS 库不存在时静默跳过
+            except Exception as rss_exc:
+                print(
+                    "[AI筛选] 读取 RSS 分类结果失败，已保留热榜结果: "
+                    f"{type(rss_exc).__name__}: {rss_exc}"
+                )
 
             return results
         except Exception as e:

@@ -18,7 +18,13 @@ from trendradar import __version__
 from trendradar.core import load_config
 from trendradar.core.analyzer import convert_keyword_stats_to_platform_stats
 from trendradar.crawler import DataFetcher
-from trendradar.crawler.news_search import AgriculturalNewsSearch, canonicalize_url
+from trendradar.crawler.news_search import (
+    AgriculturalNewsSearch,
+    GDELTClient,
+    GoogleNewsRSSClient,
+    NEWS_SEARCH_PROVIDERS,
+    canonicalize_url,
+)
 from trendradar.storage import convert_crawl_results_to_news_data
 from trendradar.storage.base import RSSItem
 from trendradar.utils.article_links import build_reader_url
@@ -47,27 +53,38 @@ def merge_news_search_into_rss(rss_data, search_result) -> None:
         )
         return
 
-    rss_data.id_to_name[SEARCH_FEED_ID] = SEARCH_FEED_NAME
-    rss_data.items[SEARCH_FEED_ID] = [
-        RSSItem(
+    mapped_items = []
+    for item in search_result.items:
+        canonical_url = canonicalize_url(item.url)
+        providers = {
+            str(provider)
+            for provider in item.providers
+            if str(provider) in NEWS_SEARCH_PROVIDERS
+        }
+        if not canonical_url or not item.topic or not providers:
+            print(f"[新闻搜索] 丢弃元数据或 URL 无效的搜索结果: {item.title}")
+            continue
+        mapped_items.append(RSSItem(
             title=item.title,
             feed_id=SEARCH_FEED_ID,
             feed_name=SEARCH_FEED_NAME,
             url=item.url,
-            guid=canonicalize_url(item.url),
+            guid=canonical_url,
             published_at=item.published_at,
             summary=item.summary,
             author=item.publisher,
             source_count=item.source_count,
             pre_hot_score=item.pre_hot_score,
             search_topic=item.topic,
-            search_providers=",".join(sorted(item.providers)),
+            search_providers=",".join(sorted(providers)),
             crawl_time=rss_data.crawl_time,
             first_time=rss_data.crawl_time,
             last_time=rss_data.crawl_time,
-        )
-        for item in search_result.items
-    ]
+        ))
+    if not mapped_items:
+        return
+    rss_data.id_to_name[SEARCH_FEED_ID] = SEARCH_FEED_NAME
+    rss_data.items[SEARCH_FEED_ID] = mapped_items
 
 
 # === 主分析器 ===
@@ -1141,6 +1158,16 @@ class NewsAnalyzer:
                         else []
                     )
                     news_search = AgriculturalNewsSearch(
+                        gdelt_client=GDELTClient(
+                            use_proxy=rss_config.get("USE_PROXY", False),
+                            proxy_url=rss_proxy_url,
+                            timeout=rss_config.get("TIMEOUT", 15),
+                        ),
+                        google_news_client=GoogleNewsRSSClient(
+                            use_proxy=rss_config.get("USE_PROXY", False),
+                            proxy_url=rss_proxy_url,
+                            timeout=rss_config.get("TIMEOUT", 15),
+                        ),
                         topics=topics,
                         max_results_per_provider=news_search_config.get(
                             "MAX_RESULTS_PER_PROVIDER", 50

@@ -5,7 +5,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 from trendradar.__main__ import (
     NewsAnalyzer,
@@ -35,6 +35,30 @@ SEARCH_HOTSPOT = SearchArticle(
 
 
 class NewsSearchConfigTests(unittest.TestCase):
+    def test_loader_parses_explicit_boolean_values_without_truthy_string_bug(self):
+        for raw, expected in ((True, True), (False, False), ("true", True),
+                              ("false", False), ("1", True), ("0", False)):
+            with self.subTest(raw=raw):
+                loaded = _load_rss_config({
+                    "rss": {"news_search": {"enabled": raw}}
+                })
+                self.assertIs(loaded["NEWS_SEARCH"]["ENABLED"], expected)
+
+        malformed = _load_rss_config({
+            "rss": {
+                "news_search": {
+                    "enabled": "yes please",
+                    "providers": {
+                        "gdelt": "false",
+                        "google_news": "not-a-boolean",
+                    },
+                }
+            }
+        })["NEWS_SEARCH"]
+        self.assertFalse(malformed["ENABLED"])
+        self.assertFalse(malformed["PROVIDERS"]["gdelt"])
+        self.assertTrue(malformed["PROVIDERS"]["google_news"])
+
     def test_loader_exposes_validated_news_search_config(self):
         loaded = _load_rss_config({
             "rss": {
@@ -122,6 +146,28 @@ class NewsSearchConfigTests(unittest.TestCase):
 
 
 class NewsSearchStorageTests(unittest.TestCase):
+    def test_rss_ai_result_read_failure_emits_diagnostic_warning(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            backend = LocalStorageBackend(
+                data_dir=temp_dir,
+                enable_txt=False,
+                enable_html=False,
+            )
+            news_connection = Mock()
+            news_connection.cursor.return_value.fetchall.return_value = []
+            backend._get_connection = Mock(
+                side_effect=[news_connection, RuntimeError("rss database unavailable")]
+            )
+            output = StringIO()
+
+            with redirect_stdout(output):
+                results = backend.get_active_ai_filter_results("2026-07-31")
+
+        self.assertEqual(results, [])
+        self.assertIn("RSS", output.getvalue())
+        self.assertIn("RuntimeError", output.getvalue())
+        self.assertIn("rss database unavailable", output.getvalue())
+
     def test_search_metadata_survives_rss_item_round_trip(self):
         item = RSSItem(
             title="Breeding hotspot",
@@ -254,6 +300,25 @@ class NewsSearchStorageTests(unittest.TestCase):
 
 
 class NewsSearchRSSMergeTests(unittest.TestCase):
+    def test_merge_drops_unsafe_search_url_instead_of_mapping_it_to_report_data(self):
+        unsafe = SearchArticle(
+            title="Unsafe result",
+            url="javascript:alert(1)",
+            published_at="2026-07-31T08:00:00+00:00",
+            publisher="Bad",
+            language="en",
+            topic="gene-editing",
+            providers={"gdelt"},
+        )
+        rss_data = RSSData(
+            date="2026-07-31", crawl_time="15:00", items={}, id_to_name={}
+        )
+
+        merge_news_search_into_rss(rss_data, NewsSearchResult(items=[unsafe]))
+
+        self.assertNotIn(SEARCH_FEED_ID, rss_data.items)
+        self.assertNotIn(SEARCH_FEED_ID, rss_data.id_to_name)
+
     def test_merge_search_result_maps_all_rss_metadata(self):
         regular = RSSItem(
             title="Regular RSS",
@@ -448,6 +513,8 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         analyzer._crawl_rss_data()
 
         search_class.assert_called_once_with(
+            gdelt_client=ANY,
+            google_news_client=ANY,
             topics=analyzer.ctx.rss_config["NEWS_SEARCH"]["TOPICS"],
             max_results_per_provider=40,
             similarity_threshold=0.9,
@@ -587,6 +654,39 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         self.assertEqual(list(saved.items), ["regular"])
         self.assertEqual(saved.id_to_name, {"regular": "Regular feed"})
 
+    @patch("trendradar.__main__.GoogleNewsRSSClient")
+    @patch("trendradar.__main__.GDELTClient")
+    @patch("trendradar.__main__.AgriculturalNewsSearch")
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_search_clients_inherit_rss_proxy_and_timeout_configuration(
+        self,
+        fetcher_class,
+        search_class,
+        gdelt_class,
+        google_class,
+    ):
+        analyzer = self._analyzer(enabled=True)
+        analyzer.ctx.rss_config.update({
+            "USE_PROXY": True,
+            "PROXY_URL": "http://proxy:7892",
+            "TIMEOUT": 23,
+        })
+        fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
+        search_class.return_value.search.return_value = NewsSearchResult(items=[])
+
+        analyzer._crawl_rss_data()
+
+        expected_network = {
+            "use_proxy": True,
+            "proxy_url": "http://proxy:7892",
+            "timeout": 23,
+        }
+        gdelt_class.assert_called_once_with(**expected_network)
+        google_class.assert_called_once_with(**expected_network)
+        kwargs = search_class.call_args.kwargs
+        self.assertIs(kwargs["gdelt_client"], gdelt_class.return_value)
+        self.assertIs(kwargs["google_news_client"], google_class.return_value)
+
 
 class NewsSearchHotspotRankingTests(unittest.TestCase):
     @staticmethod
@@ -666,6 +766,47 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             highest["final_hot_score"],
             round(0.45 * 0.6 + 0.35 * 0.6 + 0.20 * 0.3, 4),
         )
+
+    def test_reserved_feed_id_without_search_metadata_remains_regular_rss(self):
+        fixed_collision = {
+            "news_item_id": 1,
+            "tag": "育种",
+            "tag_priority": 1,
+            "title": "Configured fixed RSS",
+            "source_id": SEARCH_FEED_ID,
+            "source_name": "Configured fixed feed",
+            "source_type": "rss",
+            "url": "https://example.org/collision",
+            "first_time": "2026-07-31T08:00:00+00:00",
+            "last_time": "2026-07-31T08:00:00+00:00",
+            "relevance_score": 0.1,
+            "importance_score": 0.1,
+            "source_count": 1,
+            "pre_hot_score": 0.0,
+            "search_topic": "",
+            "search_providers": "",
+        }
+        real_search = self._search_result(
+            1,
+            title="Real search result",
+            url="https://example.org/collision",
+            relevance_score=0.9,
+            importance_score=0.9,
+            pre_hot_score=0.9,
+        )
+
+        result = self._pipeline(max_hotspots=1)._build_filter_result(
+            raw_results=[fixed_collision, real_search],
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=2,
+        )
+
+        items = result.tags[0]["items"]
+        fixed = next(item for item in items if item["title"] == "Configured fixed RSS")
+        search = next(item for item in items if item["title"] == "Real search result")
+        self.assertNotIn("final_hot_score", fixed)
+        self.assertNotIn("search_hotspot_rank", fixed)
+        self.assertEqual(search["search_hotspot_rank"], 1)
 
     def test_cap_is_global_across_tags_deduplicates_and_keeps_regular_rss(self):
         duplicate_low = self._search_result(

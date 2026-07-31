@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from trendradar.ai.filter import AIFilter, AIFilterResult
 from trendradar.crawler.article_content import ArticleContentFetcher
-from trendradar.crawler.news_search import canonicalize_url
+from trendradar.crawler.news_search import NEWS_SEARCH_PROVIDERS, canonicalize_url
 from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import (
     DEFAULT_TIMEZONE,
@@ -20,6 +20,22 @@ from trendradar.utils.time import (
     format_iso_time_friendly,
     is_within_days,
 )
+
+SEARCH_FEED_ID = "agri-breeding-search"
+
+
+def is_agricultural_news_search_item(item: Dict[str, Any]) -> bool:
+    """Identify synthetic search items from persisted provenance metadata."""
+    if item.get("source_id") != SEARCH_FEED_ID:
+        return False
+    topic = str(item.get("search_topic") or "").strip()
+    provider_value = str(item.get("search_providers") or "")
+    providers = {
+        provider.strip()
+        for provider in provider_value.split(",")
+        if provider.strip()
+    }
+    return bool(topic and providers and providers <= NEWS_SEARCH_PROVIDERS)
 
 
 class AIFilterPipeline:
@@ -637,14 +653,14 @@ class AIFilterPipeline:
                 (
                     item
                     for item in legacy_order
-                    if item.get("source_id") == "agri-breeding-search"
+                    if is_agricultural_news_search_item(item)
                 ),
                 key=lambda item: item.get("search_hotspot_rank", 9999),
             )
             ordered_search_items = iter(ordered_search)
             group["items"] = [
                 next(ordered_search_items)
-                if item.get("source_id") == "agri-breeding-search"
+                if is_agricultural_news_search_item(item)
                 else item
                 for item in legacy_order
             ]
@@ -684,7 +700,7 @@ class AIFilterPipeline:
 
         for group in tag_groups.values():
             for item in group.get("items", []):
-                if item.get("source_id") != "agri-breeding-search":
+                if not is_agricultural_news_search_item(item):
                     continue
                 if self._score_value(item.get("relevance_score")) < min_score:
                     continue
@@ -767,7 +783,7 @@ class AIFilterPipeline:
             group["items"] = [
                 item
                 for item in group.get("items", [])
-                if item.get("source_id") != "agri-breeding-search"
+                if not is_agricultural_news_search_item(item)
                 or id(item) in selected_objects
             ]
             group["count"] = len(group["items"])

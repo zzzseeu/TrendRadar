@@ -8,6 +8,7 @@ from trendradar.crawler.news_search import (
     GoogleNewsRSSClient,
     SearchArticle,
     canonicalize_url,
+    title_similarity,
 )
 
 
@@ -25,6 +26,52 @@ GOOGLE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
 
 
 class ProviderParsingTests(unittest.TestCase):
+    def test_provider_parsers_reject_unsafe_article_urls(self):
+        gdelt_payload = {"articles": [
+            {
+                "title": f"unsafe-{index}",
+                "url": url,
+                "seendate": "20260731T080000Z",
+            }
+            for index, url in enumerate((
+                "javascript:alert(1)",
+                "data:text/html,payload",
+                "file:///tmp/article",
+                "/relative/article",
+                "https://example.org/line\nbreak",
+                "https://",
+                "https://example.org/" + "x" * 4096,
+            ))
+        ]}
+        google_items = "".join(
+            "<item><title>Unsafe article</title>"
+            f"<link>{url}</link>"
+            "<pubDate>Fri, 31 Jul 2026 08:00:00 GMT</pubDate>"
+            "</item>"
+            for url in (
+                "javascript:alert(1)",
+                "data:text/plain,payload",
+                "file:///tmp/article",
+                "/relative/article",
+            )
+        )
+        google_feed = f"<rss><channel>{google_items}</channel></rss>"
+
+        self.assertEqual(GDELTClient().parse(gdelt_payload, "topic"), [])
+        self.assertEqual(GoogleNewsRSSClient().parse(google_feed, "topic", "en"), [])
+
+    def test_canonicalize_url_fails_closed_for_unsafe_urls(self):
+        for unsafe in (
+            "javascript:alert(1)",
+            "data:text/plain,payload",
+            "file:///tmp/article",
+            "/relative/article",
+            "https://example.org/control\x00char",
+            "https://",
+        ):
+            with self.subTest(url=unsafe):
+                self.assertEqual(canonicalize_url(unsafe), "")
+
     def test_gdelt_parses_direct_article_and_seen_date(self):
         payload = {"articles": [{
             "title": "New genomic selection method improves wheat breeding",
@@ -112,6 +159,32 @@ class ProviderParsingTests(unittest.TestCase):
 
 
 class ProviderRequestTests(unittest.TestCase):
+    def test_provider_clients_forward_proxy_configuration_to_direct_first_session(self):
+        with unittest.mock.patch(
+            "trendradar.crawler.news_search.DirectFirstSession"
+        ) as session_class:
+            GDELTClient(
+                use_proxy=True,
+                proxy_url="http://proxy:7892",
+                timeout=9,
+            )
+            GoogleNewsRSSClient(
+                use_proxy=False,
+                proxy_url="http://proxy:7892",
+                timeout=11,
+            )
+
+        self.assertEqual(session_class.call_count, 2)
+        self.assertEqual(
+            session_class.call_args_list[0].kwargs["use_proxy"], True
+        )
+        self.assertEqual(
+            session_class.call_args_list[0].kwargs["proxy_url"],
+            "http://proxy:7892",
+        )
+        self.assertEqual(
+            session_class.call_args_list[1].kwargs["use_proxy"], False
+        )
     def test_gdelt_builds_24_hour_article_list_params(self):
         self.assertEqual(
             GDELTClient().build_params("wheat breeding", 25),
@@ -400,8 +473,248 @@ class SearchAggregationTests(unittest.TestCase):
 
         self.assertEqual(result[0].url, "https://other.example/rice")
 
+    def test_title_similarity_uses_transitive_components(self):
+        coordinator = AgriculturalNewsSearch(
+            similarity_threshold=0.6,
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+        reports = [
+            article(
+                "alpha beta gamma delta",
+                "2026-07-31T12:00:00+00:00",
+                url="https://a.example/story",
+                publisher="A News",
+                publisher_domain="a.example",
+            ),
+            article(
+                "alpha beta gamma epsilon",
+                "2026-07-31T13:00:00+00:00",
+                url="https://b.example/story",
+                publisher="B News",
+                publisher_domain="b.example",
+            ),
+            article(
+                "alpha epsilon zeta eta",
+                "2026-07-31T14:00:00+00:00",
+                url="https://c.example/story",
+                publisher="C News",
+                publisher_domain="c.example",
+            ),
+        ]
+        self.assertGreaterEqual(
+            title_similarity(reports[0].title, reports[1].title), 0.6
+        )
+        self.assertGreaterEqual(
+            title_similarity(reports[1].title, reports[2].title), 0.6
+        )
+        self.assertLess(
+            title_similarity(reports[0].title, reports[2].title), 0.6
+        )
+
+        result = coordinator.aggregate(reports)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].title, reports[2].title)
+        self.assertEqual(result[0].source_count, 3)
+        self.assertEqual(result[0].related_publishers, {"A News", "B News"})
+
+    def test_url_bridge_merges_two_existing_title_components(self):
+        coordinator = AgriculturalNewsSearch(
+            similarity_threshold=0.8,
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+        reports = [
+            article(
+                "rice breeding alpha report",
+                "2026-07-31T11:00:00+00:00",
+                url="https://a.example/one",
+                publisher="A",
+                publisher_domain="a.example",
+            ),
+            article(
+                "wheat genomics beta report",
+                "2026-07-31T12:00:00+00:00",
+                url="https://b.example/two",
+                publisher="B",
+                publisher_domain="b.example",
+            ),
+            article(
+                "rice breeding alpha report!",
+                "2026-07-31T13:00:00+00:00",
+                url="https://bridge.example/story",
+                publisher="Bridge A",
+                publisher_domain="bridge-a.example",
+            ),
+            article(
+                "wheat genomics beta report!",
+                "2026-07-31T14:00:00+00:00",
+                url="https://bridge.example/story?utm_source=x",
+                publisher="Bridge B",
+                publisher_domain="bridge-b.example",
+            ),
+        ]
+
+        result = coordinator.aggregate(reports)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].source_count, 4)
+
+    def test_google_report_without_source_url_counts_publisher_name(self):
+        report = article(
+            "Rice breeding report",
+            "2026-07-31T14:00:00+00:00",
+            url="https://news.google.com/rss/articles/report",
+            publisher="Named Publisher",
+            providers={"google_news"},
+            publisher_domain="",
+        )
+
+        result = self.coordinator.aggregate([report])
+
+        self.assertEqual(result[0].source_count, 1)
+
 
 class SearchFailureToleranceTests(unittest.TestCase):
+    def test_string_false_provider_flags_are_not_enabled(self):
+        gdelt = MagicMock()
+        google = MagicMock()
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            providers={"gdelt": "false", "google_news": "0"},
+            topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+        )
+
+        coordinator.search()
+
+        gdelt.fetch.assert_not_called()
+        google.fetch.assert_not_called()
+
+    def test_malformed_direct_provider_flags_use_defaults_and_warn(self):
+        gdelt = MagicMock()
+        gdelt.fetch.return_value = []
+        google = MagicMock()
+        google.fetch.return_value = []
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output = StringIO()
+
+        with redirect_stdout(output):
+            coordinator = AgriculturalNewsSearch(
+                gdelt_client=gdelt,
+                google_news_client=google,
+                providers={"gdelt": "yes", "google_news": []},
+                topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+            )
+            coordinator.search()
+
+        self.assertEqual(gdelt.fetch.call_count, 1)
+        self.assertEqual(google.fetch.call_count, 2)
+        self.assertIn("providers.gdelt", output.getvalue())
+        self.assertIn("providers.google_news", output.getvalue())
+
+    def test_provider_failures_log_provider_query_topic_and_exception_type(self):
+        gdelt = MagicMock()
+        gdelt.fetch.side_effect = TimeoutError("timeout")
+        google = MagicMock()
+        google.fetch.return_value = []
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+        )
+
+        from contextlib import redirect_stdout
+        from io import StringIO
+        output = StringIO()
+        with redirect_stdout(output):
+            result = coordinator.search()
+
+        message = output.getvalue()
+        self.assertEqual(result.failed_providers, ["gdelt"])
+        self.assertIn("gdelt", message)
+        self.assertIn("gene-editing", message)
+        self.assertIn("rice", message)
+        self.assertIn("TimeoutError", message)
+
+    def test_provider_limit_is_total_budget_and_distributed_across_topics(self):
+        def result_for(provider):
+            def make_results(query, topic, *_args):
+                return [
+                    SearchArticle(
+                        title=f"{query}-{index}",
+                        published_at="2026-07-31T14:00:00+00:00",
+                        url=f"https://{provider}-{topic}-{index}.example/story",
+                        publisher=f"{provider}-{index}",
+                        publisher_domain=f"{provider}-{topic}-{index}.example",
+                        language="en",
+                        topic=topic,
+                        providers={provider},
+                    )
+                    for index in range(5)
+                ]
+            return make_results
+
+        gdelt = MagicMock()
+        gdelt.fetch.side_effect = result_for("gdelt")
+        google = MagicMock()
+        google.fetch.side_effect = result_for("google_news")
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            topics=[
+                {"id": "one", "zh": "中文一", "en": "english one"},
+                {"id": "two", "zh": "中文二", "en": "english two"},
+            ],
+            max_results_per_provider=3,
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+        result = coordinator.search()
+
+        provider_counts = {
+            provider: sum(provider in item.providers for item in result.items)
+            for provider in ("gdelt", "google_news")
+        }
+        self.assertLessEqual(provider_counts["gdelt"], 3)
+        self.assertLessEqual(provider_counts["google_news"], 3)
+        self.assertEqual({item.topic for item in result.items}, {"one", "two"})
+        self.assertEqual(
+            [call.args[2] for call in gdelt.fetch.call_args_list],
+            [2, 1],
+        )
+
+    def test_small_provider_budget_does_not_let_first_query_monopolize(self):
+        gdelt = MagicMock()
+        gdelt.fetch.side_effect = lambda query, topic, limit: [
+            SearchArticle(
+                title=f"{topic}-{index}",
+                published_at="2026-07-31T14:00:00+00:00",
+                url=f"https://{topic}-{index}.example/story",
+                publisher=topic,
+                language="en",
+                topic=topic,
+                providers={"gdelt"},
+            )
+            for index in range(limit)
+        ]
+        google = MagicMock()
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            providers={"gdelt": True, "google_news": False},
+            topics=[
+                {"id": "one", "en": "one"},
+                {"id": "two", "en": "two"},
+            ],
+            max_results_per_provider=2,
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+        result = coordinator.search()
+
+        self.assertEqual({item.topic for item in result.items}, {"one", "two"})
+        self.assertEqual([call.args[2] for call in gdelt.fetch.call_args_list], [1, 1])
     def test_disabled_gdelt_provider_is_never_called(self):
         gdelt = MagicMock()
         google = MagicMock()
@@ -458,7 +771,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
         self.assertEqual(len(result.items), 1)
         self.assertEqual(google.fetch.call_count, 2)
 
-    def test_limits_google_results_per_query(self):
+    def test_limits_google_results_across_all_queries(self):
         gdelt = MagicMock()
         gdelt.fetch.return_value = []
         google = MagicMock()
@@ -482,7 +795,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
 
         result = coordinator.search()
 
-        self.assertEqual([item.title for item in result.items], ["Chinese first", "English first"])
+        self.assertEqual([item.title for item in result.items], ["Chinese first"])
 
     def test_google_failure_is_deduplicated_and_other_provider_results_survive(self):
         gdelt = MagicMock()

@@ -4,6 +4,7 @@
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import math
 import re
 from difflib import SequenceMatcher
 from typing import Any, Mapping
@@ -50,6 +51,26 @@ LANGUAGE_ALIASES = {
     "zh-cn": "zh",
     "zh-hans": "zh",
 }
+MAX_URL_LENGTH = 4096
+SAFE_URL_SCHEMES = {"http", "https"}
+NEWS_SEARCH_PROVIDERS = {"gdelt", "google_news"}
+
+
+def _parse_explicit_bool(value: object, default: bool, label: str) -> bool:
+    """Parse booleans without treating arbitrary non-empty strings as true."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    print(
+        f"[新闻搜索] {label} 布尔值格式错误 ({value!r})，"
+        f"使用默认值 {default}"
+    )
+    return default
 
 
 def _parse_timestamp(value: object) -> datetime | None:
@@ -91,6 +112,23 @@ def _publisher_from_url(url: str) -> str:
         return ""
 
 
+def _is_safe_http_url(url: object) -> bool:
+    """Return whether a provider URL is a bounded absolute HTTP(S) URL."""
+    if not isinstance(url, str):
+        return False
+    if not url or len(url) > MAX_URL_LENGTH or re.search(r"\s|[\x00-\x1f\x7f]", url):
+        return False
+    try:
+        parts = urlsplit(url)
+        if parts.scheme.casefold() not in SAFE_URL_SCHEMES or not parts.hostname:
+            return False
+        # Accessing ``port`` also rejects malformed/non-numeric port syntax.
+        _ = parts.port
+    except (ValueError, UnicodeError):
+        return False
+    return True
+
+
 def _normalize_language(language: str) -> str:
     """Map provider-specific language labels to a shared language code."""
     normalized = language.strip().casefold().replace("_", "-")
@@ -112,6 +150,8 @@ def _normalize_publisher_domain(value: str) -> str:
 
 def canonicalize_url(url: str) -> str:
     """Remove fragments and known tracking parameters from a URL."""
+    if not _is_safe_http_url(url):
+        return ""
     try:
         parts = urlsplit(url)
         query = urlencode([
@@ -125,8 +165,8 @@ def canonicalize_url(url: str) -> str:
             query,
             "",
         ))
-    except ValueError:
-        return url
+    except (ValueError, UnicodeError):
+        return ""
 
 
 def normalize_title(title: str) -> str:
@@ -166,8 +206,14 @@ class AgriculturalNewsSearch:
         self.similarity_threshold = similarity_threshold
         provider_config = providers if isinstance(providers, Mapping) else {}
         self.providers = {
-            "gdelt": bool(provider_config.get("gdelt", True)),
-            "google_news": bool(provider_config.get("google_news", True)),
+            "gdelt": _parse_explicit_bool(
+                provider_config.get("gdelt", True), True, "providers.gdelt"
+            ),
+            "google_news": _parse_explicit_bool(
+                provider_config.get("google_news", True),
+                True,
+                "providers.google_news",
+            ),
         }
         authority_values = (
             authority_domains
@@ -212,15 +258,6 @@ class AgriculturalNewsSearch:
             return candidate_authority
         return self._newer(candidate, current)
 
-    def _matches_group(self, group: dict[str, Any], article: SearchArticle) -> bool:
-        if group["urls"] & {canonicalize_url(article.url)}:
-            return True
-        primary = group["primary"]
-        return (
-            _normalize_language(primary.language) == _normalize_language(article.language)
-            and title_similarity(primary.title, article.title) >= self.similarity_threshold
-        )
-
     def _current_time(self, now: datetime | str | None) -> datetime:
         if now is None:
             candidate = self.now_func()
@@ -242,7 +279,7 @@ class AgriculturalNewsSearch:
     ) -> list[SearchArticle]:
         """Strictly retain recent reports, then merge equivalent coverage."""
         current_time = self._current_time(now)
-        groups: list[dict[str, Any]] = []
+        normalized_articles: list[SearchArticle] = []
         for article in articles:
             published_at = _parse_timestamp(article.published_at)
             if published_at is None:
@@ -251,56 +288,81 @@ class AgriculturalNewsSearch:
             if age.total_seconds() < 0 or age.total_seconds() > 24 * 60 * 60:
                 continue
 
+            normalized_url = canonicalize_url(article.url)
+            if not normalized_url:
+                continue
             normalized = replace(
                 article,
-                url=canonicalize_url(article.url),
+                url=normalized_url,
                 language=_normalize_language(article.language),
                 publisher_domain=self._article_publisher_domain(article),
                 providers=set(article.providers),
                 related_publishers=set(article.related_publishers),
             )
-            group = next(
-                (group for group in groups if self._matches_group(group, normalized)),
-                None,
-            )
-            if group is None:
-                groups.append({
-                    "primary": normalized,
-                    "urls": {normalized.url},
-                    "providers": set(normalized.providers),
-                    "publisher_domains": (
-                        {normalized.publisher_domain}
-                        if normalized.publisher_domain
-                        else set()
-                    ),
-                    "publishers": {normalized.publisher} if normalized.publisher else set(),
-                })
-                continue
+            normalized_articles.append(normalized)
 
-            group["urls"].add(normalized.url)
-            group["providers"].update(normalized.providers)
-            if normalized.publisher_domain:
-                group["publisher_domains"].add(normalized.publisher_domain)
-            if normalized.publisher:
-                group["publishers"].add(normalized.publisher)
-            if self._prefer_primary(group["primary"], normalized):
-                group["primary"] = normalized
+        parents = list(range(len(normalized_articles)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root == right_root:
+                return
+            # Preserve stable component order by always retaining the earlier root.
+            if left_root > right_root:
+                left_root, right_root = right_root, left_root
+            parents[right_root] = left_root
+
+        for left_index, left in enumerate(normalized_articles):
+            for right_index in range(left_index):
+                right = normalized_articles[right_index]
+                same_url = left.url == right.url
+                similar_title = (
+                    left.language == right.language
+                    and title_similarity(left.title, right.title)
+                    >= self.similarity_threshold
+                )
+                if same_url or similar_title:
+                    union(left_index, right_index)
+
+        components: dict[int, list[SearchArticle]] = {}
+        for index, article in enumerate(normalized_articles):
+            components.setdefault(find(index), []).append(article)
 
         results = []
-        for group in groups:
-            primary = group["primary"]
-            publishers = group["publishers"]
-            publisher_domains = group["publisher_domains"]
+        for component_index in sorted(components):
+            component = components[component_index]
+            primary = component[0]
+            providers: set[str] = set()
+            publishers: set[str] = set()
+            source_keys: set[str] = set()
+            for candidate in component:
+                providers.update(candidate.providers)
+                if candidate.publisher:
+                    publishers.add(candidate.publisher)
+                if candidate.publisher_domain:
+                    source_keys.add(f"domain:{candidate.publisher_domain}")
+                elif candidate.publisher:
+                    source_keys.add(f"publisher:{candidate.publisher.strip().casefold()}")
+                if self._prefer_primary(primary, candidate):
+                    primary = candidate
             published_at = _parse_timestamp(primary.published_at)
             age_hours = (current_time - published_at).total_seconds() / 3600
-            coverage = min(len(publisher_domains) / 3, 1.0)
+            source_count = max(1, len(source_keys))
+            coverage = min(source_count / 3, 1.0)
             authority = 1.0 if self._is_authority_domain(primary.publisher_domain) else 0.0
             recency = max(0.0, 1.0 - age_hours / 24.0)
             results.append(replace(
                 primary,
-                providers=group["providers"],
+                providers=providers,
                 related_publishers=publishers - {primary.publisher},
-                source_count=len(publisher_domains),
+                source_count=source_count,
                 pre_hot_score=round(0.5 * coverage + 0.3 * authority + 0.2 * recency, 4),
             ))
         return results
@@ -314,30 +376,58 @@ class AgriculturalNewsSearch:
             if provider not in failed_providers:
                 failed_providers.append(provider)
 
+        try:
+            provider_budget = max(1, int(self.max_results_per_provider))
+        except (TypeError, ValueError):
+            provider_budget = 50
+
+        gdelt_queries: list[tuple[str, str, str]] = []
+        google_queries: list[tuple[str, str, str]] = []
         for topic in self.topics:
             topic_id = str(topic.get("id") or "")
             english_query = str(topic.get("en") or "").strip()
             chinese_query = str(topic.get("zh") or "").strip()
-            if english_query and self.providers["gdelt"]:
+            if english_query:
+                gdelt_queries.append((english_query, topic_id, "en"))
+            if chinese_query:
+                google_queries.append((chinese_query, topic_id, "zh"))
+            if english_query:
+                google_queries.append((english_query, topic_id, "en"))
+
+        def run_queries(
+            provider: str,
+            queries: list[tuple[str, str, str]],
+        ) -> None:
+            remaining = provider_budget
+            for index, (query, topic_id, language) in enumerate(queries):
+                if remaining <= 0:
+                    break
+                queries_left = len(queries) - index
+                allocation = max(1, math.ceil(remaining / queries_left))
                 try:
-                    articles.extend(self.gdelt_client.fetch(
-                        english_query, topic_id, self.max_results_per_provider
-                    ))
-                except Exception:
-                    record_failure("gdelt")
-            if not self.providers["google_news"]:
-                continue
-            for query, language in ((chinese_query, "zh"), (english_query, "en")):
-                if not query:
-                    continue
-                try:
-                    articles.extend(
-                        self.google_news_client.fetch(query, topic_id, language)[
-                            :self.max_results_per_provider
-                        ]
+                    if provider == "gdelt":
+                        fetched = self.gdelt_client.fetch(
+                            query, topic_id, allocation
+                        )
+                    else:
+                        fetched = self.google_news_client.fetch(
+                            query, topic_id, language
+                        )
+                    accepted = list(fetched)[:allocation]
+                    articles.extend(accepted)
+                    remaining -= len(accepted)
+                except Exception as exc:
+                    record_failure(provider)
+                    print(
+                        f"[新闻搜索] {provider} 请求失败: "
+                        f"topic={topic_id}, query={query!r}, "
+                        f"error={type(exc).__name__}: {exc}"
                     )
-                except Exception:
-                    record_failure("google_news")
+
+        if self.providers["gdelt"]:
+            run_queries("gdelt", gdelt_queries)
+        if self.providers["google_news"]:
+            run_queries("google_news", google_queries)
 
         return NewsSearchResult(self.aggregate(articles), failed_providers)
 
@@ -347,9 +437,17 @@ class GDELTClient:
 
     endpoint = "https://api.gdeltproject.org/api/v2/doc/doc"
 
-    def __init__(self, session: DirectFirstSession | None = None, timeout: int = 15):
+    def __init__(
+        self,
+        session: DirectFirstSession | None = None,
+        timeout: int = 15,
+        use_proxy: bool = False,
+        proxy_url: str = "",
+    ):
         self.session = session or DirectFirstSession(
-            headers={"User-Agent": "TrendRadar/2.0 News Search"}
+            headers={"User-Agent": "TrendRadar/2.0 News Search"},
+            use_proxy=use_proxy,
+            proxy_url=proxy_url,
         )
         self.timeout = timeout
 
@@ -386,7 +484,7 @@ class GDELTClient:
             title = str(item.get("title") or "").strip()
             url = str(item.get("url") or "").strip()
             published_at = _format_timestamp(item.get("seendate"))
-            if not title or not url or not published_at:
+            if not title or not _is_safe_http_url(url) or not published_at:
                 continue
 
             publisher = str(item.get("domain") or "").strip()
@@ -411,9 +509,17 @@ class GoogleNewsRSSClient:
 
     endpoint = "https://news.google.com/rss/search"
 
-    def __init__(self, session: DirectFirstSession | None = None, timeout: int = 15):
+    def __init__(
+        self,
+        session: DirectFirstSession | None = None,
+        timeout: int = 15,
+        use_proxy: bool = False,
+        proxy_url: str = "",
+    ):
         self.session = session or DirectFirstSession(
-            headers={"User-Agent": "TrendRadar/2.0 News Search"}
+            headers={"User-Agent": "TrendRadar/2.0 News Search"},
+            use_proxy=use_proxy,
+            proxy_url=proxy_url,
         )
         self.timeout = timeout
 
@@ -441,7 +547,7 @@ class GoogleNewsRSSClient:
             title = str(entry.get("title") or "")
             url = str(entry.get("link") or "").strip()
             published_at = _format_timestamp(entry.get("published"))
-            if not title or not url or not published_at:
+            if not title or not _is_safe_http_url(url) or not published_at:
                 continue
 
             source = entry.get("source") or {}

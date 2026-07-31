@@ -39,6 +39,21 @@ def _get_env_str(key: str, default: str = "") -> str:
     return os.environ.get(key, "").strip() or default
 
 
+def _parse_config_bool(value: object, default: bool, path: str) -> bool:
+    """Parse an explicit YAML boolean/string and fail to the stated default."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().casefold()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    if value is not None:
+        print(f"[警告] {path} 布尔值格式错误 ({value!r})，使用默认值 {default}")
+    return default
+
+
 def _load_app_config(config_data: Dict) -> Dict:
     """加载应用配置"""
     app_config = config_data.get("app", {})
@@ -249,13 +264,21 @@ def _load_rss_config(config_data: Dict) -> Dict:
     feeds = feeds_value if isinstance(feeds_value, list) else []
 
     runtime_news_search = {
-        "ENABLED": bool(news_search.get("enabled", False)),
+        "ENABLED": _parse_config_bool(
+            news_search.get("enabled", False), False, "rss.news_search.enabled"
+        ),
         "MAX_RESULTS_PER_PROVIDER": max_results,
         "MAX_HOTSPOTS": max_hotspots,
         "SIMILARITY_THRESHOLD": similarity,
         "PROVIDERS": {
-            "gdelt": bool(providers.get("gdelt", True)),
-            "google_news": bool(providers.get("google_news", True)),
+            "gdelt": _parse_config_bool(
+                providers.get("gdelt", True), True,
+                "rss.news_search.providers.gdelt",
+            ),
+            "google_news": _parse_config_bool(
+                providers.get("google_news", True), True,
+                "rss.news_search.providers.google_news",
+            ),
         },
         "AUTHORITY_DOMAINS": authority_domains,
         "TOPICS": topics,
