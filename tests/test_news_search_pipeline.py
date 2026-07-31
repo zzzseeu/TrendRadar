@@ -12,8 +12,10 @@ from trendradar.__main__ import (
     SEARCH_FEED_ID,
     merge_news_search_into_rss,
 )
+from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.loader import _load_rss_config
 from trendradar.crawler.news_search import NewsSearchResult, SearchArticle
+from trendradar.report.formatter import format_title_for_platform
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.storage.local import LocalStorageBackend
 
@@ -584,3 +586,282 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         saved = analyzer.storage_manager.saved[0]
         self.assertEqual(list(saved.items), ["regular"])
         self.assertEqual(saved.id_to_name, {"regular": "Regular feed"})
+
+
+class NewsSearchHotspotRankingTests(unittest.TestCase):
+    @staticmethod
+    def _pipeline(max_hotspots=5, min_score=0):
+        return AIFilterPipeline(
+            {
+                "RSS": {
+                    "ENABLED": True,
+                    "FEEDS": [],
+                    "FRESHNESS_FILTER": {"ENABLED": False, "MAX_AGE_DAYS": 1},
+                    "NEWS_SEARCH": {"MAX_HOTSPOTS": max_hotspots},
+                },
+                "AI_FILTER": {
+                    "HIGHLIGHT_TOP_N": 20,
+                    "MIN_SCORE": min_score,
+                },
+                "FILTER": {},
+                "TIMEZONE": "Asia/Shanghai",
+            },
+            storage_manager=None,
+            get_time_func=lambda: None,
+        )
+
+    @staticmethod
+    def _search_result(index, tag="育种", **overrides):
+        item = {
+            "news_item_id": index,
+            "tag": tag,
+            "tag_priority": 1,
+            "title": f"Search event {index}",
+            "source_id": SEARCH_FEED_ID,
+            "source_name": "农业育种热点搜索",
+            "source_type": "rss",
+            "url": f"https://example.org/search/{index}",
+            "first_time": "2026-07-31T08:00:00+00:00",
+            "last_time": "2026-07-31T08:00:00+00:00",
+            "relevance_score": index / 10,
+            "importance_score": index / 20,
+            "source_count": index,
+            "pre_hot_score": index / 10,
+            "search_topic": "gene-editing",
+            "search_providers": "gdelt,google_news",
+        }
+        item.update(overrides)
+        return item
+
+    @staticmethod
+    def _flatten_search_items(result):
+        return [
+            item
+            for tag in result.tags
+            for item in tag["items"]
+            if item["source_id"] == SEARCH_FEED_ID
+        ]
+
+    def test_search_results_use_combined_score_and_are_capped_at_five(self):
+        raw_results = [self._search_result(index) for index in range(1, 7)]
+
+        result = self._pipeline()._build_filter_result(
+            raw_results=raw_results,
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=6,
+        )
+
+        search_items = self._flatten_search_items(result)
+        self.assertEqual(len(search_items), 5)
+        self.assertEqual(
+            [item["final_hot_score"] for item in search_items],
+            sorted(
+                [item["final_hot_score"] for item in search_items],
+                reverse=True,
+            ),
+        )
+        highest = search_items[0]
+        self.assertEqual(highest["title"], "Search event 6")
+        self.assertEqual(
+            highest["final_hot_score"],
+            round(0.45 * 0.6 + 0.35 * 0.6 + 0.20 * 0.3, 4),
+        )
+
+    def test_cap_is_global_across_tags_deduplicates_and_keeps_regular_rss(self):
+        duplicate_low = self._search_result(
+            10,
+            tag="标签甲",
+            title="Duplicated event",
+            url="https://example.org/duplicate",
+            relevance_score=0.4,
+            importance_score=0.4,
+            pre_hot_score=0.4,
+        )
+        duplicate_high = self._search_result(
+            10,
+            tag="标签乙",
+            title="Duplicated event",
+            url="https://example.org/duplicate",
+            relevance_score=0.95,
+            importance_score=0.9,
+            pre_hot_score=0.9,
+        )
+        ordinary = {
+            "news_item_id": 10,
+            "tag": "标签甲",
+            "tag_priority": 1,
+            "title": "Ordinary RSS must remain",
+            "source_id": "regular-feed",
+            "source_name": "Regular feed",
+            "source_type": "rss",
+            "url": "https://example.org/duplicate",
+            "relevance_score": 0.1,
+            "importance_score": 0.1,
+        }
+        raw_results = [
+            duplicate_low,
+            ordinary,
+            self._search_result(2, tag="标签甲"),
+            duplicate_high,
+            self._search_result(3, tag="标签乙"),
+        ]
+
+        result = self._pipeline(max_hotspots=2)._build_filter_result(
+            raw_results=raw_results,
+            tags=[
+                {"tag": "标签甲", "priority": 1},
+                {"tag": "标签乙", "priority": 2},
+            ],
+            total_processed=5,
+        )
+
+        search_items = self._flatten_search_items(result)
+        self.assertEqual(len(search_items), 2)
+        self.assertEqual(
+            sum(item["title"] == "Duplicated event" for item in search_items),
+            1,
+        )
+        duplicate = next(
+            item for item in search_items if item["title"] == "Duplicated event"
+        )
+        self.assertEqual(duplicate["relevance_score"], 0.95)
+        ordinary_items = [
+            item
+            for tag in result.tags
+            for item in tag["items"]
+            if item["source_id"] == "regular-feed"
+        ]
+        self.assertEqual(len(ordinary_items), 1)
+
+    def test_non_default_cap_and_ties_keep_stable_input_order(self):
+        tied = [
+            self._search_result(
+                index,
+                relevance_score=0.8,
+                importance_score=0.7,
+                pre_hot_score=0.6,
+            )
+            for index in (30, 20, 10)
+        ]
+
+        result = self._pipeline(max_hotspots=2)._build_filter_result(
+            raw_results=tied,
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=3,
+        )
+
+        self.assertEqual(
+            [item["title"] for item in self._flatten_search_items(result)],
+            ["Search event 30", "Search event 20"],
+        )
+
+    def test_cap_is_filled_from_results_that_pass_minimum_relevance(self):
+        below_threshold = self._search_result(
+            99,
+            title="Below threshold",
+            relevance_score=0.6,
+            importance_score=1.0,
+            pre_hot_score=1.0,
+        )
+        eligible = [
+            self._search_result(
+                index,
+                relevance_score=0.7 + index / 100,
+                importance_score=0.5,
+                pre_hot_score=0.5,
+            )
+            for index in range(1, 7)
+        ]
+
+        result = self._pipeline(max_hotspots=5, min_score=0.7)._build_filter_result(
+            raw_results=[below_threshold, *eligible],
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=7,
+        )
+
+        search_items = self._flatten_search_items(result)
+        self.assertEqual(len(search_items), 5)
+        self.assertNotIn("Below threshold", [item["title"] for item in search_items])
+
+    def test_search_metadata_is_passed_to_report_title_entry(self):
+        item = self._search_result(5)
+        result = self._pipeline()._build_filter_result(
+            raw_results=[item],
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=1,
+        )
+
+        _, rss_stats, _ = self._pipeline().convert_to_report_data(result)
+        title = rss_stats[0]["titles"][0]
+        self.assertEqual(title["source_count"], 5)
+        self.assertEqual(
+            title["final_hot_score"],
+            round(0.45 * 0.5 + 0.35 * 0.5 + 0.20 * 0.25, 4),
+        )
+
+
+class NewsSearchCoverageFormattingTests(unittest.TestCase):
+    @staticmethod
+    def _title_data(source_count):
+        return {
+            "title": "Rice <gene> & breeding",
+            "source_name": "Search & News",
+            "time_display": "",
+            "count": 1,
+            "ranks": [],
+            "rank_threshold": 5,
+            "url": "https://example.org/article?a=1&b=2",
+            "mobile_url": "",
+            "reader_url": "",
+            "is_new": False,
+            "source_count": source_count,
+        }
+
+    def test_major_notification_platforms_show_multi_source_coverage(self):
+        for platform in (
+            "wework",
+            "dingtalk",
+            "feishu",
+            "bark",
+            "telegram",
+            "ntfy",
+            "slack",
+        ):
+            with self.subTest(platform=platform):
+                rendered = format_title_for_platform(
+                    platform,
+                    self._title_data(source_count=3),
+                )
+                self.assertIn("🔥 3家来源", rendered)
+
+    def test_html_escapes_content_and_uses_coverage_count_span(self):
+        rendered = format_title_for_platform(
+            "html",
+            self._title_data(source_count=3),
+        )
+
+        self.assertIn(
+            '<span class="coverage-count">🔥 3家来源</span>',
+            rendered,
+        )
+        self.assertIn("Rice &lt;gene&gt; &amp; breeding", rendered)
+        self.assertNotIn("Rice <gene>", rendered)
+
+    def test_single_source_hides_coverage_on_all_supported_styles(self):
+        for platform in (
+            "wework",
+            "dingtalk",
+            "feishu",
+            "bark",
+            "telegram",
+            "ntfy",
+            "slack",
+            "html",
+        ):
+            with self.subTest(platform=platform):
+                rendered = format_title_for_platform(
+                    platform,
+                    self._title_data(source_count=1),
+                )
+                self.assertNotIn("家来源", rendered)
+                self.assertNotIn("coverage-count", rendered)

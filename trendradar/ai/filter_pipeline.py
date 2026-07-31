@@ -45,6 +45,17 @@ class AIFilterPipeline:
         self._rss_proxy_url = rss_config.get("PROXY_URL", "")
         self._content_config = self._filter_config.get("CONTENT_ENRICHMENT", {})
 
+        news_search_config = rss_config.get("NEWS_SEARCH", {})
+        if not isinstance(news_search_config, dict):
+            news_search_config = {}
+        try:
+            self._max_search_hotspots = max(
+                1,
+                int(news_search_config.get("MAX_HOTSPOTS", 5)),
+            )
+        except (TypeError, ValueError):
+            self._max_search_hotspots = 5
+
         freshness_config = rss_config.get("FRESHNESS_FILTER", {})
         self._freshness_enabled = freshness_config.get("ENABLED", True)
         self._default_max_age_days = freshness_config.get("MAX_AGE_DAYS", 3)
@@ -543,6 +554,7 @@ class AIFilterPipeline:
             seen_titles[tag_name].add(title)
 
             tag_groups[tag_name]["items"].append({
+                "news_item_id": r.get("news_item_id"),
                 "title": title,
                 "source_id": r.get("source_id", ""),
                 "source_name": r.get("source_name", ""),
@@ -565,8 +577,14 @@ class AIFilterPipeline:
                 "content_excerpt": r.get("content_excerpt", ""),
                 "importance_score": r.get("importance_score", 0),
                 "ai_summary": r.get("ai_summary", ""),
+                "source_count": r.get("source_count", 1),
+                "pre_hot_score": r.get("pre_hot_score", 0),
+                "search_topic": r.get("search_topic", ""),
+                "search_providers": r.get("search_providers", ""),
             })
             tag_groups[tag_name]["count"] += 1
+
+        self._limit_search_hotspots(tag_groups)
 
         # 跨标签、跨来源统一选择重点新闻。importance_score 是科研/育种价值，
         # relevance_score 是与用户兴趣的相关性；证据层级仅用于同分时优先。
@@ -634,6 +652,73 @@ class AIFilterPipeline:
             total_processed=total_processed,
             success=True,
         )
+
+    @staticmethod
+    def _search_item_identity(item: Dict) -> tuple:
+        news_item_id = item.get("news_item_id")
+        if news_item_id not in (None, ""):
+            return ("id", str(news_item_id))
+        url = str(item.get("url", "")).strip()
+        if url:
+            return ("url", url)
+        return ("title", str(item.get("title", "")).strip())
+
+    @staticmethod
+    def _score_value(value: Any) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _limit_search_hotspots(self, tag_groups: Dict[str, Dict]) -> None:
+        """跨标签选择搜索热点，同时不改变普通 RSS 条目。"""
+        best_by_event: Dict[tuple, tuple] = {}
+        sequence = 0
+        min_score = self._score_value(self._filter_config.get("MIN_SCORE", 0))
+
+        for group in tag_groups.values():
+            for item in group.get("items", []):
+                if item.get("source_id") != "agri-breeding-search":
+                    continue
+                if self._score_value(item.get("relevance_score")) < min_score:
+                    continue
+                if not self._is_rss_item_fresh(
+                    item.get("source_id", ""),
+                    item.get("first_time", ""),
+                ):
+                    continue
+
+                final_hot_score = round(
+                    0.45 * self._score_value(item.get("pre_hot_score"))
+                    + 0.35 * self._score_value(item.get("relevance_score"))
+                    + 0.20 * self._score_value(item.get("importance_score")),
+                    4,
+                )
+                item["final_hot_score"] = final_hot_score
+                identity = self._search_item_identity(item)
+                candidate = (final_hot_score, sequence, item)
+                current = best_by_event.get(identity)
+                if current is None or final_hot_score > current[0]:
+                    best_by_event[identity] = candidate
+                sequence += 1
+
+        ranked = sorted(
+            best_by_event.values(),
+            key=lambda candidate: (-candidate[0], candidate[1]),
+        )
+        selected_objects = {
+            id(candidate[2])
+            for candidate in ranked[:self._max_search_hotspots]
+        }
+
+        for group in tag_groups.values():
+            group["items"] = [
+                item
+                for item in group.get("items", [])
+                if item.get("source_id") != "agri-breeding-search"
+                or id(item) in selected_objects
+            ]
+            group["count"] = len(group["items"])
 
     def convert_to_report_data(
         self,
@@ -738,6 +823,8 @@ class AIFilterPipeline:
                     "importance_score": item.get("importance_score", 0),
                     "ai_summary": item.get("ai_summary", ""),
                     "highlight_rank": item.get("highlight_rank"),
+                    "source_count": item.get("source_count", 1),
+                    "final_hot_score": item.get("final_hot_score"),
                 }
 
                 if source_type == "rss":

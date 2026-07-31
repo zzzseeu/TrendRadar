@@ -16,10 +16,16 @@ def _append_ai_details(platform: str, result: str, title_data: Dict) -> str:
     summary = " ".join(str(title_data.get("ai_summary", "")).split())
     content_level = title_data.get("content_level", "")
     risk_warning = " ".join(str(title_data.get("risk_warning", "")).split())
+    try:
+        source_count = int(title_data.get("source_count", 1) or 1)
+    except (TypeError, ValueError):
+        source_count = 1
 
     if platform == "feishu":
         if highlight_rank:
             result += f" <font color='red'>⭐ TOP {highlight_rank}</font>"
+        if source_count > 1:
+            result += f" <font color='red'>🔥 {source_count}家来源</font>"
         if summary:
             result += f"\n    <font color='grey'>摘要：{html_escape(summary)}</font>"
         if content_level in {"summary", "title_only"} and risk_warning:
@@ -27,6 +33,8 @@ def _append_ai_details(platform: str, result: str, title_data: Dict) -> str:
     elif platform == "telegram":
         if highlight_rank:
             result += f" <b>⭐ TOP {highlight_rank}</b>"
+        if source_count > 1:
+            result += f" <b>🔥 {source_count}家来源</b>"
         if summary:
             result += f"\n    摘要：{html_escape(summary)}"
         if content_level in {"summary", "title_only"} and risk_warning:
@@ -34,6 +42,8 @@ def _append_ai_details(platform: str, result: str, title_data: Dict) -> str:
     elif platform == "slack":
         if highlight_rank:
             result += f" *⭐ TOP {highlight_rank}*"
+        if source_count > 1:
+            result += f" *🔥 {source_count}家来源*"
         if summary:
             result += f"\n    摘要：{summary}"
         if content_level in {"summary", "title_only"} and risk_warning:
@@ -41,6 +51,12 @@ def _append_ai_details(platform: str, result: str, title_data: Dict) -> str:
     elif platform == "html":
         if highlight_rank:
             result += f' <span class="highlight-badge">⭐ TOP {highlight_rank}</span>'
+        if source_count > 1:
+            escaped_source_count = html_escape(str(source_count))
+            result += (
+                f' <span class="coverage-count">'
+                f'🔥 {escaped_source_count}家来源</span>'
+            )
         if summary:
             result += f'<div class="ai-item-summary">摘要：{html_escape(summary)}</div>'
         if content_level in {"summary", "title_only"} and risk_warning:
@@ -48,6 +64,8 @@ def _append_ai_details(platform: str, result: str, title_data: Dict) -> str:
     else:
         if highlight_rank:
             result += f" ⭐ TOP {highlight_rank}"
+        if source_count > 1:
+            result += f" 🔥 {source_count}家来源"
         if summary:
             result += f"\n    摘要：{summary}"
         if content_level in {"summary", "title_only"} and risk_warning:
