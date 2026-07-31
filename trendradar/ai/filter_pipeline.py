@@ -604,12 +604,8 @@ class AIFilterPipeline:
                     ):
                         continue
                 all_items.append(item)
-        regular_ranked_items = sorted(
-            [
-                item
-                for item in all_items
-                if item.get("source_id") != "agri-breeding-search"
-            ],
+        ranked_items = sorted(
+            all_items,
             key=lambda item: (
                 float(item.get("importance_score", 0) or 0),
                 float(item.get("relevance_score", 0) or 0),
@@ -619,15 +615,6 @@ class AIFilterPipeline:
             ),
             reverse=True,
         )
-        search_ranked_items = sorted(
-            [
-                item
-                for item in all_items
-                if item.get("source_id") == "agri-breeding-search"
-            ],
-            key=lambda item: item.get("search_hotspot_rank", 9999),
-        )
-        ranked_items = search_ranked_items + regular_ranked_items
         highlight_top_n = max(
             0, int(self._filter_config.get("HIGHLIGHT_TOP_N", 5))
         )
@@ -637,69 +624,41 @@ class AIFilterPipeline:
 
         # 每个标签内优先显示已入选的重点新闻，其余按重要性和相关度排序。
         for group in tag_groups.values():
-            group["items"].sort(
+            legacy_order = sorted(
+                group["items"],
                 key=lambda item: (
-                    0
-                    if item.get("source_id") == "agri-breeding-search"
-                    else 1,
-                    item.get("search_hotspot_rank", 9999),
                     0 if item.get("highlight_rank") else 1,
                     item.get("highlight_rank", 9999),
                     -float(item.get("importance_score", 0) or 0),
                     -float(item.get("relevance_score", 0) or 0),
                 )
             )
-
-        item_groups = {
-            id(item): group
-            for group in tag_groups.values()
-            for item in group.get("items", [])
-        }
-        search_sections = []
-        last_group_id = None
-        for item in search_ranked_items:
-            group = item_groups[id(item)]
-            group_id = id(group)
-            if search_sections and group_id == last_group_id:
-                search_sections[-1]["items"].append(item)
-                search_sections[-1]["count"] += 1
-            else:
-                section = dict(group)
-                section["items"] = [item]
-                section["count"] = 1
-                search_sections.append(section)
-            last_group_id = group_id
-
-        regular_groups = []
-        for group in tag_groups.values():
-            regular_items = [
-                item
-                for item in group.get("items", [])
-                if item.get("source_id") != "agri-breeding-search"
+            ordered_search = sorted(
+                (
+                    item
+                    for item in legacy_order
+                    if item.get("source_id") == "agri-breeding-search"
+                ),
+                key=lambda item: item.get("search_hotspot_rank", 9999),
+            )
+            ordered_search_items = iter(ordered_search)
+            group["items"] = [
+                next(ordered_search_items)
+                if item.get("source_id") == "agri-breeding-search"
+                else item
+                for item in legacy_order
             ]
-            if regular_items:
-                regular_group = dict(group)
-                regular_group["items"] = regular_items
-                regular_group["count"] = len(regular_items)
-                regular_groups.append(regular_group)
 
         if self._priority_sort_enabled:
-            regular_groups.sort(
-                key=lambda x: (
-                    x.get("position", 9999),
-                    -x["count"],
-                    x["tag"],
-                ),
+            sorted_tags = sorted(
+                tag_groups.values(),
+                key=lambda x: (x.get("position", 9999), -x["count"], x["tag"]),
             )
         else:
-            regular_groups.sort(
-                key=lambda x: (
-                    -x["count"],
-                    x.get("position", 9999),
-                    x["tag"],
-                ),
+            sorted_tags = sorted(
+                tag_groups.values(),
+                key=lambda x: (-x["count"], x.get("position", 9999), x["tag"]),
             )
-        sorted_tags = search_sections + regular_groups
 
         total_matched = sum(t["count"] for t in sorted_tags)
 

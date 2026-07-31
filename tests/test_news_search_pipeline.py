@@ -590,7 +590,7 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
 
 class NewsSearchHotspotRankingTests(unittest.TestCase):
     @staticmethod
-    def _pipeline(max_hotspots=5, min_score=0):
+    def _pipeline(max_hotspots=5, min_score=0, highlight_top_n=20):
         return AIFilterPipeline(
             {
                 "RSS": {
@@ -600,7 +600,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
                     "NEWS_SEARCH": {"MAX_HOTSPOTS": max_hotspots},
                 },
                 "AI_FILTER": {
-                    "HIGHLIGHT_TOP_N": 20,
+                    "HIGHLIGHT_TOP_N": highlight_top_n,
                     "MIN_SCORE": min_score,
                 },
                 "FILTER": {},
@@ -832,7 +832,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             ["High final score", "Low final score"],
         )
 
-    def test_cross_tag_search_order_is_global_and_regular_order_is_unchanged(self):
+    def test_cross_tag_selection_ranks_are_global_and_regular_order_is_unchanged(self):
         low_final = self._search_result(
             1,
             tag="低热点标签",
@@ -876,13 +876,20 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             total_processed=4,
         )
 
-        search_scores = [
-            item["final_hot_score"]
+        search_ranks = [
+            item["search_hotspot_rank"]
             for tag in result.tags
             for item in tag["items"]
             if item["source_id"] == SEARCH_FEED_ID
         ]
-        self.assertEqual(search_scores, sorted(search_scores, reverse=True))
+        self.assertEqual(set(search_ranks), {1, 2})
+        for tag in result.tags:
+            ranks = [
+                item["search_hotspot_rank"]
+                for item in tag["items"]
+                if item["source_id"] == SEARCH_FEED_ID
+            ]
+            self.assertEqual(ranks, sorted(ranks))
         regular_titles = [
             item["title"]
             for tag in result.tags
@@ -894,7 +901,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             ["Regular high importance", "Regular low importance"],
         )
 
-    def test_cross_tag_interleaving_still_flattens_in_global_hotspot_order(self):
+    def test_cross_tag_interleaving_preserves_unique_ordered_tag_groups(self):
         rank_one = self._search_result(
             1,
             tag="标签甲",
@@ -926,15 +933,99 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             total_processed=3,
         )
 
+        tag_names = [tag["tag"] for tag in result.tags]
+        self.assertEqual(len(tag_names), len(set(tag_names)))
         self.assertEqual(
-            [
+            {
                 item["search_hotspot_rank"]
                 for tag in result.tags
                 for item in tag["items"]
                 if item["source_id"] == SEARCH_FEED_ID
-            ],
-            [1, 2, 3],
+            },
+            {1, 2, 3},
         )
+        for tag in result.tags:
+            ranks = [
+                item["search_hotspot_rank"]
+                for item in tag["items"]
+                if item["source_id"] == SEARCH_FEED_ID
+            ]
+            self.assertEqual(ranks, sorted(ranks))
+
+    def test_mixed_tag_is_not_split_or_duplicated_in_filter_and_report(self):
+        search = self._search_result(
+            1,
+            tag="混合标签",
+            pre_hot_score=0.9,
+            relevance_score=0.8,
+            importance_score=0.7,
+        )
+        ordinary = {
+            "news_item_id": 2,
+            "tag": "混合标签",
+            "tag_priority": 4,
+            "tag_description": "保留描述",
+            "title": "Ordinary item",
+            "source_id": "regular-feed",
+            "source_type": "rss",
+            "relevance_score": 0.9,
+            "importance_score": 0.8,
+        }
+
+        pipeline = self._pipeline()
+        result = pipeline._build_filter_result(
+            raw_results=[ordinary, search],
+            tags=[{"tag": "混合标签", "priority": 4}],
+            total_processed=2,
+        )
+
+        self.assertEqual(len(result.tags), 1)
+        self.assertEqual(result.tags[0]["tag"], "混合标签")
+        self.assertEqual(result.tags[0]["description"], "保留描述")
+        self.assertEqual(result.tags[0]["position"], 4)
+        self.assertEqual(result.tags[0]["count"], 2)
+        self.assertEqual(len(result.tags[0]["items"]), 2)
+        _, rss_stats, _ = pipeline.convert_to_report_data(result)
+        self.assertEqual(len(rss_stats), 1)
+        self.assertEqual(rss_stats[0]["word"], "混合标签")
+        self.assertEqual(rss_stats[0]["count"], 2)
+
+    def test_highlights_keep_legacy_ranking_and_do_not_reserve_search_slots(self):
+        search = self._search_result(
+            1,
+            pre_hot_score=1.0,
+            relevance_score=0.7,
+            importance_score=0.1,
+        )
+        ordinary = {
+            "news_item_id": 2,
+            "tag": "育种",
+            "title": "Ordinary TOP",
+            "source_id": "regular-feed",
+            "source_type": "rss",
+            "relevance_score": 0.9,
+            "importance_score": 1.0,
+            "content_level": "full_text",
+        }
+
+        result = self._pipeline(highlight_top_n=1)._build_filter_result(
+            raw_results=[search, ordinary],
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=2,
+        )
+
+        self.assertEqual(
+            [item["title"] for item in result.highlights],
+            ["Ordinary TOP"],
+        )
+        search_item = self._flatten_search_items(result)[0]
+        self.assertNotIn("highlight_rank", search_item)
+        ordinary_item = next(
+            item
+            for item in result.tags[0]["items"]
+            if item["source_id"] == "regular-feed"
+        )
+        self.assertEqual(ordinary_item["highlight_rank"], 1)
 
     def test_deduplicates_by_id_or_canonical_url_with_transitive_overlap(self):
         same_id = self._search_result(
