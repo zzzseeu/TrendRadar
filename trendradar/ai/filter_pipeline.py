@@ -879,6 +879,7 @@ class AIFilterPipeline:
                     "highlight_rank": item.get("highlight_rank"),
                     "source_count": item.get("source_count", 1),
                     "final_hot_score": item.get("final_hot_score"),
+                    "search_hotspot_rank": item.get("search_hotspot_rank"),
                 }
 
                 if source_type == "rss":

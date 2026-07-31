@@ -798,6 +798,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             title["final_hot_score"],
             round(0.45 * 0.5 + 0.35 * 0.5 + 0.20 * 0.25, 4),
         )
+        self.assertEqual(title["search_hotspot_rank"], 1)
 
     def test_final_hot_score_controls_filter_and_report_order(self):
         high_final = self._search_result(
