@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from email.utils import parsedate_to_datetime
+from urllib.parse import urlsplit
 
 try:
     import feedparser
@@ -30,6 +31,14 @@ class ParsedRSSItem:
     summary: Optional[str] = None
     author: Optional[str] = None
     guid: Optional[str] = None
+
+
+def is_sciencedirect_feed_url(feed_url: str) -> bool:
+    """判断是否为 ScienceDirect 官方 RSS。"""
+    try:
+        return urlsplit(feed_url).hostname == "rss.sciencedirect.com"
+    except ValueError:
+        return False
 
 
 class RSSParser:
@@ -70,7 +79,7 @@ class RSSParser:
 
         items = []
         for entry in feed.entries:
-            item = self._parse_entry(entry)
+            item = self._parse_entry(entry, feed_url)
             if item:
                 items.append(item)
 
@@ -213,7 +222,11 @@ class RSSParser:
 
         return self.parse(response.text, url)
 
-    def _parse_entry(self, entry: Any) -> Optional[ParsedRSSItem]:
+    def _parse_entry(
+        self,
+        entry: Any,
+        feed_url: str = "",
+    ) -> Optional[ParsedRSSItem]:
         """解析单个条目"""
         title = self._clean_text(entry.get("title", ""))
 
@@ -244,6 +257,11 @@ class RSSParser:
             return None
 
         published_at = self._parse_date(entry)
+        if published_at is None and is_sciencedirect_feed_url(feed_url):
+            published_at = self._parse_sciencedirect_description_date(entry)
+            if published_at is None:
+                return None
+
         summary = self._parse_summary(entry)
         author = self._parse_author(entry)
         guid = entry.get("id") or entry.get("guid", {}).get("value") or url
@@ -256,6 +274,30 @@ class RSSParser:
             author=author,
             guid=guid,
         )
+
+    def _parse_sciencedirect_description_date(
+        self,
+        entry: Any,
+    ) -> Optional[str]:
+        """从 ScienceDirect RSS 描述中的 Publication date 提取上线日期。"""
+        raw_summary = entry.get("summary") or entry.get("description", "")
+        summary = self._clean_text(raw_summary)
+        match = re.search(
+            r"Publication date:\s*(?:Available online\s*)?"
+            r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
+            summary,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        for date_format in ("%d %B %Y", "%d %b %Y"):
+            try:
+                return datetime.strptime(match.group(1), date_format).isoformat()
+            except ValueError:
+                continue
+
+        return None
 
     def _clean_text(self, text: str) -> str:
         """清理文本"""

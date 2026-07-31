@@ -190,14 +190,13 @@ def is_within_days(
         timezone: 时区名称（用于获取当前时间）
 
     Returns:
-        True 如果时间在指定天数内（应保留），False 如果超过指定天数（应过滤）
-        如果无法解析时间，返回 True（保留文章）
+        True 如果发布时间不晚于当前时间且在指定天数内（应保留）。
+        时间缺失、无法解析、位于未来或超过指定天数时返回 False。
     """
-    # 无时间戳或禁用过滤时，保留文章
-    if not iso_time:
-        return True
     if max_days <= 0:
         return True  # max_days=0 表示禁用过滤
+    if not iso_time:
+        return False
 
     try:
         dt = None
@@ -222,21 +221,18 @@ def is_within_days(
                 pass
 
         if dt is None:
-            # 无法解析时间，保留文章
-            return True
+            return False
 
         # 获取当前时间（配置的时区，带时区信息）
         now = get_configured_time(timezone)
 
         # 计算时间差（两个带时区的 datetime 相减会自动处理时区差异）
         diff = now - dt
-        days_diff = diff.total_seconds() / (24 * 60 * 60)
-
-        return days_diff <= max_days
+        seconds_diff = diff.total_seconds()
+        return 0 <= seconds_diff <= max_days * 24 * 60 * 60
 
     except Exception:
-        # 出错时保留文章
-        return True
+        return False
 
 
 def calculate_days_old(iso_time: str, timezone: str = DEFAULT_TIMEZONE) -> Optional[float]:
@@ -284,4 +280,3 @@ def calculate_days_old(iso_time: str, timezone: str = DEFAULT_TIMEZONE) -> Optio
 
     except Exception:
         return None
-

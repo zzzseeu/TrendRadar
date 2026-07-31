@@ -82,6 +82,21 @@ class RSSFetcher:
             proxy_url=self.proxy_url,
         )
 
+    def _is_item_fresh(
+        self,
+        feed: RSSFeedConfig,
+        published_at: Optional[str],
+    ) -> bool:
+        """判断条目是否满足当前来源的新鲜度要求。"""
+        max_days = (
+            feed.max_age_days
+            if feed.max_age_days is not None
+            else self.default_max_age_days
+        )
+        if not self.freshness_enabled or max_days <= 0:
+            return True
+        return is_within_days(published_at or "", max_days, self.timezone)
+
     def fetch_feed(self, feed: RSSFeedConfig) -> Tuple[List[RSSItem], Optional[str]]:
         """
         抓取单个 RSS 源
@@ -115,6 +130,19 @@ class RSSFetcher:
             # 限制条目数量（0=不限制）
             if feed.max_items > 0:
                 parsed_items = parsed_items[:feed.max_items]
+
+            before_freshness_count = len(parsed_items)
+            parsed_items = [
+                parsed
+                for parsed in parsed_items
+                if self._is_item_fresh(feed, parsed.published_at)
+            ]
+            freshness_filtered_count = before_freshness_count - len(parsed_items)
+            if freshness_filtered_count:
+                print(
+                    f"[RSS] {feed.name}: 新鲜度过滤 "
+                    f"{freshness_filtered_count} 条"
+                )
 
             # IRRI 列表页会截断长标题，仅对被截断的条目读取详情页补全。
             if feed.source_type == "irri_news":
@@ -158,8 +186,6 @@ class RSSFetcher:
                 )
                 items.append(item)
 
-            # 注意：新鲜度过滤已移至推送阶段（_convert_rss_items_to_list）
-            # 这样所有文章都会存入数据库，但旧文章不会推送
             print(f"[RSS] {feed.name}: 获取 {len(items)} 条")
             return items, None
 

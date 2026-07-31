@@ -1298,7 +1298,11 @@ class NewsAnalyzer:
             for item in items:
                 # 应用新鲜度过滤（仅在启用时）
                 if freshness_enabled and max_days > 0:
-                    if item.published_at and not is_within_days(item.published_at, max_days, timezone):
+                    if not is_within_days(
+                        item.published_at,
+                        max_days,
+                        timezone,
+                    ):
                         filtered_count += 1
                         # 记录详细信息用于 DEBUG 模式
                         if debug_mode:

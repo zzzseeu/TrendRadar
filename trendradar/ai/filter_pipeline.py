@@ -68,6 +68,20 @@ class AIFilterPipeline:
                     pass
         return result
 
+    def _is_rss_item_fresh(self, feed_id: str, published_at: str) -> bool:
+        """按来源的新鲜度策略判断 RSS 条目是否可进入筛选和报告。"""
+        if not self._freshness_enabled:
+            return True
+
+        max_days = self._feed_max_age_map.get(
+            feed_id,
+            self._default_max_age_days,
+        )
+        if max_days <= 0:
+            return True
+
+        return is_within_days(published_at, max_days, self._timezone)
+
     def run(self, interests_file: Optional[str] = None) -> Optional[AIFilterResult]:
         """
         执行 AI 智能筛选完整流程
@@ -297,11 +311,9 @@ class AIFilterPipeline:
             for n in all_rss:
                 published_at = n.get("published_at", "")
                 feed_id = n.get("source_id", "")
-                max_days = self._feed_max_age_map.get(feed_id, self._default_max_age_days)
-                if self._freshness_enabled and max_days > 0 and published_at:
-                    if not is_within_days(published_at, max_days, self._timezone):
-                        freshness_filtered_rss += 1
-                        continue
+                if not self._is_rss_item_fresh(feed_id, published_at):
+                    freshness_filtered_rss += 1
+                    continue
                 fresh_rss.append(n)
 
             analyzed_rss = self.storage.get_analyzed_news_ids("rss", interests_file=effective_interests_file)
@@ -565,17 +577,11 @@ class AIFilterPipeline:
             for item in group.get("items", []):
                 if float(item.get("relevance_score", 0) or 0) < min_score:
                     continue
-                if (
-                    item.get("source_type") == "rss"
-                    and self._freshness_enabled
-                    and item.get("first_time")
-                ):
+                if item.get("source_type") == "rss":
                     feed_id = item.get("source_id", "")
-                    max_days = self._feed_max_age_map.get(
-                        feed_id, self._default_max_age_days
-                    )
-                    if max_days > 0 and not is_within_days(
-                        item["first_time"], max_days, self._timezone
+                    if not self._is_rss_item_fresh(
+                        feed_id,
+                        item.get("first_time", ""),
                     ):
                         continue
                 all_items.append(item)
@@ -684,11 +690,9 @@ class AIFilterPipeline:
                 first_time = item.get("first_time", "")
                 last_time = item.get("last_time", "")
                 if source_type == "rss":
-                    if self._freshness_enabled and first_time:
-                        feed_id = item.get("source_id", "")
-                        max_days = self._feed_max_age_map.get(feed_id, self._default_max_age_days)
-                        if max_days > 0 and not is_within_days(first_time, max_days, self._timezone):
-                            continue
+                    feed_id = item.get("source_id", "")
+                    if not self._is_rss_item_fresh(feed_id, first_time):
+                        continue
                     time_display = format_iso_time_friendly(first_time, self._timezone, include_date=True) if first_time else ""
                 else:
                     if first_time and last_time and first_time != last_time:
