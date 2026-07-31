@@ -799,6 +799,208 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             round(0.45 * 0.5 + 0.35 * 0.5 + 0.20 * 0.25, 4),
         )
 
+    def test_final_hot_score_controls_filter_and_report_order(self):
+        high_final = self._search_result(
+            1,
+            title="High final score",
+            pre_hot_score=1.0,
+            relevance_score=0.7,
+            importance_score=0.1,
+        )
+        low_final = self._search_result(
+            2,
+            title="Low final score",
+            pre_hot_score=0.0,
+            relevance_score=1.0,
+            importance_score=1.0,
+        )
+
+        result = self._pipeline()._build_filter_result(
+            raw_results=[high_final, low_final],
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=2,
+        )
+
+        search_items = self._flatten_search_items(result)
+        self.assertEqual(
+            [(item["title"], item["final_hot_score"]) for item in search_items],
+            [("High final score", 0.715), ("Low final score", 0.55)],
+        )
+        _, rss_stats, _ = self._pipeline().convert_to_report_data(result)
+        self.assertEqual(
+            [title["title"] for title in rss_stats[0]["titles"]],
+            ["High final score", "Low final score"],
+        )
+
+    def test_cross_tag_search_order_is_global_and_regular_order_is_unchanged(self):
+        low_final = self._search_result(
+            1,
+            tag="低热点标签",
+            tag_priority=1,
+            pre_hot_score=0.0,
+            relevance_score=1.0,
+            importance_score=1.0,
+        )
+        high_final = self._search_result(
+            2,
+            tag="高热点标签",
+            tag_priority=2,
+            pre_hot_score=1.0,
+            relevance_score=0.7,
+            importance_score=0.1,
+        )
+        regular_high = {
+            "news_item_id": 20,
+            "tag": "普通标签",
+            "tag_priority": 3,
+            "title": "Regular high importance",
+            "source_id": "regular-feed",
+            "source_type": "rss",
+            "relevance_score": 0.8,
+            "importance_score": 0.9,
+        }
+        regular_low = {
+            **regular_high,
+            "news_item_id": 21,
+            "title": "Regular low importance",
+            "importance_score": 0.8,
+        }
+
+        result = self._pipeline()._build_filter_result(
+            raw_results=[low_final, regular_low, high_final, regular_high],
+            tags=[
+                {"tag": "低热点标签", "priority": 1},
+                {"tag": "高热点标签", "priority": 2},
+                {"tag": "普通标签", "priority": 3},
+            ],
+            total_processed=4,
+        )
+
+        search_scores = [
+            item["final_hot_score"]
+            for tag in result.tags
+            for item in tag["items"]
+            if item["source_id"] == SEARCH_FEED_ID
+        ]
+        self.assertEqual(search_scores, sorted(search_scores, reverse=True))
+        regular_titles = [
+            item["title"]
+            for tag in result.tags
+            for item in tag["items"]
+            if item["source_id"] == "regular-feed"
+        ]
+        self.assertEqual(
+            regular_titles,
+            ["Regular high importance", "Regular low importance"],
+        )
+
+    def test_cross_tag_interleaving_still_flattens_in_global_hotspot_order(self):
+        rank_one = self._search_result(
+            1,
+            tag="标签甲",
+            pre_hot_score=0.9,
+            relevance_score=0.9,
+            importance_score=0.9,
+        )
+        rank_two = self._search_result(
+            2,
+            tag="标签乙",
+            pre_hot_score=0.8,
+            relevance_score=0.8,
+            importance_score=0.8,
+        )
+        rank_three = self._search_result(
+            3,
+            tag="标签甲",
+            pre_hot_score=0.7,
+            relevance_score=0.7,
+            importance_score=0.7,
+        )
+
+        result = self._pipeline()._build_filter_result(
+            raw_results=[rank_three, rank_two, rank_one],
+            tags=[
+                {"tag": "标签甲", "priority": 1},
+                {"tag": "标签乙", "priority": 2},
+            ],
+            total_processed=3,
+        )
+
+        self.assertEqual(
+            [
+                item["search_hotspot_rank"]
+                for tag in result.tags
+                for item in tag["items"]
+                if item["source_id"] == SEARCH_FEED_ID
+            ],
+            [1, 2, 3],
+        )
+
+    def test_deduplicates_by_id_or_canonical_url_with_transitive_overlap(self):
+        same_id = self._search_result(
+            1,
+            title="Same ID",
+            url="https://example.org/first",
+            pre_hot_score=0.4,
+            relevance_score=0.4,
+            importance_score=0.4,
+        )
+        bridge = self._search_result(
+            1,
+            title="Bridge",
+            url="https://EXAMPLE.org/story?utm_source=google#fragment",
+            pre_hot_score=0.5,
+            relevance_score=0.5,
+            importance_score=0.5,
+        )
+        same_url = self._search_result(
+            3,
+            title="Canonical URL winner",
+            url="https://example.org/story",
+            pre_hot_score=0.9,
+            relevance_score=0.9,
+            importance_score=0.9,
+        )
+
+        result = self._pipeline()._build_filter_result(
+            raw_results=[same_id, bridge, same_url],
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=3,
+        )
+
+        search_items = self._flatten_search_items(result)
+        self.assertEqual(len(search_items), 1)
+        self.assertEqual(search_items[0]["title"], "Canonical URL winner")
+
+    def test_removes_empty_tags_and_deleted_items_from_totals_and_highlights(self):
+        winner = self._search_result(
+            1,
+            tag="保留标签",
+            pre_hot_score=0.9,
+            relevance_score=0.9,
+            importance_score=0.9,
+        )
+        removed = self._search_result(
+            2,
+            tag="空标签",
+            pre_hot_score=0.1,
+            relevance_score=0.1,
+            importance_score=0.1,
+        )
+
+        result = self._pipeline(max_hotspots=1)._build_filter_result(
+            raw_results=[removed, winner],
+            tags=[
+                {"tag": "空标签", "priority": 1},
+                {"tag": "保留标签", "priority": 2},
+            ],
+            total_processed=2,
+        )
+
+        self.assertEqual([tag["tag"] for tag in result.tags], ["保留标签"])
+        self.assertEqual(result.total_matched, 1)
+        self.assertEqual([item["title"] for item in result.highlights], [winner["title"]])
+
 
 class NewsSearchCoverageFormattingTests(unittest.TestCase):
     @staticmethod

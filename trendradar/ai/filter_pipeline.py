@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from trendradar.ai.filter import AIFilter, AIFilterResult
 from trendradar.crawler.article_content import ArticleContentFetcher
+from trendradar.crawler.news_search import canonicalize_url
 from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import (
     DEFAULT_TIMEZONE,
@@ -603,8 +604,12 @@ class AIFilterPipeline:
                     ):
                         continue
                 all_items.append(item)
-        ranked_items = sorted(
-            all_items,
+        regular_ranked_items = sorted(
+            [
+                item
+                for item in all_items
+                if item.get("source_id") != "agri-breeding-search"
+            ],
             key=lambda item: (
                 float(item.get("importance_score", 0) or 0),
                 float(item.get("relevance_score", 0) or 0),
@@ -614,6 +619,15 @@ class AIFilterPipeline:
             ),
             reverse=True,
         )
+        search_ranked_items = sorted(
+            [
+                item
+                for item in all_items
+                if item.get("source_id") == "agri-breeding-search"
+            ],
+            key=lambda item: item.get("search_hotspot_rank", 9999),
+        )
+        ranked_items = search_ranked_items + regular_ranked_items
         highlight_top_n = max(
             0, int(self._filter_config.get("HIGHLIGHT_TOP_N", 5))
         )
@@ -625,6 +639,10 @@ class AIFilterPipeline:
         for group in tag_groups.values():
             group["items"].sort(
                 key=lambda item: (
+                    0
+                    if item.get("source_id") == "agri-breeding-search"
+                    else 1,
+                    item.get("search_hotspot_rank", 9999),
                     0 if item.get("highlight_rank") else 1,
                     item.get("highlight_rank", 9999),
                     -float(item.get("importance_score", 0) or 0),
@@ -632,16 +650,56 @@ class AIFilterPipeline:
                 )
             )
 
+        item_groups = {
+            id(item): group
+            for group in tag_groups.values()
+            for item in group.get("items", [])
+        }
+        search_sections = []
+        last_group_id = None
+        for item in search_ranked_items:
+            group = item_groups[id(item)]
+            group_id = id(group)
+            if search_sections and group_id == last_group_id:
+                search_sections[-1]["items"].append(item)
+                search_sections[-1]["count"] += 1
+            else:
+                section = dict(group)
+                section["items"] = [item]
+                section["count"] = 1
+                search_sections.append(section)
+            last_group_id = group_id
+
+        regular_groups = []
+        for group in tag_groups.values():
+            regular_items = [
+                item
+                for item in group.get("items", [])
+                if item.get("source_id") != "agri-breeding-search"
+            ]
+            if regular_items:
+                regular_group = dict(group)
+                regular_group["items"] = regular_items
+                regular_group["count"] = len(regular_items)
+                regular_groups.append(regular_group)
+
         if self._priority_sort_enabled:
-            sorted_tags = sorted(
-                tag_groups.values(),
-                key=lambda x: (x.get("position", 9999), -x["count"], x["tag"]),
+            regular_groups.sort(
+                key=lambda x: (
+                    x.get("position", 9999),
+                    -x["count"],
+                    x["tag"],
+                ),
             )
         else:
-            sorted_tags = sorted(
-                tag_groups.values(),
-                key=lambda x: (-x["count"], x.get("position", 9999), x["tag"]),
+            regular_groups.sort(
+                key=lambda x: (
+                    -x["count"],
+                    x.get("position", 9999),
+                    x["tag"],
+                ),
             )
+        sorted_tags = search_sections + regular_groups
 
         total_matched = sum(t["count"] for t in sorted_tags)
 
@@ -654,16 +712,6 @@ class AIFilterPipeline:
         )
 
     @staticmethod
-    def _search_item_identity(item: Dict) -> tuple:
-        news_item_id = item.get("news_item_id")
-        if news_item_id not in (None, ""):
-            return ("id", str(news_item_id))
-        url = str(item.get("url", "")).strip()
-        if url:
-            return ("url", url)
-        return ("title", str(item.get("title", "")).strip())
-
-    @staticmethod
     def _score_value(value: Any) -> float:
         try:
             return float(value or 0)
@@ -672,8 +720,7 @@ class AIFilterPipeline:
 
     def _limit_search_hotspots(self, tag_groups: Dict[str, Dict]) -> None:
         """跨标签选择搜索热点，同时不改变普通 RSS 条目。"""
-        best_by_event: Dict[tuple, tuple] = {}
-        sequence = 0
+        candidates = []
         min_score = self._score_value(self._filter_config.get("MIN_SCORE", 0))
 
         for group in tag_groups.values():
@@ -695,23 +742,69 @@ class AIFilterPipeline:
                     4,
                 )
                 item["final_hot_score"] = final_hot_score
-                identity = self._search_item_identity(item)
-                candidate = (final_hot_score, sequence, item)
-                current = best_by_event.get(identity)
-                if current is None or final_hot_score > current[0]:
-                    best_by_event[identity] = candidate
-                sequence += 1
+                news_item_id = item.get("news_item_id")
+                id_key = (
+                    str(news_item_id)
+                    if news_item_id not in (None, "")
+                    else ""
+                )
+                url_key = canonicalize_url(str(item.get("url", "")).strip())
+                candidates.append(
+                    {
+                        "score": final_hot_score,
+                        "sequence": len(candidates),
+                        "item": item,
+                        "id_key": id_key,
+                        "url_key": url_key,
+                    }
+                )
+
+        parents = list(range(len(candidates)))
+
+        def find(index: int) -> int:
+            while parents[index] != index:
+                parents[index] = parents[parents[index]]
+                index = parents[index]
+            return index
+
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parents[right_root] = left_root
+
+        id_owners: Dict[str, int] = {}
+        url_owners: Dict[str, int] = {}
+        for index, candidate in enumerate(candidates):
+            for key, owners in (
+                (candidate["id_key"], id_owners),
+                (candidate["url_key"], url_owners),
+            ):
+                if not key:
+                    continue
+                owner = owners.get(key)
+                if owner is None:
+                    owners[key] = index
+                else:
+                    union(index, owner)
+
+        best_by_event: Dict[int, Dict] = {}
+        for index, candidate in enumerate(candidates):
+            root = find(index)
+            current = best_by_event.get(root)
+            if current is None or candidate["score"] > current["score"]:
+                best_by_event[root] = candidate
 
         ranked = sorted(
             best_by_event.values(),
-            key=lambda candidate: (-candidate[0], candidate[1]),
+            key=lambda candidate: (-candidate["score"], candidate["sequence"]),
         )
-        selected_objects = {
-            id(candidate[2])
-            for candidate in ranked[:self._max_search_hotspots]
-        }
+        selected = ranked[:self._max_search_hotspots]
+        selected_objects = {id(candidate["item"]) for candidate in selected}
+        for rank, candidate in enumerate(selected, start=1):
+            candidate["item"]["search_hotspot_rank"] = rank
 
-        for group in tag_groups.values():
+        for tag_name, group in list(tag_groups.items()):
             group["items"] = [
                 item
                 for item in group.get("items", [])
@@ -719,6 +812,8 @@ class AIFilterPipeline:
                 or id(item) in selected_objects
             ]
             group["count"] = len(group["items"])
+            if not group["items"]:
+                del tag_groups[tag_name]
 
     def convert_to_report_data(
         self,
