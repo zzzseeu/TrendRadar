@@ -124,6 +124,36 @@ rss:
                                       # - 正整数：只推送 N 天内的文章
                                       # - 0：禁用过滤，推送所有文章
 
+  news_search:
+    enabled: true
+    max_results_per_provider: 50
+    max_hotspots: 5
+    similarity_threshold: 0.86
+    providers:
+      gdelt: true
+      google_news: true
+    authority_domains:
+      - reuters.com
+      - nature.com
+      - science.org
+      - caas.cn
+      - moa.gov.cn
+      - cgiar.org
+      - irri.org
+    topics:
+      - id: gene-editing
+        zh: "作物 基因编辑 分子育种"
+        en: "crop gene editing molecular breeding"
+      - id: genomic-breeding
+        zh: "作物 基因组选择 全基因组关联 育种"
+        en: "crop genomic selection genome-wide association breeding"
+      - id: germplasm-traits
+        zh: "作物 种质资源 抗病 抗逆 产量 品质 改良"
+        en: "crop germplasm disease resistance stress tolerance yield quality breeding"
+      - id: seed-policy
+        zh: "作物 品种审定 生物育种 种业"
+        en: "crop variety approval biological breeding seed industry"
+
   # 单个 feed 可配置 max_age_days 覆盖全局设置：
   # - 不配置：使用全局 freshness_filter.max_age_days（默认 3 天）
   # - 正整数：覆盖全局设置，只推送此天数内的文章

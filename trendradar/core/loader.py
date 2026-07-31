@@ -194,6 +194,20 @@ def _load_rss_config(config_data: Dict) -> Dict:
 
     # 新鲜度过滤配置
     freshness_filter = rss.get("freshness_filter", {})
+    news_search = rss.get("news_search", {})
+    max_results = max(1, min(int(news_search.get("max_results_per_provider", 50)), 100))
+    max_hotspots = max(1, min(int(news_search.get("max_hotspots", 5)), 20))
+    similarity = max(0.5, min(float(news_search.get("similarity_threshold", 0.86)), 1.0))
+
+    runtime_news_search = {
+        "ENABLED": bool(news_search.get("enabled", False)),
+        "MAX_RESULTS_PER_PROVIDER": max_results,
+        "MAX_HOTSPOTS": max_hotspots,
+        "SIMILARITY_THRESHOLD": similarity,
+        "PROVIDERS": news_search.get("providers", {"gdelt": True, "google_news": True}),
+        "AUTHORITY_DOMAINS": news_search.get("authority_domains", []),
+        "TOPICS": news_search.get("topics", []),
+    }
 
     # 验证并设置 max_age_days 默认值
     raw_max_age = freshness_filter.get("max_age_days", 3)
@@ -217,6 +231,7 @@ def _load_rss_config(config_data: Dict) -> Dict:
             "ENABLED": freshness_filter.get("enabled", True),  # 默认启用
             "MAX_AGE_DAYS": max_age_days,
         },
+        "NEWS_SEARCH": runtime_news_search,
     }
 
 
