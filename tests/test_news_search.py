@@ -50,6 +50,17 @@ class ProviderParsingTests(unittest.TestCase):
         self.assertEqual(len(articles), 1)
         self.assertEqual(articles[0].published_at, "2026-07-31T08:00:00+00:00")
 
+    def test_gdelt_skips_date_only_timestamp(self):
+        payload = {"articles": [{
+            "title": "Date-only timestamp",
+            "url": "https://example.org/date-only",
+            "seendate": "2026-07-31",
+        }]}
+
+        articles = GDELTClient().parse(payload, "genomic-breeding")
+
+        self.assertEqual(articles, [])
+
     def test_google_rss_parses_title_source_and_pubdate(self):
         article = GoogleNewsRSSClient().parse(GOOGLE_RSS, "gene-editing", "zh")[0]
 
@@ -58,6 +69,16 @@ class ProviderParsingTests(unittest.TestCase):
         self.assertTrue(article.published_at.endswith("+00:00"))
         self.assertEqual(article.url, "https://news.google.com/rss/articles/example")
         self.assertEqual(article.providers, {"google_news"})
+
+    def test_google_rss_skips_title_empty_after_source_suffix_removal(self):
+        content = GOOGLE_RSS.replace(
+            "水稻基因编辑取得新进展 - 示例农业报",
+            " - 示例农业报",
+        )
+
+        articles = GoogleNewsRSSClient().parse(content, "gene-editing", "zh")
+
+        self.assertEqual(articles, [])
 
 
 class ProviderRequestTests(unittest.TestCase):

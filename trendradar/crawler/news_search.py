@@ -4,6 +4,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+import re
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -43,6 +44,8 @@ def _format_timestamp(value: object) -> str:
         return ""
 
     raw = value.strip()
+    if "T" not in raw and not re.search(r"\s\d{2}:\d{2}", raw):
+        return ""
     try:
         parsed = datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(
             tzinfo=timezone.utc
@@ -162,7 +165,7 @@ class GoogleNewsRSSClient:
         feed = feedparser.parse(content)
         parsed_articles = []
         for entry in feed.entries:
-            title = str(entry.get("title") or "").strip()
+            title = str(entry.get("title") or "")
             url = str(entry.get("link") or "").strip()
             published_at = _format_timestamp(entry.get("published"))
             if not title or not url or not published_at:
@@ -172,7 +175,13 @@ class GoogleNewsRSSClient:
             publisher = str(source.get("title") or "").strip()
             suffix = f" - {publisher}"
             if publisher and title.endswith(suffix):
-                title = title[: -len(suffix)].rstrip()
+                title = title[: -len(suffix)]
+            elif publisher and title.strip() == f"- {publisher}":
+                # feedparser normalizes a leading space in " - <source>".
+                title = ""
+            title = title.strip()
+            if not title:
+                continue
 
             parsed_articles.append(
                 SearchArticle(
