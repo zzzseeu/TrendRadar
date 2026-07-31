@@ -12,9 +12,9 @@
 
 ## 文件结构
 
-- 修改：`config/config.yaml`  
+- 修改：`config/config.yaml`
   为 `molecular-plant`、`plant-communications`、`rice-science`、`crop-journal` 增加 `enabled: false`。
-- 不创建测试文件  
+- 不创建测试文件
   本次是纯配置变更，使用容器内项目虚拟环境执行可重复的配置断言。
 
 ### 任务 1：禁用 4 个 ScienceDirect RSS 源
