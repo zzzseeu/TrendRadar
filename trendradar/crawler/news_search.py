@@ -342,6 +342,23 @@ class AgriculturalNewsSearch:
             providers: set[str] = set()
             publishers: set[str] = set()
             source_keys: set[str] = set()
+            publisher_domains: dict[str, set[str]] = {}
+            domain_labels: dict[str, set[str]] = {}
+            for candidate in component:
+                if not candidate.publisher_domain:
+                    continue
+                publisher_key = normalize_title(candidate.publisher)
+                if publisher_key:
+                    publisher_domains.setdefault(publisher_key, set()).add(
+                        candidate.publisher_domain
+                    )
+                labels = candidate.publisher_domain.split(".")
+                if len(labels) >= 2:
+                    domain_key = normalize_title(labels[-2])
+                    if domain_key:
+                        domain_labels.setdefault(domain_key, set()).add(
+                            candidate.publisher_domain
+                        )
             for candidate in component:
                 providers.update(candidate.providers)
                 if candidate.publisher:
@@ -349,7 +366,14 @@ class AgriculturalNewsSearch:
                 if candidate.publisher_domain:
                     source_keys.add(f"domain:{candidate.publisher_domain}")
                 elif candidate.publisher:
-                    source_keys.add(f"publisher:{candidate.publisher.strip().casefold()}")
+                    publisher_key = normalize_title(candidate.publisher)
+                    matched_domains = publisher_domains.get(
+                        publisher_key, set()
+                    ) or domain_labels.get(publisher_key, set())
+                    if len(matched_domains) == 1:
+                        source_keys.add(f"domain:{next(iter(matched_domains))}")
+                    else:
+                        source_keys.add(f"publisher:{publisher_key}")
                 if self._prefer_primary(primary, candidate):
                     primary = candidate
             published_at = _parse_timestamp(primary.published_at)
@@ -381,18 +405,48 @@ class AgriculturalNewsSearch:
         except (TypeError, ValueError):
             provider_budget = 50
 
-        gdelt_queries: list[tuple[str, str, str]] = []
-        google_queries: list[tuple[str, str, str]] = []
+        gdelt_first_round: list[tuple[str, str, str]] = []
+        google_first_round: list[tuple[str, str, str]] = []
+        google_second_round: list[tuple[str, str, str]] = []
         for topic in self.topics:
             topic_id = str(topic.get("id") or "")
             english_query = str(topic.get("en") or "").strip()
             chinese_query = str(topic.get("zh") or "").strip()
             if english_query:
-                gdelt_queries.append((english_query, topic_id, "en"))
+                gdelt_first_round.append((english_query, topic_id, "en"))
             if chinese_query:
-                google_queries.append((chinese_query, topic_id, "zh"))
-            if english_query:
-                google_queries.append((english_query, topic_id, "en"))
+                google_first_round.append((chinese_query, topic_id, "zh"))
+                if english_query:
+                    google_second_round.append((english_query, topic_id, "en"))
+            elif english_query:
+                google_first_round.append((english_query, topic_id, "en"))
+
+        def spread_topics(
+            queries: list[tuple[str, str, str]],
+        ) -> list[tuple[str, str, str]]:
+            """Put an evenly-spaced topic sample before the remaining queries."""
+            count = len(queries)
+            if count <= provider_budget:
+                return queries
+            sample_size = min(provider_budget, count)
+            if sample_size == 1:
+                selected_indices = [count // 2]
+            else:
+                selected_indices = [
+                    round(index * (count - 1) / (sample_size - 1))
+                    for index in range(sample_size)
+                ]
+            selected = set(selected_indices)
+            return (
+                [queries[index] for index in selected_indices]
+                + [query for index, query in enumerate(queries) if index not in selected]
+            )
+
+        gdelt_queries = spread_topics(gdelt_first_round)
+        google_queries = (
+            spread_topics(google_first_round)
+            + spread_topics(google_second_round)
+        )
 
         def run_queries(
             provider: str,
@@ -420,8 +474,9 @@ class AgriculturalNewsSearch:
                     record_failure(provider)
                     print(
                         f"[新闻搜索] {provider} 请求失败: "
-                        f"topic={topic_id}, query={query!r}, "
-                        f"error={type(exc).__name__}: {exc}"
+                        f"topic={topic_id}, language={language}, "
+                        f"query_index={index + 1}/{len(queries)}, "
+                        f"error={type(exc).__name__}"
                     )
 
         if self.providers["gdelt"]:

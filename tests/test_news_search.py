@@ -573,6 +573,29 @@ class SearchAggregationTests(unittest.TestCase):
 
         self.assertEqual(result[0].source_count, 1)
 
+    def test_domain_and_matching_publisher_name_count_as_one_source(self):
+        result = self.coordinator.aggregate([
+            article(
+                "Rice breeding report",
+                "2026-07-31T14:00:00+00:00",
+                url="https://www.reuters.com/rice",
+                publisher="Reuters",
+                publisher_domain="reuters.com",
+                providers={"gdelt"},
+            ),
+            article(
+                "Rice breeding report!",
+                "2026-07-31T13:00:00+00:00",
+                url="https://news.google.com/rss/articles/reuters-rice",
+                publisher="Reuters",
+                publisher_domain="",
+                providers={"google_news"},
+            ),
+        ])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].source_count, 1)
+
 
 class SearchFailureToleranceTests(unittest.TestCase):
     def test_string_false_provider_flags_are_not_enabled(self):
@@ -615,13 +638,20 @@ class SearchFailureToleranceTests(unittest.TestCase):
 
     def test_provider_failures_log_provider_query_topic_and_exception_type(self):
         gdelt = MagicMock()
-        gdelt.fetch.side_effect = TimeoutError("timeout")
+        gdelt.fetch.side_effect = RuntimeError(
+            "token=super-secret proxy=http://user:password@proxy.internal:7892"
+        )
         google = MagicMock()
         google.fetch.return_value = []
+        sensitive_query = "rice token=search-secret"
         coordinator = AgriculturalNewsSearch(
             gdelt_client=gdelt,
             google_news_client=google,
-            topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
+            topics=[{
+                "id": "gene-editing",
+                "zh": "水稻",
+                "en": sensitive_query,
+            }],
         )
 
         from contextlib import redirect_stdout
@@ -634,8 +664,99 @@ class SearchFailureToleranceTests(unittest.TestCase):
         self.assertEqual(result.failed_providers, ["gdelt"])
         self.assertIn("gdelt", message)
         self.assertIn("gene-editing", message)
-        self.assertIn("rice", message)
-        self.assertIn("TimeoutError", message)
+        self.assertIn("en", message)
+        self.assertIn("RuntimeError", message)
+        self.assertNotIn(sensitive_query, message)
+        self.assertNotIn("search-secret", message)
+        self.assertNotIn("super-secret", message)
+        self.assertNotIn("proxy.internal", message)
+        self.assertNotIn("password", message)
+
+    def test_low_google_budget_spreads_calls_across_distant_topics(self):
+        google = MagicMock()
+        titles = {
+            "topic-0": "Rice gene editing advances",
+            "topic-1": "Wheat drought resistance discovered",
+            "topic-2": "Maize seed policy announced",
+            "topic-3": "Soybean yield trial results",
+        }
+
+        def google_result(query, topic, language):
+            return [SearchArticle(
+                title=titles[topic],
+                url=f"https://{topic}.example/{language}",
+                published_at="2026-07-31T14:00:00+00:00",
+                publisher=topic,
+                publisher_domain=f"{topic}.example",
+                language=language,
+                topic=topic,
+                providers={"google_news"},
+            )]
+
+        google.fetch.side_effect = google_result
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=MagicMock(),
+            google_news_client=google,
+            providers={"gdelt": False, "google_news": True},
+            topics=[
+                {"id": f"topic-{index}", "zh": f"中文{index}", "en": f"english {index}"}
+                for index in range(4)
+            ],
+            max_results_per_provider=2,
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+        result = coordinator.search()
+
+        called_topics = [call.args[1] for call in google.fetch.call_args_list]
+        self.assertEqual(called_topics, ["topic-0", "topic-3"])
+        self.assertEqual({item.topic for item in result.items}, {"topic-0", "topic-3"})
+        self.assertEqual(len(result.items), 2)
+
+    def test_failed_evenly_selected_query_continues_to_other_topics(self):
+        google = MagicMock()
+        titles = {
+            "topic-0": "Rice gene editing advances",
+            "topic-1": "Wheat drought resistance discovered",
+            "topic-2": "Maize seed policy announced",
+            "topic-3": "Soybean yield trial results",
+        }
+
+        def google_result(query, topic, language):
+            if topic == "topic-0":
+                raise RuntimeError("first selected query failed")
+            return [SearchArticle(
+                title=titles[topic],
+                url=f"https://{topic}.example/{language}",
+                published_at="2026-07-31T14:00:00+00:00",
+                publisher=topic,
+                publisher_domain=f"{topic}.example",
+                language=language,
+                topic=topic,
+                providers={"google_news"},
+            )]
+
+        google.fetch.side_effect = google_result
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=MagicMock(),
+            google_news_client=google,
+            providers={"gdelt": False, "google_news": True},
+            topics=[
+                {"id": f"topic-{index}", "zh": f"中文{index}", "en": f"english {index}"}
+                for index in range(4)
+            ],
+            max_results_per_provider=2,
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+        result = coordinator.search()
+
+        self.assertEqual(
+            [call.args[1] for call in google.fetch.call_args_list],
+            ["topic-0", "topic-3", "topic-1"],
+        )
+        self.assertEqual({item.topic for item in result.items}, {"topic-3", "topic-1"})
+        self.assertEqual(result.failed_providers, ["google_news"])
 
     def test_provider_limit_is_total_budget_and_distributed_across_topics(self):
         def result_for(provider):
