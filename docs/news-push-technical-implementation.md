@@ -62,4 +62,6 @@ rss:
       max_age_days: 1
 ```
 
-随后用实际页面验证标题、日期和原文链接能否正确提取。对页面结构特殊的网站，可在 `trendradar/crawler/rss/web_news.py` 增加该站点的匹配规则或专用解析逻辑；若来源为特殊 JSON 接口，则同时在该文件增加 JSON 解析函数，并在 `trendradar/crawler/rss/fetcher.py` 增加对应的 `source_type` 分发分支。
+每个 `web_news` 来源都必须同时在 `trendradar/crawler/rss/web_news.py` 的 `_PROFILES` 注册同名 `id`、来源名称（作者）和文章链接匹配规则，否则该来源会被拒绝。随后用实际页面验证标题、日期和原文链接能否正确提取；只有通用 DOM 提取不适用时，才进一步增加专用 HTML 解析逻辑。
+
+若来源为特殊 JSON 接口，则在 `trendradar/crawler/rss/web_news.py` 增加 JSON 解析函数，并在 `trendradar/crawler/rss/fetcher.py` 增加对应的 `source_type` 分发分支。
