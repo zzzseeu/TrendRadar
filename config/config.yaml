@@ -188,24 +188,28 @@ rss:
     - id: "molecular-plant"
       name: "Molecular Plant"
       url: "https://rss.sciencedirect.com/publication/science/16742052"
+      enabled: false                  # 临时停用，等待 Elsevier API 权限确认
       max_items: 30
       max_age_days: 1
 
     - id: "plant-communications"
       name: "Plant Communications"
       url: "https://rss.sciencedirect.com/publication/science/25903462"
+      enabled: false                  # 临时停用，等待 Elsevier API 权限确认
       max_items: 30
       max_age_days: 1
 
     - id: "rice-science"
       name: "Rice Science"
       url: "https://rss.sciencedirect.com/publication/science/16726308"
+      enabled: false                  # 临时停用，等待 Elsevier API 权限确认
       max_items: 30
       max_age_days: 1
 
     - id: "crop-journal"
       name: "The Crop Journal"
       url: "https://rss.sciencedirect.com/publication/science/22145141"
+      enabled: false                  # 临时停用，等待 Elsevier API 权限确认
       max_items: 30
       max_age_days: 1
 
