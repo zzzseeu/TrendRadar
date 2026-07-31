@@ -86,6 +86,12 @@ class RSSItem:
     last_time: str = ""                 # 最后抓取时间
     count: int = 1                      # 抓取次数
 
+    # 新闻搜索聚合元数据（普通 RSS 保持默认值）
+    source_count: int = 1               # 独立报道来源数
+    pre_hot_score: float = 0.0           # AI 筛选前热点分
+    search_topic: str = ""              # 搜索主题 ID
+    search_providers: str = ""          # 搜索供应商（逗号分隔）
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -100,6 +106,10 @@ class RSSItem:
             "first_time": self.first_time,
             "last_time": self.last_time,
             "count": self.count,
+            "source_count": self.source_count,
+            "pre_hot_score": self.pre_hot_score,
+            "search_topic": self.search_topic,
+            "search_providers": self.search_providers,
         }
 
     @classmethod
@@ -117,6 +127,10 @@ class RSSItem:
             first_time=data.get("first_time", ""),
             last_time=data.get("last_time", ""),
             count=data.get("count", 1),
+            source_count=data.get("source_count", 1),
+            pre_hot_score=data.get("pre_hot_score", 0.0),
+            search_topic=data.get("search_topic", ""),
+            search_providers=data.get("search_providers", ""),
         )
 
 

@@ -103,7 +103,7 @@ class SQLiteStorageMixin:
         conn.commit()
 
     def _migrate_rss_schema(self, conn: sqlite3.Connection) -> None:
-        """迁移 rss_items 表结构（为已有数据库添加 guid 列）"""
+        """幂等迁移已有 rss_items 表结构。"""
         cursor = conn.execute("PRAGMA table_info(rss_items)")
         columns = {row[1] for row in cursor.fetchall()}
         if "guid" not in columns:
@@ -112,6 +112,22 @@ class SQLiteStorageMixin:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_guid_feed
                 ON rss_items(guid, feed_id) WHERE guid != ''
             """)
+        if "source_count" not in columns:
+            conn.execute(
+                "ALTER TABLE rss_items ADD COLUMN source_count INTEGER DEFAULT 1"
+            )
+        if "pre_hot_score" not in columns:
+            conn.execute(
+                "ALTER TABLE rss_items ADD COLUMN pre_hot_score REAL DEFAULT 0"
+            )
+        if "search_topic" not in columns:
+            conn.execute(
+                "ALTER TABLE rss_items ADD COLUMN search_topic TEXT DEFAULT ''"
+            )
+        if "search_providers" not in columns:
+            conn.execute(
+                "ALTER TABLE rss_items ADD COLUMN search_providers TEXT DEFAULT ''"
+            )
 
     def _migrate_ai_filter_schema(self, conn: sqlite3.Connection) -> None:
         """为已有新闻数据库补充 AI 筛选证据、评分和逐条摘要字段。"""
@@ -922,6 +938,10 @@ class SQLiteStorageMixin:
                                     published_at = ?,
                                     summary = ?,
                                     author = ?,
+                                    source_count = ?,
+                                    pre_hot_score = ?,
+                                    search_topic = ?,
+                                    search_providers = ?,
                                     last_crawl_time = ?,
                                     crawl_count = crawl_count + 1,
                                     updated_at = ?
@@ -930,7 +950,10 @@ class SQLiteStorageMixin:
                                   item.url, item.url,
                                   item_guid, item_guid,
                                   item.published_at, item.summary,
-                                  item.author, data.crawl_time, now_str, existing_id))
+                                  item.author, item.source_count,
+                                  item.pre_hot_score, item.search_topic,
+                                  item.search_providers, data.crawl_time,
+                                  now_str, existing_id))
                             updated_count += 1
                         elif item.url or item_guid:
                             try:
@@ -938,11 +961,15 @@ class SQLiteStorageMixin:
                                     INSERT INTO rss_items
                                     (title, feed_id, url, guid, published_at, summary, author,
                                      first_crawl_time, last_crawl_time, crawl_count,
+                                     source_count, pre_hot_score, search_topic, search_providers,
                                      created_at, updated_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
                                 """, (item.title, feed_id, item.url, item_guid,
                                       item.published_at, item.summary, item.author,
-                                      data.crawl_time, data.crawl_time, now_str, now_str))
+                                      data.crawl_time, data.crawl_time,
+                                      item.source_count, item.pre_hot_score,
+                                      item.search_topic, item.search_providers,
+                                      now_str, now_str))
                                 new_count += 1
                             except sqlite3.IntegrityError:
                                 pass
@@ -1014,7 +1041,9 @@ class SQLiteStorageMixin:
             cursor.execute("""
                 SELECT i.id, i.title, i.feed_id, f.name as feed_name,
                        i.url, i.published_at, i.summary, i.author,
-                       i.first_crawl_time, i.last_crawl_time, i.crawl_count
+                       i.first_crawl_time, i.last_crawl_time, i.crawl_count,
+                       i.source_count, i.pre_hot_score, i.search_topic,
+                       i.search_providers
                 FROM rss_items i
                 LEFT JOIN rss_feeds f ON i.feed_id = f.id
                 ORDER BY i.published_at DESC
@@ -1049,6 +1078,10 @@ class SQLiteStorageMixin:
                     first_time=row[8],
                     last_time=row[9],
                     count=row[10],
+                    source_count=row[11] if row[11] is not None else 1,
+                    pre_hot_score=row[12] if row[12] is not None else 0.0,
+                    search_topic=row[13] or "",
+                    search_providers=row[14] or "",
                 ))
 
             # 获取最新的抓取时间
@@ -1169,7 +1202,9 @@ class SQLiteStorageMixin:
             cursor.execute("""
                 SELECT i.id, i.title, i.feed_id, f.name as feed_name,
                        i.url, i.published_at, i.summary, i.author,
-                       i.first_crawl_time, i.last_crawl_time, i.crawl_count
+                       i.first_crawl_time, i.last_crawl_time, i.crawl_count,
+                       i.source_count, i.pre_hot_score, i.search_topic,
+                       i.search_providers
                 FROM rss_items i
                 LEFT JOIN rss_feeds f ON i.feed_id = f.id
                 WHERE i.last_crawl_time = ?
@@ -1205,6 +1240,10 @@ class SQLiteStorageMixin:
                     first_time=row[8],
                     last_time=row[9],
                     count=row[10],
+                    source_count=row[11] if row[11] is not None else 1,
+                    pre_hot_score=row[12] if row[12] is not None else 0.0,
+                    search_topic=row[13] or "",
+                    search_providers=row[14] or "",
                 ))
 
             # 获取失败的源（针对最新一次抓取）
@@ -1732,7 +1771,9 @@ class SQLiteStorageMixin:
                     placeholders = ",".join("?" * len(rss_ids))
                     rss_cursor.execute(f"""
                         SELECT i.id, i.title, i.feed_id, f.name as feed_name,
-                               i.url, i.published_at
+                               i.url, i.published_at, i.source_count,
+                               i.pre_hot_score, i.search_topic,
+                               i.search_providers
                         FROM rss_items i
                         LEFT JOIN rss_feeds f ON i.feed_id = f.id
                         WHERE i.id IN ({placeholders})
@@ -1767,6 +1808,10 @@ class SQLiteStorageMixin:
                                 "first_time": info[5] or "",
                                 "last_time": info[5] or "",
                                 "count": 1,
+                                "source_count": info[6] if info[6] is not None else 1,
+                                "pre_hot_score": info[7] if info[7] is not None else 0.0,
+                                "search_topic": info[8] or "",
+                                "search_providers": info[9] or "",
                             })
             except Exception:
                 pass  # RSS 库不存在时静默跳过
@@ -1811,7 +1856,9 @@ class SQLiteStorageMixin:
 
             cursor.execute("""
                 SELECT i.id, i.title, i.feed_id, f.name as feed_name,
-                       i.published_at, i.url, i.summary, i.author
+                       i.published_at, i.url, i.summary, i.author,
+                       i.source_count, i.pre_hot_score, i.search_topic,
+                       i.search_providers
                 FROM rss_items i
                 LEFT JOIN rss_feeds f ON i.feed_id = f.id
                 ORDER BY i.id
@@ -1824,6 +1871,10 @@ class SQLiteStorageMixin:
                     "published_at": row[4] or "",
                     "url": row[5] or "", "mobile_url": "",
                     "summary": row[6] or "", "author": row[7] or "",
+                    "source_count": row[8] if row[8] is not None else 1,
+                    "pre_hot_score": row[9] if row[9] is not None else 0.0,
+                    "search_topic": row[10] or "",
+                    "search_providers": row[11] or "",
                 }
                 for row in cursor.fetchall()
             ]

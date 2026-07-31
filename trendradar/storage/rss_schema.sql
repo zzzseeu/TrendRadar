@@ -33,6 +33,10 @@ CREATE TABLE IF NOT EXISTS rss_items (
     first_crawl_time TEXT NOT NULL,           -- 首次抓取时间
     last_crawl_time TEXT NOT NULL,            -- 最后抓取时间
     crawl_count INTEGER DEFAULT 1,            -- 抓取次数
+    source_count INTEGER DEFAULT 1,           -- 独立报道来源数
+    pre_hot_score REAL DEFAULT 0,             -- AI 筛选前热点分
+    search_topic TEXT DEFAULT '',             -- 新闻搜索主题 ID
+    search_providers TEXT DEFAULT '',         -- 新闻搜索供应商（逗号分隔）
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (feed_id) REFERENCES rss_feeds(id)
