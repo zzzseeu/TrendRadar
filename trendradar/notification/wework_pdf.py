@@ -84,6 +84,7 @@ def _render_preview(
     title_bytes: int,
     summary_bytes: int,
     include_links: bool,
+    include_reader_links: bool,
 ) -> str:
     lines = [f"**🌾 TrendRadar · {report_type}**"]
 
@@ -118,7 +119,7 @@ def _render_preview(
         else:
             lines.append(f"{index}. {title}")
         reader_url = _clean_text(item.get("reader_url"))
-        if reader_url:
+        if include_reader_links and reader_url:
             lines.append(f"   [🔎 备用检索]({reader_url})")
         if source:
             lines.append(f"   来源：{source}")
@@ -143,11 +144,11 @@ def build_wework_pdf_preview(
     """生成单条企业微信摘要，必要时逐级压缩但保留 Top 5。"""
     highlights = collect_highlights(report_data, rss_items, limit=top_n)
     strategies = (
-        (180, 240, True),
-        (150, 0, True),
-        (120, 0, False),
+        (180, 240, True, True),
+        (150, 0, True, False),
+        (120, 0, False, False),
     )
-    for title_bytes, summary_bytes, include_links in strategies:
+    for title_bytes, summary_bytes, include_links, include_reader_links in strategies:
         preview = _render_preview(
             report_data,
             highlights,
@@ -156,6 +157,7 @@ def build_wework_pdf_preview(
             title_bytes=title_bytes,
             summary_bytes=summary_bytes,
             include_links=include_links,
+            include_reader_links=include_reader_links,
         )
         if len(preview.encode("utf-8")) <= max_bytes:
             return preview

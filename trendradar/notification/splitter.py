@@ -1835,6 +1835,7 @@ def _format_standalone_rss_item(
     """
     title = item.get("title", "")
     url = item.get("url", "")
+    reader_url = item.get("reader_url", "")
     published_at = item.get("published_at", "")
     author = item.get("author", "")
 
@@ -1879,6 +1880,8 @@ def _format_standalone_rss_item(
             item_line = f"  {index}. [{title}]({url})"
         else:
             item_line = f"  {index}. {title}"
+        if format_type in ("wework", "bark") and reader_url:
+            item_line += f" [🔎 备用检索]({reader_url})"
         if meta_str:
             item_line += f" `{meta_str}`"
 

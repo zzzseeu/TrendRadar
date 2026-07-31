@@ -101,6 +101,28 @@ class WeWorkPdfPreviewTests(unittest.TestCase):
         self.assertIn(self.items[0]["reader_url"], preview)
         self.assertLessEqual(len(preview.encode("utf-8")), 4000)
 
+    def test_preview_drops_long_reader_links_before_official_links(self):
+        for item in self.items[:5]:
+            item["reader_url"] = (
+                "https://www.semanticscholar.org/search?q=" + "x" * 1200
+            )
+        rss_items = [{"word": "RSS", "titles": self.items}]
+
+        preview = build_wework_pdf_preview(
+            report_data={"stats": []},
+            rss_items=rss_items,
+            ai_analysis=None,
+            report_type="当前榜单",
+            top_n=5,
+            max_bytes=1000,
+        )
+
+        self.assertLessEqual(len(preview.encode("utf-8")), 1000)
+        for item in self.items[:5]:
+            self.assertIn(item["url"], preview)
+        self.assertNotIn("semanticscholar.org", preview)
+        self.assertNotIn("🔎 备用检索", preview)
+
 
 class WeWorkPdfConfigTests(unittest.TestCase):
     def test_environment_enables_pdf_and_limits_top_n(self):

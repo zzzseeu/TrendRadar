@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from trendradar.__main__ import NewsAnalyzer
 from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.analyzer import count_rss_frequency
+from trendradar.notification.splitter import split_content_into_batches
 from trendradar.report.formatter import format_title_for_platform
 from trendradar.report.html import render_html_content
 from trendradar.report.rss_html import render_rss_html_content
@@ -325,3 +326,34 @@ class RiceScienceDualLinkRenderingTests(unittest.TestCase):
         )
         self.assertIn('target="_blank"', content)
         self.assertIn("🔎 备用检索", content)
+
+    def test_wework_batches_render_standalone_rss_reader_url(self):
+        batches = split_content_into_batches(
+            {
+                "stats": [],
+                "new_titles": [],
+                "failed_ids": [],
+                "total_new_count": 0,
+            },
+            format_type="wework",
+            max_bytes=4000,
+            region_order=["standalone"],
+            standalone_data={
+                "platforms": [],
+                "rss_feeds": [{
+                    "id": "rice-science",
+                    "name": "Rice Science",
+                    "items": [{
+                        "title": "Rice breeding",
+                        "url": self.official_url,
+                        "reader_url": self.reader_url,
+                        "published_at": "",
+                        "author": "",
+                    }],
+                }],
+            },
+        )
+
+        content = "\n".join(batches)
+        self.assertIn(f"[Rice breeding]({self.official_url})", content)
+        self.assertIn(f"[🔎 备用检索]({self.reader_url})", content)
