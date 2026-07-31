@@ -14,6 +14,28 @@ from trendradar.ai.client import AIClient
 from trendradar.ai.prompt_loader import load_prompt_template
 
 
+def _normalize_narrative_text(value: Any) -> str:
+    """将模型返回的字符串、数组或对象统一为可渲染文本。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            normalized = _normalize_narrative_text(item)
+            if normalized:
+                lines.append(f"{key}：{normalized}")
+        return "\n".join(lines)
+    if isinstance(value, (list, tuple)):
+        return "\n".join(
+            text
+            for item in value
+            if (text := _normalize_narrative_text(item))
+        )
+    return str(value)
+
+
 @dataclass
 class AIAnalysisResult:
     """AI 分析结果"""
@@ -725,11 +747,19 @@ class AIAnalyzer:
 
         # 解析成功，提取字段
         try:
-            result.core_trends = data.get("core_trends", "")
-            result.sentiment_controversy = data.get("sentiment_controversy", "")
-            result.signals = data.get("signals", "")
-            result.rss_insights = data.get("rss_insights", "")
-            result.outlook_strategy = data.get("outlook_strategy", "")
+            result.core_trends = _normalize_narrative_text(
+                data.get("core_trends", "")
+            )
+            result.sentiment_controversy = _normalize_narrative_text(
+                data.get("sentiment_controversy", "")
+            )
+            result.signals = _normalize_narrative_text(data.get("signals", ""))
+            result.rss_insights = _normalize_narrative_text(
+                data.get("rss_insights", "")
+            )
+            result.outlook_strategy = _normalize_narrative_text(
+                data.get("outlook_strategy", "")
+            )
 
             # 解析独立展示区概括
             summaries = data.get("standalone_summaries", {})
