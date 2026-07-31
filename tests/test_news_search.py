@@ -1,7 +1,14 @@
+from datetime import datetime, timezone
 import unittest
 from unittest.mock import MagicMock
 
-from trendradar.crawler.news_search import GDELTClient, GoogleNewsRSSClient
+from trendradar.crawler.news_search import (
+    AgriculturalNewsSearch,
+    GDELTClient,
+    GoogleNewsRSSClient,
+    SearchArticle,
+    canonicalize_url,
+)
 
 
 GOOGLE_RSS = """<?xml version="1.0" encoding="UTF-8"?>
@@ -153,6 +160,118 @@ class ProviderRequestTests(unittest.TestCase):
         )
         response.raise_for_status.assert_called_once_with()
         self.assertEqual(articles[0].url, "https://news.google.com/rss/articles/example")
+
+
+def article(
+    title: str,
+    published_at: str,
+    *,
+    url: str = "https://example.com/article",
+    publisher: str = "Example News",
+    language: str = "en",
+    providers: set[str] | None = None,
+) -> SearchArticle:
+    return SearchArticle(
+        title=title,
+        url=url,
+        published_at=published_at,
+        publisher=publisher,
+        language=language,
+        topic="gene-editing",
+        providers=providers or {"gdelt"},
+    )
+
+
+class SearchAggregationTests(unittest.TestCase):
+    def setUp(self):
+        self.coordinator = AgriculturalNewsSearch(
+            authority_domains=("reuters.com",),
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+    def test_rejects_missing_future_and_expired_dates(self):
+        result = self.coordinator.aggregate(
+            [
+                article("missing", ""),
+                article("future", "2026-07-31T15:01:00+00:00"),
+                article("old", "2026-07-30T14:59:59+00:00"),
+                article("fresh", "2026-07-31T14:00:00+00:00"),
+            ],
+            now="2026-07-31T15:00:00+00:00",
+        )
+
+        self.assertEqual([item.title for item in result], ["fresh"])
+
+    def test_merges_similar_reports_counts_publishers_and_prefers_authority(self):
+        result = self.coordinator.aggregate([
+            article(
+                "New gene-editing breakthrough improves rice breeding",
+                "2026-07-31T13:00:00+00:00",
+                url="https://example.com/rice?utm_source=gdelt",
+                publisher="Example News",
+                providers={"gdelt"},
+            ),
+            article(
+                "New gene editing breakthrough improves rice breeding!",
+                "2026-07-31T12:00:00+00:00",
+                url="https://www.reuters.com/world/rice",
+                publisher="Reuters",
+                providers={"google_news"},
+            ),
+        ])
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].source_count, 2)
+        self.assertEqual(result[0].url, "https://www.reuters.com/world/rice")
+        self.assertEqual(result[0].providers, {"gdelt", "google_news"})
+        self.assertEqual(
+            canonicalize_url("HTTPS://Example.COM/path/?utm_source=x&keep=1#part"),
+            "https://example.com/path?keep=1",
+        )
+
+    def test_calculates_pre_hot_score_from_coverage_authority_and_recency(self):
+        result = self.coordinator.aggregate([
+            article(
+                "Rice breeding update",
+                "2026-07-31T03:00:00+00:00",
+                url="https://news.reuters.com/rice",
+                publisher="Reuters",
+                providers={"gdelt"},
+            ),
+            article(
+                "Rice breeding update",
+                "2026-07-31T03:00:00+00:00",
+                url="https://other.example/rice",
+                publisher="Other News",
+                providers={"google_news"},
+            ),
+        ])
+
+        self.assertEqual(result[0].pre_hot_score, 0.7333)
+
+
+class SearchFailureToleranceTests(unittest.TestCase):
+    def test_one_provider_failure_does_not_drop_other_results(self):
+        gdelt = MagicMock()
+        gdelt.fetch.side_effect = RuntimeError("GDELT unavailable")
+        google = MagicMock()
+        google.fetch.return_value = [article(
+            "Rice gene editing update",
+            "2026-07-31T14:00:00+00:00",
+            providers={"google_news"},
+        )]
+        coordinator = AgriculturalNewsSearch(
+            gdelt_client=gdelt,
+            google_news_client=google,
+            topics=[{"id": "gene-editing", "zh": "水稻 基因编辑", "en": "rice gene editing"}],
+            now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
+        )
+
+        result = coordinator.search()
+
+        self.assertEqual(result.failed_providers, ["gdelt"])
+        self.assertEqual(len(result.items), 1)
+        self.assertEqual(google.fetch.call_count, 2)
 
 
 if __name__ == "__main__":
