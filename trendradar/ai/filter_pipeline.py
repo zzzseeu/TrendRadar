@@ -317,10 +317,14 @@ class AIFilterPipeline:
 
         self.storage.update_ai_filter_tags_hash(effective_interests_file, current_hash)
 
-        if add_tags:
-            cleared = self.storage.clear_unmatched_analyzed_news(interests_file=effective_interests_file)
-            if cleared > 0:
-                print(f"[AI筛选]   清除 {cleared} 条不匹配记录，将在新标签下重新分析")
+        cleared = self.storage.clear_unmatched_analyzed_news(
+            interests_file=effective_interests_file
+        )
+        if cleared > 0:
+            print(
+                f"[AI筛选]   清除 {cleared} 条旧规则下的不匹配记录，"
+                "将在新规则下重新分析"
+            )
 
     def _collect_pending_news(self, effective_interests_file: str):
         all_news = self.storage.get_all_news_ids()

@@ -67,16 +67,31 @@ class AIFilter:
             config_subdir="ai_filter", label="AI筛选",
         )
 
-    def compute_interests_hash(self, interests_content: str, filename: str = "ai_interests.txt") -> str:
-        """计算兴趣描述的 hash，格式为 filename:md5"""
-        # 去除前后空白和注释行，确保内容变化才改变 hash
-        lines = []
+    def compute_interests_hash(
+        self,
+        interests_content: str,
+        filename: str = "ai_interests.txt",
+    ) -> str:
+        """计算筛选规则指纹，格式为 filename:md5。"""
+        interest_lines = []
         for line in interests_content.strip().splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
-                lines.append(line)
-        normalized = "\n".join(lines)
-        content_hash = hashlib.md5(normalized.encode("utf-8")).hexdigest()
+                interest_lines.append(line)
+
+        fingerprint_content = "\n".join(
+            [
+                "[interests]",
+                "\n".join(interest_lines),
+                "[classify_system]",
+                self.classify_system.strip(),
+                "[classify_user]",
+                self.classify_user.strip(),
+            ]
+        )
+        content_hash = hashlib.md5(
+            fingerprint_content.encode("utf-8")
+        ).hexdigest()
         return f"{filename}:{content_hash}"
 
     def load_interests_content(self, interests_file: Optional[str] = None) -> Optional[str]:
