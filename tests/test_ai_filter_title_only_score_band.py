@@ -10,11 +10,11 @@ class TitleOnlyScoreBandTests(unittest.TestCase):
         self.ai_filter.debug = False
         self.tags = [{"id": 1, "tag": "水稻育种"}]
 
-    def parse(self, response, content_level="title_only"):
+    def parse(self, response, content_level="title_only", tags=None):
         return self.ai_filter._parse_classify_response(
             json.dumps(response),
             [{"id": 1, "title": "测试新闻", "content_level": content_level}],
-            self.tags,
+            tags or self.tags,
         )
 
     def test_title_only_valid_tag_low_score_is_raised_to_minimum(self):
@@ -33,6 +33,31 @@ class TitleOnlyScoreBandTests(unittest.TestCase):
         )
 
         self.assertEqual(results[0]["relevance_score"], 0.58)
+
+    def test_full_text_score_is_not_normalized(self):
+        results = self.parse(
+            [{"id": 1, "tag_id": 1, "score": 0.95}], content_level="full_text"
+        )
+
+        self.assertEqual(results[0]["relevance_score"], 0.95)
+
+    def test_title_only_default_importance_score_keeps_raw_score(self):
+        results = self.parse([{"id": 1, "tag_id": 1, "score": 0.58}])
+
+        self.assertEqual(results[0]["importance_score"], 0.58)
+
+    def test_title_only_duplicate_news_keeps_highest_raw_score_tag(self):
+        results = self.parse(
+            [
+                {"id": 1, "tag_id": 1, "score": 0.60},
+                {"id": 1, "tag_id": 2, "score": 0.65},
+            ],
+            tags=[{"id": 1, "tag": "育种"}, {"id": 2, "tag": "遗传"}],
+        )
+
+        self.assertEqual(results[0]["tag_id"], 2)
+        self.assertEqual(results[0]["relevance_score"], 0.70)
+        self.assertEqual(results[0]["importance_score"], 0.65)
 
     def test_absent_ai_response_does_not_create_match(self):
         self.assertEqual(self.parse([]), [])

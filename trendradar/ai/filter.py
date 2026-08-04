@@ -556,6 +556,7 @@ class AIFilter:
 
         # 每条新闻只保留一个最高分的 tag
         best_per_news: Dict[int, Dict] = {}  # news_id -> {"tag_id": ..., "score": ...}
+        selected_raw_scores: Dict[int, float] = {}
         skipped_news_ids = 0
         skipped_tag_ids = 0
         skipped_empty = 0
@@ -612,18 +613,19 @@ class AIFilter:
 
             if best_tag_id is not None:
                 metadata = title_metadata.get(news_id, {})
-                if metadata.get("content_level") == "title_only":
-                    best_score = max(
-                        TITLE_ONLY_SCORE_MIN,
-                        min(TITLE_ONLY_SCORE_MAX, best_score),
-                    )
-
                 importance_score = item.get("importance_score", best_score)
                 try:
                     importance_score = float(importance_score)
                     importance_score = max(0.0, min(1.0, importance_score))
                 except (ValueError, TypeError):
                     importance_score = best_score
+
+                relevance_score = best_score
+                if metadata.get("content_level") == "title_only":
+                    relevance_score = max(
+                        TITLE_ONLY_SCORE_MIN,
+                        min(TITLE_ONLY_SCORE_MAX, relevance_score),
+                    )
 
                 ai_summary = " ".join(str(item.get("summary", "")).split())[:300]
                 if not ai_summary:
@@ -635,14 +637,15 @@ class AIFilter:
 
                 # 如果同一条新闻被多次返回，只保留分数更高的
                 existing = best_per_news.get(news_id)
-                if existing is None or best_score > existing["relevance_score"]:
+                if existing is None or best_score > selected_raw_scores[news_id]:
                     best_per_news[news_id] = {
                         "news_item_id": news_id,
                         "tag_id": best_tag_id,
-                        "relevance_score": best_score,
+                        "relevance_score": relevance_score,
                         "importance_score": importance_score,
                         "ai_summary": ai_summary,
                     }
+                    selected_raw_scores[news_id] = best_score
 
         results = list(best_per_news.values())
         for result in results:
