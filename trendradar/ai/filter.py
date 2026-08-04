@@ -17,6 +17,10 @@ from trendradar.ai.client import AIClient
 from trendradar.ai.prompt_loader import load_prompt_template
 
 
+TITLE_ONLY_SCORE_MIN = 0.70
+TITLE_ONLY_SCORE_MAX = 0.78
+
+
 @dataclass
 class AIFilterResult:
     """AI 筛选结果，传给报告和通知模块"""
@@ -607,6 +611,13 @@ class AIFilter:
                     best_tag_id = tag_id
 
             if best_tag_id is not None:
+                metadata = title_metadata.get(news_id, {})
+                if metadata.get("content_level") == "title_only":
+                    best_score = max(
+                        TITLE_ONLY_SCORE_MIN,
+                        min(TITLE_ONLY_SCORE_MAX, best_score),
+                    )
+
                 importance_score = item.get("importance_score", best_score)
                 try:
                     importance_score = float(importance_score)
@@ -615,7 +626,6 @@ class AIFilter:
                     importance_score = best_score
 
                 ai_summary = " ".join(str(item.get("summary", "")).split())[:300]
-                metadata = title_metadata.get(news_id, {})
                 if not ai_summary:
                     original_title = metadata.get("title", title_map.get(news_id, ""))
                     if metadata.get("content_level") == "title_only":
