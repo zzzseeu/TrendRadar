@@ -28,6 +28,11 @@ class CropBreedingFilterRuleTests(unittest.TestCase):
     def test_title_only_breeding_news_has_an_admissible_score_band(self):
         self.assertIn("0.70～0.78", self.prompt)
         self.assertIn("仅标题显示：", self.prompt)
+        self.assertIn("未命中第 10、11 条及用户偏好中的排除规则", self.prompt)
+        self.assertIn("排除规则优先于本条", self.prompt)
+        self.assertIn("不得根据常识扩写标题", self.prompt)
+        self.assertIn("一般生产经营", self.interests)
+        self.assertTrue("会议" in self.interests or "营销" in self.interests)
         self.assertIn("min_score: 0.7", self.config)
 
     def test_rice_priority_affects_ranking_not_admission(self):
