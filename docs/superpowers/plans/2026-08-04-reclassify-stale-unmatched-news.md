@@ -293,13 +293,15 @@ TITLE_ONLY_SCORE_MIN = 0.70
 TITLE_ONLY_SCORE_MAX = 0.78
 ```
 
-解析到有效标签并取得新闻元数据后，仅对 `title_only` 规范 `best_score`：
+解析到有效标签并取得新闻元数据后，保留 `raw_score` 用于默认重要度和重复新闻择优，仅对最终写入的 `relevance_score` 规范：
 
 ```python
+raw_score = best_score
+normalized_score = raw_score
 if metadata.get("content_level") == "title_only":
-    best_score = max(
+    normalized_score = max(
         TITLE_ONLY_SCORE_MIN,
-        min(TITLE_ONLY_SCORE_MAX, best_score),
+        min(TITLE_ONLY_SCORE_MAX, raw_score),
     )
 ```
 
