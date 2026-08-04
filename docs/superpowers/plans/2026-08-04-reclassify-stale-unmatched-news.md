@@ -256,3 +256,63 @@ git log -3 --oneline
 
 预期：正式容器保持 `Up`；主工作区仅保留用户原有未提交内容和本次生成的运行输出。
 
+### 任务 4：确定性执行仅标题评分带
+
+**文件：**
+
+- 修改：`trendradar/ai/filter.py`
+- 创建：`tests/test_ai_filter_title_only_score_band.py`
+
+- [ ] **步骤 1：编写失败测试**
+
+直接调用 `_parse_classify_response()`，覆盖以下行为：
+
+- AI 已返回有效标签、`content_level = "title_only"`、原始分数 `0.58` 时，结果分数为 `0.70`；
+- AI 已返回有效标签、`content_level = "title_only"`、原始分数 `0.95` 时，结果分数为 `0.78`；
+- `content_level = "summary"`、原始分数 `0.58` 时，结果仍为 `0.58`；
+- AI 未返回条目时仍为空结果，不得由代码自行创建匹配。
+
+- [ ] **步骤 2：运行目标测试并确认失败**
+
+```bash
+docker compose --env-file docker/.env -f docker/docker-compose.yml run --rm -T --no-deps \
+  --entrypoint /app/.venv/bin/python \
+  -v /mnt/d/project/trendradar/.worktrees/reclassify-stale-unmatched/trendradar:/app/trendradar:ro \
+  -v /mnt/d/project/trendradar/.worktrees/reclassify-stale-unmatched/tests:/app/tests:ro \
+  trendradar -m unittest tests.test_ai_filter_title_only_score_band -v
+```
+
+预期：低分和高分的两个仅标题断言失败；摘要分数和空结果断言通过。
+
+- [ ] **步骤 3：实现最小评分规范化**
+
+在 `trendradar/ai/filter.py` 定义：
+
+```python
+TITLE_ONLY_SCORE_MIN = 0.70
+TITLE_ONLY_SCORE_MAX = 0.78
+```
+
+解析到有效标签并取得新闻元数据后，仅对 `title_only` 规范 `best_score`：
+
+```python
+if metadata.get("content_level") == "title_only":
+    best_score = max(
+        TITLE_ONLY_SCORE_MIN,
+        min(TITLE_ONLY_SCORE_MAX, best_score),
+    )
+```
+
+- [ ] **步骤 4：运行目标测试和完整测试**
+
+目标测试预期全部通过；随后使用工作树的 `trendradar/`、`config/`、`tests/` 挂载运行完整 `unittest discover`，不得出现 `FAILED` 或 `ERROR`。
+
+- [ ] **步骤 5：检查并提交**
+
+```bash
+git diff --check -- trendradar/ai/filter.py tests/test_ai_filter_title_only_score_band.py
+git add trendradar/ai/filter.py tests/test_ai_filter_title_only_score_band.py
+git commit -m "fix(筛选): 强制执行仅标题评分区间"
+```
+
+提交后重新执行任务审查和最终审查，再合并、重建容器。为让今天已保存的 4 条低分结果应用新规则，只删除这 4 条对应的低分分类结果和已分析记录后补跑；不得修改其他新闻、已匹配高分结果或超过 24 小时的记录。
