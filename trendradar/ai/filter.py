@@ -19,6 +19,11 @@ from trendradar.ai.prompt_loader import load_prompt_template
 
 TITLE_ONLY_SCORE_MIN = 0.70
 TITLE_ONLY_SCORE_MAX = 0.78
+TAG_JSON_REPAIR_PROMPT = (
+    '上一个响应不是可解析的 JSON。请修正语法并仅返回一个 JSON 对象，'
+    '格式必须为 {"tags":[{"tag":"标签名","description":"描述"}]}。'
+    '字符串内的换行和制表符必须转义，不要添加 Markdown 或解释。'
+)
 
 
 @dataclass
@@ -166,8 +171,9 @@ class AIFilter:
                 print(f"[{m['role']}]\n{m['content']}")
             print(f"[AI筛选][DEBUG] === Prompt 结束 ===")
 
+        response = ""
         try:
-            response = self.client.chat(messages)
+            response = self.client.chat(messages, temperature=0)
 
             if self.debug:
                 print(f"\n[AI筛选][DEBUG] === 标签提取 AI 原始响应 ===")
@@ -175,7 +181,20 @@ class AIFilter:
                 self._print_formatted_json(response)
                 print(f"[AI筛选][DEBUG] === 响应结束 ===")
 
-            tags = self._parse_tags_response(response)
+            try:
+                tags = self._parse_tags_response(response)
+            except json.JSONDecodeError as first_error:
+                print(
+                    "[AI筛选] 标签 JSON 解析失败，低温重试一次: "
+                    f"{first_error}"
+                )
+                retry_messages = messages + [
+                    {"role": "assistant", "content": response},
+                    {"role": "user", "content": TAG_JSON_REPAIR_PROMPT},
+                ]
+                response = self.client.chat(retry_messages, temperature=0)
+                tags = self._parse_tags_response(response)
+
             print(f"[AI筛选] 提取到 {len(tags)} 个标签")
             for t in tags:
                 print(f"   {t['tag']}: {t.get('description', '')}")
@@ -185,7 +204,7 @@ class AIFilter:
                 if not json_str:
                     print(f"[AI筛选][DEBUG] 无法从响应中提取 JSON")
                 else:
-                    raw_data = json.loads(json_str)
+                    raw_data = self._load_tag_json(json_str)
                     raw_tags = raw_data.get("tags", [])
                     skipped = len(raw_tags) - len(tags)
                     if skipped > 0:
@@ -314,9 +333,9 @@ class AIFilter:
         """解析标签提取的 AI 响应"""
         json_str = self._extract_json(response)
         if not json_str:
-            return []
+            raise json.JSONDecodeError("未找到 JSON 内容", response or "", 0)
 
-        data = json.loads(json_str)
+        data = self._load_tag_json(json_str)
         tags_raw = data.get("tags", [])
 
         tags = []
@@ -329,6 +348,17 @@ class AIFilter:
             })
 
         return tags
+
+    @staticmethod
+    def _load_tag_json(json_str: str) -> Dict:
+        """严格解析标签 JSON，仅兼容字符串内未转义的控制字符。"""
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError as error:
+            if not error.msg.startswith("Invalid control character"):
+                raise
+            data = json.loads(json_str, strict=False)
+        return data
 
     def classify_batch(
         self,
