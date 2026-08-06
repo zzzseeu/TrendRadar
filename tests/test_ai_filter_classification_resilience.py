@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import Mock
 
 from trendradar.ai.filter import AIFilter
+from trendradar.ai.filter_pipeline import AIFilterPipeline
 
 
 class ClassificationResponseResilienceTests(unittest.TestCase):
@@ -50,6 +51,37 @@ class ClassificationResponseResilienceTests(unittest.TestCase):
         self.ai_filter.client.chat.side_effect = ["", "not-json"]
         self.assertIsNone(self.ai_filter.classify_batch(self.titles, self.tags, "育种"))
         self.assertEqual(self.ai_filter.client.chat.call_count, 2)
+
+
+class ClassificationPipelineRetryTests(unittest.TestCase):
+    def test_failed_rss_batch_does_not_return_succeeded_ids(self):
+        pipeline = AIFilterPipeline.__new__(AIFilterPipeline)
+        pipeline._content_config = {"ENABLED": False}
+        pipeline._rss_use_proxy = False
+        pipeline._rss_proxy_url = ""
+        pipeline._enrich_pending_items = Mock(side_effect=lambda items, _label: items)
+        ai_filter = Mock()
+        ai_filter.classify_batch.return_value = None
+        pending_rss = [{
+            "id": 6,
+            "title": "木豆基因组突破",
+            "summary": "",
+            "content": "木豆基因组突破",
+            "content_level": "title_only",
+        }]
+
+        results, succeeded_news, succeeded_rss = pipeline._classify_batches(
+            ai_filter,
+            [],
+            pending_rss,
+            [{"id": 18, "tag": "其他作物育种"}],
+            "育种",
+            {"BATCH_SIZE": 10, "BATCH_INTERVAL": 0},
+        )
+
+        self.assertEqual(results, [])
+        self.assertEqual(succeeded_news, [])
+        self.assertEqual(succeeded_rss, [])
 
 
 if __name__ == "__main__":
