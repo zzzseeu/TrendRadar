@@ -24,6 +24,15 @@ TAG_JSON_REPAIR_PROMPT = (
     '格式必须为 {"tags":[{"tag":"标签名","description":"描述"}]}。'
     '字符串内的换行和制表符必须转义，不要添加 Markdown 或解释。'
 )
+CLASSIFY_JSON_REPAIR_PROMPT = (
+    "上一个响应不是可解析的分类 JSON。请修正语法并仅返回严格 JSON 数组。"
+    "数组元素必须包含 id、tag_id、score、importance_score 和 summary；"
+    "如果没有匹配新闻，请返回 []。不要添加 Markdown 或解释。"
+)
+
+
+class _InvalidClassificationResponse(ValueError):
+    """分类响应无法可靠解释为合法 JSON 数组。"""
 
 
 @dataclass
@@ -448,8 +457,21 @@ class AIFilter:
             print(f"[AI筛选][DEBUG] === Prompt 结束 (长度: {sum(len(m['content']) for m in messages)} 字符) ===")
 
         try:
-            response = self.client.chat(messages)
-            results = self._parse_classify_response(response, titles, tags)
+            response = self.client.chat(messages, temperature=0)
+            try:
+                results = self._parse_classify_response(response, titles, tags)
+            except _InvalidClassificationResponse as error:
+                print(f"[AI筛选] 分类 JSON 解析失败，低温重试一次: {error}")
+                repair_messages = list(messages)
+                if response:
+                    repair_messages.append({"role": "assistant", "content": response})
+                repair_messages.append({"role": "user", "content": CLASSIFY_JSON_REPAIR_PROMPT})
+                try:
+                    repaired = self.client.chat(repair_messages, temperature=0)
+                    results = self._parse_classify_response(repaired, titles, tags)
+                except _InvalidClassificationResponse as repair_error:
+                    print(f"[AI筛选] 分类响应修复失败，将在下次运行重试: {repair_error}")
+                    return None
             if self.summary_grounding_review_enabled and results:
                 self._review_item_summaries(titles, results)
             return results
@@ -550,7 +572,7 @@ class AIFilter:
         if not json_str:
             if self.debug:
                 print(f"[AI筛选][DEBUG] 无法从分类响应中提取 JSON，原始响应前 500 字符: {(response or '')[:500]}")
-            return []
+            raise _InvalidClassificationResponse("未找到 JSON 数组")
 
         try:
             data = json.loads(json_str)
@@ -558,12 +580,14 @@ class AIFilter:
             if self.debug:
                 print(f"[AI筛选][DEBUG] 分类响应 JSON 解析失败: {e}")
                 print(f"[AI筛选][DEBUG] 提取的 JSON 文本前 500 字符: {json_str[:500]}")
-            return []
+            raise _InvalidClassificationResponse(f"JSON 解析失败: {e}") from e
 
         if not isinstance(data, list):
             if self.debug:
                 print(f"[AI筛选][DEBUG] 分类响应顶层不是数组，实际类型: {type(data).__name__}")
-            return []
+            raise _InvalidClassificationResponse(
+                f"分类响应顶层不是数组: {type(data).__name__}"
+            )
 
         # 构建 id 映射
         title_ids = {t["id"] for t in titles}
