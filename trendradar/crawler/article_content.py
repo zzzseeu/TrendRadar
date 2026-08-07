@@ -212,7 +212,10 @@ class ArticleContentFetcher:
             if self.elsevier_client and extract_sciencedirect_pii(url):
                 try:
                     api_result = self.elsevier_client.fetch(url)
-                    if len(api_result.text) >= self.min_body_chars:
+                    if (
+                        api_result.status == "full_text"
+                        and len(api_result.text) >= self.min_body_chars
+                    ):
                         return self._build_full_text_content(
                             api_result.text,
                             fetch_status="elsevier_full_text",
