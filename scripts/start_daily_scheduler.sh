@@ -40,4 +40,4 @@ if ! tmux has-session -t "${SESSION_NAME}" 2>/dev/null; then
 fi
 
 echo "TrendRadar 每日任务已启动：${SESSION_NAME}"
-echo "计划：每天 11:30（Asia/Shanghai）"
+echo "计划：每天 10:00（Asia/Shanghai）"
