@@ -68,6 +68,9 @@ services:
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_MODEL=${AI_MODEL:-}
       - AI_API_BASE=${AI_API_BASE:-}
+      # Elsevier 全文 API 凭据（仅服务端使用）
+      - ELSEVIER_API_KEY=${ELSEVIER_API_KEY:-}
+      - ELSEVIER_INST_TOKEN=${ELSEVIER_INST_TOKEN:-}
       # 远程存储配置（S3 兼容协议）
       - S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-}
       - S3_BUCKET_NAME=${S3_BUCKET_NAME:-}

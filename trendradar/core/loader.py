@@ -436,6 +436,8 @@ def _load_ai_filter_config(config_data: Dict) -> Dict:
             "MAX_CONTENT_CHARS": int(content.get("max_content_chars", 5000)),
             "MIN_BODY_CHARS": int(content.get("min_body_chars", 300)),
             "CONCURRENCY": int(content.get("concurrency", 4)),
+            "ELSEVIER_API_KEY": _get_env_str("ELSEVIER_API_KEY"),
+            "ELSEVIER_INST_TOKEN": _get_env_str("ELSEVIER_INST_TOKEN"),
         },
     }
 

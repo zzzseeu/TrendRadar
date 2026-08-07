@@ -456,6 +456,8 @@ class AIFilterPipeline:
                     min_body_chars=config.get("MIN_BODY_CHARS", 300),
                     use_proxy=self._rss_use_proxy,
                     proxy_url=self._rss_proxy_url,
+                    elsevier_api_key=config.get("ELSEVIER_API_KEY", ""),
+                    elsevier_inst_token=config.get("ELSEVIER_INST_TOKEN", ""),
                 )
                 thread_state.fetcher = fetcher
             return fetcher

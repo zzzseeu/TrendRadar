@@ -1,9 +1,13 @@
+import os
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
 
-from trendradar.crawler.article_content import ArticleContentFetcher
+from trendradar.ai.filter_pipeline import AIFilterPipeline
+from trendradar.core.loader import _load_ai_filter_config
+from trendradar.crawler.article_content import ArticleContent, ArticleContentFetcher
 from trendradar.crawler.elsevier import (
     ElsevierFetchResult,
     ElsevierFullTextClient,
@@ -24,6 +28,7 @@ FULL_TEXT_XML = b"""\
 """
 METADATA_ONLY_XML = b"<full-text-retrieval-response><coredata /></full-text-retrieval-response>"
 SCIENCEDIRECT_URL = "https://www.sciencedirect.com/science/article/pii/S1672630826000545"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def build_html_session(content: str):
@@ -197,3 +202,79 @@ class ArticleContentElsevierIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.text, "C" * 500)
         self.assertIn("正文已截断", result.risk_warning)
+
+
+class ElsevierConfigurationTests(unittest.TestCase):
+    def test_loader_reads_elsevier_credentials_from_environment(self):
+        with patch.dict(os.environ, {
+            "ELSEVIER_API_KEY": "api-key",
+            "ELSEVIER_INST_TOKEN": "inst-token",
+        }, clear=False):
+            config = _load_ai_filter_config({"ai_filter": {}})
+
+        content = config["CONTENT_ENRICHMENT"]
+        self.assertEqual(content["ELSEVIER_API_KEY"], "api-key")
+        self.assertEqual(content["ELSEVIER_INST_TOKEN"], "inst-token")
+
+    @patch("trendradar.ai.filter_pipeline.ArticleContentFetcher")
+    def test_pipeline_passes_elsevier_credentials_to_fetcher(self, fetcher_class):
+        fetcher_class.return_value.get.return_value = ArticleContent(
+            text="summary",
+            level="summary",
+            risk_warning="limited",
+            fetch_status="body_unavailable",
+        )
+        pipeline = AIFilterPipeline(
+            {
+                "RSS": {"ENABLED": True},
+                "AI_FILTER": {"CONTENT_ENRICHMENT": {
+                    "ENABLED": True,
+                    "FETCH_FULL_TEXT": True,
+                    "TIMEOUT": 12,
+                    "MAX_CONTENT_CHARS": 5000,
+                    "MIN_BODY_CHARS": 300,
+                    "CONCURRENCY": 1,
+                    "ELSEVIER_API_KEY": "api-key",
+                    "ELSEVIER_INST_TOKEN": "inst-token",
+                }},
+            },
+            MagicMock(),
+            lambda: None,
+        )
+
+        pipeline._enrich_pending_items(
+            [{"id": 1, "title": "Paper", "url": SCIENCEDIRECT_URL}],
+            "RSS",
+        )
+
+        fetcher_class.assert_called_once_with(
+            timeout=12,
+            max_content_chars=5000,
+            min_body_chars=300,
+            use_proxy=False,
+            proxy_url="",
+            elsevier_api_key="api-key",
+            elsevier_inst_token="inst-token",
+        )
+
+    def test_compose_and_example_declare_empty_server_side_credentials(self):
+        compose = (PROJECT_ROOT / "docker/docker-compose.yml").read_text()
+        example = (PROJECT_ROOT / "docker/.env.example").read_text()
+        trendradar_service, mcp_service = compose.split("\n  trendradar-mcp:", 1)
+
+        self.assertIn("- ELSEVIER_API_KEY=${ELSEVIER_API_KEY:-}", trendradar_service)
+        self.assertIn("- ELSEVIER_INST_TOKEN=${ELSEVIER_INST_TOKEN:-}", trendradar_service)
+        self.assertNotIn("ELSEVIER_API_KEY", mcp_service)
+        self.assertNotIn("ELSEVIER_INST_TOKEN", mcp_service)
+        self.assertIn("仅服务端", example)
+
+        example_values = {
+            key: value
+            for key, value in (
+                line.split("=", 1)
+                for line in example.splitlines()
+                if line.startswith("ELSEVIER_")
+            )
+        }
+        self.assertEqual(example_values["ELSEVIER_API_KEY"], "")
+        self.assertEqual(example_values["ELSEVIER_INST_TOKEN"], "")
