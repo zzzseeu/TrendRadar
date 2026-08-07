@@ -1031,7 +1031,8 @@ class SQLiteStorageMixin:
             date: 日期字符串（YYYY-MM-DD），默认为今天
 
         Returns:
-            RSSData 对象；没有数据返回 None；全源失败且零条目时返回空 RSSData
+            RSSData 对象；没有抓取记录返回 None；全源失败且零条目时返回空 RSSData；
+            成功空抓取且零条目时也返回空 RSSData
         """
         try:
             conn = self._get_connection(date, db_type="rss")
@@ -1055,23 +1056,33 @@ class SQLiteStorageMixin:
             rows = cursor.fetchall()
             if not rows:
                 cursor.execute("""
+                    SELECT crawl_time FROM rss_crawl_records
+                    ORDER BY crawl_time DESC
+                    LIMIT 1
+                """)
+                time_row = cursor.fetchone()
+                if not time_row:
+                    return None
+
+                cursor.execute("""
+                    SELECT id, name FROM rss_feeds
+                    ORDER BY id
+                """)
+                id_to_name = {
+                    row[0]: row[1] or row[0]
+                    for row in cursor.fetchall()
+                }
+
+                cursor.execute("""
                     SELECT DISTINCT cs.feed_id
                     FROM rss_crawl_status cs
                     JOIN rss_crawl_records cr ON cs.crawl_record_id = cr.id
                     WHERE cs.status = 'failed'
                 """)
                 failed_ids = [row[0] for row in cursor.fetchall()]
-                if not failed_ids:
-                    return None
-                cursor.execute("""
-                    SELECT crawl_time FROM rss_crawl_records
-                    ORDER BY crawl_time DESC
-                    LIMIT 1
-                """)
-                time_row = cursor.fetchone()
                 return RSSData(
                     date=crawl_date,
-                    crawl_time=time_row[0] if time_row else self._format_time_filename(),
+                    crawl_time=time_row[0],
                     items=items,
                     id_to_name=id_to_name,
                     failed_ids=failed_ids,

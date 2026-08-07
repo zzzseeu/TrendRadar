@@ -629,6 +629,7 @@ def send_to_email(
     custom_smtp_port: Optional[int] = None,
     *,
     get_time_func: Callable = None,
+    require_all_targets: bool = False,
 ) -> bool:
     """
     发送邮件通知
@@ -642,6 +643,7 @@ def send_to_email(
         custom_smtp_server: 自定义 SMTP 服务器（可选）
         custom_smtp_port: 自定义 SMTP 端口（可选）
         get_time_func: 获取当前时间的函数
+        require_all_targets: 是否要求所有收件人都被 SMTP 服务器接受
 
     Returns:
         bool: 发送是否成功
@@ -691,7 +693,7 @@ def send_to_email(
         msg["From"] = formataddr((sender_name, from_email))
 
         # 设置收件人
-        recipients = [addr.strip() for addr in to_email.split(",")]
+        recipients = [addr.strip() for addr in to_email.split(",") if addr.strip()]
         if len(recipients) == 1:
             msg["To"] = recipients[0]
         else:
@@ -744,8 +746,27 @@ TrendRadar 热点分析报告
             server.login(from_email, password)
 
             # 发送邮件
-            server.send_message(msg)
+            refused_recipients = server.send_message(msg) or {}
             server.quit()
+
+            if require_all_targets:
+                delivery_succeeded = not refused_recipients
+            else:
+                refused_addresses = {
+                    str(address).strip().casefold()
+                    for address in refused_recipients
+                }
+                delivery_succeeded = any(
+                    recipient.casefold() not in refused_addresses
+                    for recipient in recipients
+                )
+
+            if not delivery_succeeded:
+                print(
+                    f"邮件发送未完成 [{report_type}]："
+                    f"SMTP 拒绝 {len(refused_recipients)}/{len(recipients)} 个收件人"
+                )
+                return False
 
             print(f"邮件发送成功 [{report_type}] -> {to_email}")
             return True

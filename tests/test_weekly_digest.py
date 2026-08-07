@@ -350,6 +350,68 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
 
         storage.save_rss_data.assert_not_called()
 
+    def test_empty_successful_sqlite_crawl_round_trips_as_rss_data(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            self.assertIsNone(storage.get_rss_data("2026-08-05"))
+            self.assertTrue(storage.save_rss_data(RSSData(
+                date="2026-08-05",
+                crawl_time="10-00",
+                items={},
+                id_to_name={"journal": "Journal"},
+                failed_ids=[],
+            )))
+
+            restored = storage.get_rss_data("2026-08-05")
+
+            self.assertIsNotNone(restored)
+            self.assertEqual(restored.date, "2026-08-05")
+            self.assertEqual(restored.crawl_time, "10-00")
+            self.assertEqual(restored.items, {})
+            self.assertEqual(restored.id_to_name, {"journal": "Journal"})
+            self.assertEqual(restored.failed_ids, [])
+            storage.cleanup()
+
+    def test_empty_successful_sqlite_day_makes_an_empty_week_legal(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        tz = pytz.timezone("Asia/Shanghai")
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            storage.save_rss_data(RSSData(
+                date="2026-08-05",
+                crawl_time="10-00",
+                items={},
+                id_to_name={"journal": "Journal"},
+                failed_ids=[],
+            ))
+
+            try:
+                snapshot = WeeklyRSSAggregator(
+                    storage, "Asia/Shanghai"
+                ).build(tz.localize(datetime(2026, 8, 10, 10, 0)))
+            except RuntimeError as exc:
+                self.fail(f"合法空日库被误判为全缺失: {exc}")
+
+            self.assertIsNone(snapshot.data)
+            self.assertNotIn("2026-08-05", snapshot.missing_dates)
+            self.assertEqual(len(snapshot.missing_dates), 7)
+            storage.cleanup()
+
     def test_existing_daily_database_with_no_in_window_items_is_empty_week(self):
         storage = MagicMock()
         storage.get_rss_data.side_effect = lambda date: (

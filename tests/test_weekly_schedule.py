@@ -332,6 +332,117 @@ class WeeklyScheduleTests(unittest.TestCase):
         self.assertFalse(sent)
         scheduler.record_execution.assert_not_called()
 
+    def test_weekly_retry_reanalyzes_until_once_push_is_recorded(self):
+        executed = set()
+        scheduler = MagicMock()
+        scheduler.already_executed.side_effect = (
+            lambda period_key, action, date_str: action in executed
+        )
+
+        def record_execution(period_key, action, date_str):
+            executed.add(action)
+            return True
+
+        scheduler.record_execution.side_effect = record_execution
+        dispatcher = MagicMock(dispatch_all=MagicMock(side_effect=[
+            {"wework": True, "email": False},
+            {"wework": True, "email": True},
+        ]))
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={
+                "ENABLE_NOTIFICATION": True,
+                "SHOW_VERSION_UPDATE": False,
+                "AI": {},
+                "AI_ANALYSIS": {"ENABLED": True, "MODE": "follow_report"},
+                "DEBUG": False,
+            },
+            platform_ids=[],
+            create_notification_dispatcher=MagicMock(return_value=dispatcher),
+            create_scheduler=MagicMock(return_value=scheduler),
+            prepare_report=MagicMock(return_value={}),
+            format_date=MagicMock(return_value="2026-08-10"),
+            get_time=MagicMock(),
+        )
+        analyzer.report_mode = "weekly"
+        analyzer._report_period_label = "2026-08-03—2026-08-09"
+        analyzer.frequency_file = None
+        analyzer._hotlist_total_count = 0
+        analyzer._rss_matched_count = 1
+        analyzer._rss_total_count = 1
+        analyzer._rss_source_total = 1
+        analyzer._rss_source_failed = 0
+        analyzer.proxy_url = None
+        analyzer.update_info = None
+        analyzer._has_notification_configured = MagicMock(return_value=True)
+        analyzer._has_valid_content = MagicMock(return_value=False)
+
+        def run_attempt():
+            ai_result = analyzer._run_ai_analysis(
+                [{"word": "育种"}], [{"count": 1}],
+                "weekly", "自然周周报", {}, schedule=schedule(),
+            )
+            return analyzer._send_notification_if_needed(
+                [], "自然周周报", "weekly",
+                rss_items=[{"count": 1}], ai_result=ai_result,
+                schedule=schedule(),
+            )
+
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class:
+            analyzer_class.return_value.analyze.side_effect = [
+                AIAnalysisResult(success=True),
+                AIAnalysisResult(success=True),
+            ]
+
+            self.assertFalse(run_attempt())
+            self.assertIn("analyze", executed)
+            self.assertNotIn("push", executed)
+            self.assertEqual(dispatcher.dispatch_all.call_count, 1)
+
+            self.assertTrue(run_attempt())
+            self.assertIn("push", executed)
+            self.assertEqual(analyzer_class.return_value.analyze.call_count, 2)
+            self.assertEqual(dispatcher.dispatch_all.call_count, 2)
+
+            self.assertFalse(run_attempt())
+            self.assertEqual(analyzer_class.return_value.analyze.call_count, 2)
+            self.assertEqual(dispatcher.dispatch_all.call_count, 2)
+
+        push_records = [
+            call for call in scheduler.record_execution.call_args_list
+            if call.args[1] == "push"
+        ]
+        self.assertEqual(len(push_records), 1)
+
+    def test_daily_once_analysis_still_skips_when_push_is_pending(self):
+        scheduler = MagicMock()
+        scheduler.already_executed.side_effect = (
+            lambda period_key, action, date_str: action == "analyze"
+        )
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={
+                "AI": {},
+                "AI_ANALYSIS": {"ENABLED": True, "MODE": "follow_report"},
+                "DEBUG": False,
+            },
+            create_scheduler=MagicMock(return_value=scheduler),
+            format_date=MagicMock(return_value="2026-08-10"),
+            get_time=MagicMock(),
+        )
+
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class:
+            result = analyzer._run_ai_analysis(
+                [{"word": "育种"}], None, "daily", "当日汇总", {},
+                schedule=schedule(report_mode="daily", ai_mode="daily"),
+            )
+
+        self.assertIsNone(result)
+        analyzer_class.assert_not_called()
+        scheduler.already_executed.assert_called_once_with(
+            "monday_weekly", "analyze", "2026-08-10"
+        )
+
     def test_multi_account_aggregation_requires_every_weekly_target(self):
         dispatcher = NotificationDispatcher(
             {"MAX_ACCOUNTS_PER_CHANNEL": 3},

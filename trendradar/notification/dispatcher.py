@@ -355,13 +355,17 @@ class NotificationDispatcher:
                 ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
-        # 邮件（保持原有逻辑，已支持多收件人，AI 分析已嵌入 HTML）
+        # 邮件（已支持多收件人，AI 分析已嵌入 HTML）
         if (
             self.config.get("EMAIL_FROM")
             and self.config.get("EMAIL_PASSWORD")
             and self.config.get("EMAIL_TO")
         ):
-            results["email"] = self._send_email(report_type, html_file_path)
+            results["email"] = self._send_email(
+                report_type,
+                html_file_path,
+                require_all_targets,
+            )
 
         return results
 
@@ -843,8 +847,9 @@ class NotificationDispatcher:
         self,
         report_type: str,
         html_file_path: Optional[str],
+        require_all_targets: bool = False,
     ) -> bool:
-        """发送邮件（保持原有逻辑，已支持多收件人）
+        """发送邮件（支持多收件人及严格的全收件人成功语义）
 
         Note:
             AI 分析内容已在 HTML 生成时嵌入，无需在此传递
@@ -858,4 +863,5 @@ class NotificationDispatcher:
             custom_smtp_server=self.config.get("EMAIL_SMTP_SERVER", ""),
             custom_smtp_port=self.config.get("EMAIL_SMTP_PORT", ""),
             get_time_func=self.get_time_func,
+            require_all_targets=require_all_targets,
         )

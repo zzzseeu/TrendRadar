@@ -421,8 +421,20 @@ class NewsAnalyzer:
             scheduler = self.ctx.create_scheduler()
             date_str = self.ctx.format_date()
             if scheduler.already_executed(schedule.period_key, "analyze", date_str):
-                print(f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天已分析过，跳过")
-                return None
+                weekly_push_pending = (
+                    mode == "weekly"
+                    and schedule.once_push
+                    and not scheduler.already_executed(
+                        schedule.period_key, "push", date_str
+                    )
+                )
+                if not weekly_push_pending:
+                    print(f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天已分析过，跳过")
+                    return None
+                print(
+                    f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} "
+                    "已分析但周报推送未完成，重新分析用于补跑"
+                )
             else:
                 print(f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天首次分析")
 
