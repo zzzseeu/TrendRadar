@@ -23,7 +23,7 @@ class ResolvedSchedule:
     collect: bool
     analyze: bool
     push: bool
-    report_mode: str
+    report_mode: str  # incremental/current/daily/weekly
     ai_mode: str
     once_analyze: bool
     once_push: bool

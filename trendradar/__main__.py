@@ -31,6 +31,7 @@ from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import DEFAULT_TIMEZONE, is_within_days, calculate_days_old
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.core.scheduler import ResolvedSchedule
+from trendradar.core.weekly import WeeklyRSSAggregator
 from trendradar.commands import check_all_versions, run_doctor, run_test_notification, handle_status_commands
 from trendradar.commands.version import _fetch_remote_version, _parse_version
 
@@ -111,6 +112,12 @@ class NewsAnalyzer:
             "report_type": "全天汇总",
             "should_send_notification": True,
         },
+        "weekly": {
+            "mode_name": "自然周周报模式",
+            "description": "自然周周报模式（上个自然周 RSS 汇总）",
+            "report_type": "自然周周报",
+            "should_send_notification": True,
+        },
     }
 
     def __init__(self, config: Optional[Dict] = None):
@@ -147,6 +154,9 @@ class NewsAnalyzer:
         self._rss_total_count = 0
         self._rss_matched_count = 0
         self._hotlist_total_count = 0
+        self._rss_window = None
+        self._allowed_rss_ids = None
+        self._report_period_label = ""
 
         # 初始化存储管理器（使用 AppContext）
         self._init_storage_manager()
@@ -215,6 +225,29 @@ class NewsAnalyzer:
     def _get_mode_strategy(self) -> Dict:
         """获取当前模式的策略配置"""
         return self.MODE_STRATEGIES.get(self.report_mode, self.MODE_STRATEGIES["daily"])
+
+    def _resolve_and_apply_schedule(self) -> ResolvedSchedule:
+        """在采集前解析一次调度，并应用本次运行的覆盖配置。"""
+        schedule = self.ctx.create_scheduler().resolve()
+        self.report_mode = schedule.report_mode
+        self.frequency_file = schedule.frequency_file
+        self.filter_method = schedule.filter_method or self.ctx.filter_method
+        self.interests_file = schedule.interests_file
+        return schedule
+
+    @staticmethod
+    def _should_fallback_ai_filter(mode: str) -> bool:
+        """周报必须由 AI 筛选成功，不允许降级到关键词结果。"""
+        return mode != "weekly"
+
+    @staticmethod
+    def _notification_delivery_succeeded(
+        mode: str, results: Dict[str, bool]
+    ) -> bool:
+        """周报需所有配置渠道成功；既有模式保留任一成功即算成功。"""
+        return bool(results) and (
+            all(results.values()) if mode == "weekly" else any(results.values())
+        )
 
     def _has_notification_configured(self) -> bool:
         """检查是否配置了任何通知渠道"""
@@ -735,7 +768,11 @@ class NewsAnalyzer:
         if self.filter_method == "ai":
             # === AI 筛选策略 ===
             print("[筛选] 使用 AI 智能筛选策略")
-            ai_filter_result = self.ctx.run_ai_filter(interests_file=self.interests_file)
+            ai_filter_result = self.ctx.run_ai_filter(
+                interests_file=self.interests_file,
+                rss_window=self._rss_window,
+                allowed_rss_ids=self._allowed_rss_ids,
+            )
 
             if ai_filter_result and ai_filter_result.success:
                 print(f"[筛选] AI 筛选完成: {ai_filter_result.total_matched} 条匹配, {len(ai_filter_result.tags)} 个标签")
@@ -743,6 +780,8 @@ class NewsAnalyzer:
                 stats, ai_rss_stats, ai_rss_new_stats = self.ctx.convert_ai_filter_to_report_data(
                     ai_filter_result, mode=mode,
                     new_titles=new_titles, rss_new_urls=rss_new_urls,
+                    rss_window=self._rss_window,
+                    allowed_rss_ids=self._allowed_rss_ids,
                 )
                 total_titles = sum(len(titles) for titles in data_source.values())
 
@@ -751,8 +790,10 @@ class NewsAnalyzer:
                 rss_items = ai_rss_stats
                 rss_new_items = ai_rss_new_stats
             else:
-                # AI 筛选失败，回退到关键词匹配
                 error_msg = ai_filter_result.error if ai_filter_result else "未知错误"
+                if not self._should_fallback_ai_filter(mode):
+                    raise RuntimeError("周报 AI 筛选失败")
+                # AI 筛选失败，回退到关键词匹配
                 print(f"[筛选] AI 筛选失败: {error_msg}，回退到关键词匹配")
                 stats, total_titles = self.ctx.count_frequency(
                     data_source, word_groups, filter_words,
@@ -953,14 +994,16 @@ class NewsAnalyzer:
                 print("未配置任何通知渠道，跳过通知发送")
                 return False
 
-            # 记录推送成功
-            if any(results.values()):
+            delivery_succeeded = self._notification_delivery_succeeded(mode, results)
+            if delivery_succeeded:
                 if schedule.once_push and schedule.period_key:
                     scheduler = self.ctx.create_scheduler()
                     date_str = self.ctx.format_date()
                     scheduler.record_execution(schedule.period_key, "push", date_str)
+            elif mode == "weekly":
+                print("[推送] 周报存在发送失败，未记录 once_push，可人工补跑")
 
-            return True
+            return delivery_succeeded
 
         elif cfg["ENABLE_NOTIFICATION"] and not has_notification:
             print("⚠️ 警告：通知功能已启用但未配置任何通知渠道，将跳过通知发送")
@@ -1208,10 +1251,11 @@ class NewsAnalyzer:
         """
         按报告模式处理 RSS 数据，返回与热榜相同格式的统计结构
 
-        三种模式：
+        四种模式：
         - daily: 当日汇总，统计=当天所有条目，新增=本次新增条目
         - current: 当前榜单，统计=当前榜单条目，新增=本次新增条目
         - incremental: 增量模式，统计=新增条目，新增=无
+        - weekly: 上一自然周快照，统计=快照条目，新增=无
 
         Args:
             rss_data: 当前抓取的 RSSData 对象
@@ -1242,6 +1286,41 @@ class NewsAnalyzer:
         rss_new_stats = None
         raw_rss_items = None  # 原始 RSS 条目列表（用于独立展示区）
         rss_new_urls = set()  # 原始新增 RSS URLs（未经关键词过滤）
+
+        if self.report_mode == "weekly":
+            snapshot = WeeklyRSSAggregator(
+                self.storage_manager, self.ctx.timezone,
+            ).build(self.ctx.get_time())
+            if not snapshot.data:
+                print("[周报] 上一自然周没有可用数据，不生成空周报")
+                return None, None, None, set()
+
+            self._rss_window = snapshot.window
+            self._allowed_rss_ids = snapshot.allowed_rss_ids
+            self._report_period_label = snapshot.window.label
+            self._rss_total_count = sum(
+                len(items) for items in snapshot.data.items.values()
+            )
+            raw_rss_items = self._convert_rss_items_to_list(
+                snapshot.data.items,
+                snapshot.data.id_to_name,
+                apply_freshness=False,
+            )
+            if not rss_display_enabled:
+                return None, None, raw_rss_items, set()
+
+            rss_stats, _ = count_rss_frequency(
+                rss_items=raw_rss_items,
+                word_groups=word_groups,
+                filter_words=filter_words,
+                global_filters=global_filters,
+                max_news_per_keyword=max_news_per_keyword,
+                sort_by_position_first=sort_by_position_first,
+                timezone=timezone,
+                rank_threshold=self.rank_threshold,
+                quiet=False,
+            )
+            return rss_stats, None, raw_rss_items, set()
 
         # 1. 首先获取原始条目（用于独立展示区，不受 display.regions.rss 影响）
         # 根据模式获取原始条目
@@ -1377,7 +1456,9 @@ class NewsAnalyzer:
         self._rss_total_count = total
         return rss_stats, rss_new_stats, raw_rss_items, rss_new_urls
 
-    def _convert_rss_items_to_list(self, items_dict: Dict, id_to_name: Dict) -> List[Dict]:
+    def _convert_rss_items_to_list(
+        self, items_dict: Dict, id_to_name: Dict, apply_freshness: bool = True,
+    ) -> List[Dict]:
         """将 RSS 条目字典转换为列表格式，并应用新鲜度过滤（用于推送）"""
         rss_items = []
         filtered_count = 0
@@ -1410,7 +1491,7 @@ class NewsAnalyzer:
 
             for item in items:
                 # 应用新鲜度过滤（仅在启用时）
-                if freshness_enabled and max_days > 0:
+                if apply_freshness and freshness_enabled and max_days > 0:
                     if not is_within_days(
                         item.published_at,
                         max_days,
@@ -1514,39 +1595,16 @@ class NewsAnalyzer:
         rss_new_items: Optional[List[Dict]] = None,
         raw_rss_items: Optional[List[Dict]] = None,
         rss_new_urls: Optional[set] = None,
-    ) -> Optional[str]:
+        schedule: ResolvedSchedule = None,
+    ) -> bool:
         """执行模式特定逻辑，支持热榜+RSS合并推送
 
         简化后的逻辑：
         - 每次运行都生成 HTML 报告（时间戳快照 + latest/{mode}.html + index.html）
         - 根据模式发送通知
         """
-        # 调度系统
-        scheduler = self.ctx.create_scheduler()
-        schedule = scheduler.resolve()
-
-        # 使用 schedule 决定的 report_mode 覆盖全局配置
-        effective_mode = schedule.report_mode
-        if effective_mode != self.report_mode:
-            print(f"[调度] 报告模式覆盖: {self.report_mode} -> {effective_mode}")
-        self.report_mode = effective_mode
-
-        # 重新获取 mode_strategy，确保 report_type 与覆盖后的 report_mode 一致
+        # 调度已在采集前解析并应用，避免 RSS 处理和运行策略得到不同结果。
         mode_strategy = self._get_mode_strategy()
-
-        # 使用 schedule 决定的 frequency_file 覆盖默认值
-        self.frequency_file = schedule.frequency_file
-
-        # 使用 schedule 决定的筛选策略覆盖默认值
-        self.filter_method = schedule.filter_method or self.ctx.filter_method
-
-        # 使用 schedule 决定的 AI 筛选兴趣文件覆盖默认值
-        self.interests_file = schedule.interests_file
-
-        # 如果调度器说不采集，则直接跳过
-        if not schedule.collect:
-            print("[调度] 当前时间段不执行数据采集，跳过分析流水线")
-            return None
         # 获取当前监控平台ID列表
         current_platform_ids = self.ctx.platform_ids
 
@@ -1560,8 +1618,22 @@ class NewsAnalyzer:
         title_info = None
         standalone_data = None
 
+        # weekly 模式使用本轮热榜和已聚合的自然周 RSS，不读取当日历史热榜。
+        if self.report_mode == "weekly":
+            title_info = self._prepare_current_title_info(results, time_info)
+            standalone_data = self._prepare_standalone_data(
+                results, id_to_name, title_info, raw_rss_items
+            )
+            stats, html_file, ai_result, rss_items, standalone_data, rss_new_items = self._run_analysis_pipeline(
+                results, self.report_mode, title_info, new_titles,
+                word_groups, filter_words, id_to_name,
+                failed_ids=failed_ids, global_filters=global_filters,
+                rss_items=rss_items, rss_new_items=rss_new_items,
+                standalone_data=standalone_data, schedule=schedule,
+                rss_new_urls=rss_new_urls,
+            )
         # current 模式需要使用完整的历史数据
-        if self.report_mode == "current":
+        elif self.report_mode == "current":
             analysis_data = self._load_analysis_data()
             if analysis_data:
                 (
@@ -1727,7 +1799,7 @@ class NewsAnalyzer:
         if mode_strategy["should_send_notification"]:
             # standalone_data 已在分析流水线中翻译，直接复用（不再重新 prepare 原文，
             # 避免覆盖译文、避免重复翻译，并保证网页报告与推送译文一致）
-            self._send_notification_if_needed(
+            delivered = self._send_notification_if_needed(
                 stats,
                 mode_strategy["report_type"],
                 self.report_mode,
@@ -1742,6 +1814,15 @@ class NewsAnalyzer:
                 current_results=results,
                 schedule=schedule,
             )
+            if self.report_mode == "weekly":
+                has_content = self._has_valid_content(stats, new_titles) or bool(rss_items)
+                if (
+                    has_content
+                    and self.ctx.config["ENABLE_NOTIFICATION"]
+                    and self._has_notification_configured()
+                    and not delivered
+                ):
+                    return False
 
         # 打开浏览器（仅在非容器环境）
         if self._should_open_browser() and html_file:
@@ -1751,15 +1832,17 @@ class NewsAnalyzer:
         elif self.is_docker_container and html_file:
             print(f"HTML报告已生成（Docker环境）: {html_file}")
 
-        return html_file
+        return True
 
-    def run(self) -> None:
+    def run(self) -> bool:
         """执行分析流程"""
         try:
+            schedule = self._resolve_and_apply_schedule()
             if not self._initialize_and_check_config():
-                return
-
-            mode_strategy = self._get_mode_strategy()
+                return True
+            if not schedule.collect:
+                print("[调度] 当前不执行采集")
+                return True
 
             # 抓取热榜数据
             results, id_to_name, failed_ids = self._crawl_data()
@@ -1767,17 +1850,23 @@ class NewsAnalyzer:
             # 抓取 RSS 数据（如果启用），返回统计条目、新增条目和原始条目
             rss_items, rss_new_items, raw_rss_items, rss_new_urls = self._crawl_rss_data()
 
+            if schedule.report_mode == "weekly" and self._rss_window is None:
+                print("[周报] 上一自然周没有可用数据，本次成功结束")
+                return True
+
             # 执行模式策略，传递 RSS 数据用于合并推送
-            self._execute_mode_strategy(
-                mode_strategy, results, id_to_name, failed_ids,
+            return self._execute_mode_strategy(
+                self._get_mode_strategy(), results, id_to_name, failed_ids,
                 rss_items=rss_items, rss_new_items=rss_new_items,
-                raw_rss_items=raw_rss_items, rss_new_urls=rss_new_urls
+                raw_rss_items=raw_rss_items, rss_new_urls=rss_new_urls,
+                schedule=schedule,
             )
 
         except Exception as e:
             print(f"分析流程执行出错: {e}")
             if self.ctx.config.get("DEBUG", False):
                 raise
+            return False
         finally:
             # 清理资源（包括过期数据清理和数据库连接关闭）
             self.ctx.cleanup()
@@ -1845,7 +1934,8 @@ def main():
             }
 
         debug_mode = analyzer.ctx.config.get("DEBUG", False)
-        analyzer.run()
+        if not analyzer.run():
+            raise SystemExit(1)
     except FileNotFoundError as e:
         print(f"❌ 配置文件错误: {e}")
         print("\n请确保以下文件存在:")
