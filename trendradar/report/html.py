@@ -1499,6 +1499,8 @@ def render_html_content(
         mode_display = "当前榜单"
     elif mode == "incremental":
         mode_display = "增量分析"
+    elif mode == "weekly":
+        mode_display = "上周周报"
     else:
         mode_display = "全天汇总"
 
@@ -1522,6 +1524,14 @@ def render_html_content(
                     <div class="info-item">
                         <span class="info-label">报告类型</span>
                         <span class="info-value">{mode_display}</span>
+                    </div>"""
+
+    period_label = report_data.get("period_label", "")
+    if period_label:
+        html += f"""
+                    <div class="info-item">
+                        <span class="info-label">周期</span>
+                        <span class="info-value">{html_escape(period_label)}</span>
                     </div>"""
 
     # 2. 生成时间

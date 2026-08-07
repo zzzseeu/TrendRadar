@@ -294,7 +294,10 @@ def split_content_into_batches(
 
         mode_suffix = ""
         if ai_mode_val and ai_mode_val != mode:
-            mode_map = {"daily": "全天汇总", "current": "当前榜单", "incremental": "增量分析"}
+            mode_map = {
+                "daily": "全天汇总", "current": "当前榜单",
+                "incremental": "增量分析", "weekly": "上周周报",
+            }
             mode_suffix = f" [{mode_map.get(ai_mode_val, ai_mode_val)}]"
 
         base_header += f"{b_s}AI 分析：{b_e} {ai_display}{mode_suffix}\n"
@@ -304,6 +307,9 @@ def split_content_into_batches(
 
     # === 下半部分：元信息 ===
     base_header += f"{b_s}类型：{b_e} {report_type}\n"
+    period_label = report_data.get("period_label", "")
+    if period_label:
+        base_header += f"{b_s}周期：{b_e} {period_label}\n"
     base_header += f"{b_s}时间：{b_e} {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
 
     top_words = report_data.get("stats", [])[:3]
@@ -376,6 +382,8 @@ def split_content_into_batches(
             mode_text = "增量模式下暂无新增匹配的热点词汇"
         elif mode == "current":
             mode_text = "当前榜单模式下暂无匹配的热点词汇"
+        elif mode == "weekly":
+            mode_text = "上周周报模式下暂无匹配的热点词汇"
         else:
             mode_text = "暂无匹配的热点词汇"
         simple_content = f"📭 {mode_text}\n\n"

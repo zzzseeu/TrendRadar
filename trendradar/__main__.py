@@ -114,8 +114,8 @@ class NewsAnalyzer:
         },
         "weekly": {
             "mode_name": "自然周周报模式",
-            "description": "自然周周报模式（上个自然周 RSS 汇总）",
-            "report_type": "自然周周报",
+            "description": "自然周周报模式（上一周一至周日）",
+            "report_type": "上周周报",
             "should_send_notification": True,
         },
     }
@@ -886,6 +886,7 @@ class NewsAnalyzer:
                     "rss_total_count": self._rss_total_count,
                     "rss_source_total": self._rss_source_total,
                     "rss_source_failed": self._rss_source_failed,
+                    "period_label": self._report_period_label,
                 },
                 translate_report_func=translate_report_func,
             )
@@ -969,6 +970,7 @@ class NewsAnalyzer:
             report_data["rss_total_count"] = self._rss_total_count
             report_data["rss_source_total"] = self._rss_source_total
             report_data["rss_source_failed"] = self._rss_source_failed
+            report_data["period_label"] = self._report_period_label
 
             # 是否发送版本更新信息
             update_info_to_send = self.update_info if cfg["SHOW_VERSION_UPDATE"] else None
