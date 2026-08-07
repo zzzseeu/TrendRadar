@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 from trendradar.ai.filter import AIFilter, AIFilterResult
 from trendradar.crawler.article_content import ArticleContentFetcher
 from trendradar.crawler.news_search import NEWS_SEARCH_PROVIDERS, canonicalize_url
+from trendradar.core.weekly import NaturalWeekWindow
 from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import (
     DEFAULT_TIMEZONE,
@@ -46,6 +47,8 @@ class AIFilterPipeline:
         config: Dict[str, Any],
         storage_manager: Any,
         get_time_func: Callable,
+        rss_window: Optional[NaturalWeekWindow] = None,
+        allowed_rss_ids: Optional[set[int]] = None,
     ):
         self.config = config
         self.storage = storage_manager
@@ -77,6 +80,10 @@ class AIFilterPipeline:
         self._freshness_enabled = freshness_config.get("ENABLED", True)
         self._default_max_age_days = freshness_config.get("MAX_AGE_DAYS", 3)
         self._timezone = config.get("TIMEZONE", DEFAULT_TIMEZONE)
+        self._rss_window = rss_window
+        self._allowed_rss_ids = (
+            frozenset(allowed_rss_ids) if allowed_rss_ids is not None else None
+        )
 
         self._priority_sort_enabled = config.get("FILTER", {}).get("PRIORITY_SORT_ENABLED", False)
         self._rank_threshold = config.get("RANK_THRESHOLD", 50)
@@ -109,6 +116,21 @@ class AIFilterPipeline:
             return True
 
         return is_within_days(published_at, max_days, self._timezone)
+
+    def _is_rss_item_in_scope(
+        self,
+        feed_id: str,
+        published_at: str,
+        news_item_id: Optional[int] = None,
+    ) -> bool:
+        if (
+            self._allowed_rss_ids is not None
+            and news_item_id not in self._allowed_rss_ids
+        ):
+            return False
+        if self._rss_window is not None:
+            return self._rss_window.contains(published_at)
+        return self._is_rss_item_fresh(feed_id, published_at)
 
     def run(self, interests_file: Optional[str] = None) -> Optional[AIFilterResult]:
         """
@@ -205,6 +227,16 @@ class AIFilterPipeline:
 
         # 8. 查询并组装返回结果
         all_results = self.storage.get_active_ai_filter_results(interests_file=effective_interests_file)
+        all_results = [
+            result
+            for result in all_results
+            if result.get("source_type") != "rss"
+            or self._is_rss_item_in_scope(
+                result.get("source_id", ""),
+                result.get("first_time", ""),
+                result.get("news_item_id"),
+            )
+        ]
 
         if self._debug:
             print(f"[AI筛选][DEBUG] === 最终汇总 ===")
@@ -343,7 +375,9 @@ class AIFilterPipeline:
             for n in all_rss:
                 published_at = n.get("published_at", "")
                 feed_id = n.get("source_id", "")
-                if not self._is_rss_item_fresh(feed_id, published_at):
+                if not self._is_rss_item_in_scope(
+                    feed_id, published_at, n.get("id")
+                ):
                     freshness_filtered_rss += 1
                     continue
                 fresh_rss.append(n)
@@ -620,9 +654,10 @@ class AIFilterPipeline:
                     continue
                 if item.get("source_type") == "rss":
                     feed_id = item.get("source_id", "")
-                    if not self._is_rss_item_fresh(
+                    if not self._is_rss_item_in_scope(
                         feed_id,
                         item.get("first_time", ""),
+                        item.get("news_item_id"),
                     ):
                         continue
                 all_items.append(item)
@@ -710,9 +745,10 @@ class AIFilterPipeline:
                     continue
                 if self._score_value(item.get("relevance_score")) < min_score:
                     continue
-                if not self._is_rss_item_fresh(
+                if not self._is_rss_item_in_scope(
                     item.get("source_id", ""),
                     item.get("first_time", ""),
+                    item.get("news_item_id"),
                 ):
                     continue
 
@@ -852,7 +888,9 @@ class AIFilterPipeline:
                 last_time = item.get("last_time", "")
                 if source_type == "rss":
                     feed_id = item.get("source_id", "")
-                    if not self._is_rss_item_fresh(feed_id, first_time):
+                    if not self._is_rss_item_in_scope(
+                        feed_id, first_time, item.get("news_item_id")
+                    ):
                         continue
                     time_display = format_iso_time_friendly(first_time, self._timezone, include_date=True) if first_time else ""
                 else:

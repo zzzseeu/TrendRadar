@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 import pytz
 
 from trendradar.core.weekly import WeeklyRSSAggregator, previous_natural_week
+from trendradar.ai.filter import AIFilterResult
+from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.utils.time import parse_iso_datetime
 
@@ -16,6 +18,74 @@ def rss_data(date, *items):
         grouped.setdefault(item.feed_id, []).append(item)
         names[item.feed_id] = item.feed_name or item.feed_id
     return RSSData(date=date, crawl_time="10-00", items=grouped, id_to_name=names)
+
+
+class _WeeklyAIStorage:
+    def get_all_news_ids(self):
+        return []
+
+    def get_analyzed_news_ids(self, source_type, interests_file):
+        return set()
+
+    def get_all_rss_ids(self):
+        return [
+            {"id": 1, "source_id": "journal",
+             "published_at": "2026-08-03T00:00:00+08:00"},
+            {"id": 2, "source_id": "journal",
+             "published_at": "2026-08-09T23:59:59+08:00"},
+            {"id": 3, "source_id": "journal",
+             "published_at": "2026-08-10T00:00:00+08:00"},
+        ]
+
+
+class WeeklyAIFilterScopeTests(unittest.TestCase):
+    def setUp(self):
+        tz = pytz.timezone("Asia/Shanghai")
+        window = previous_natural_week(
+            tz.localize(datetime(2026, 8, 10, 10, 0)),
+            "Asia/Shanghai",
+        )
+        self.pipeline = AIFilterPipeline(
+            {
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {"ENABLED": True, "FRESHNESS_FILTER": {
+                    "ENABLED": True, "MAX_AGE_DAYS": 1,
+                }},
+                "AI_FILTER": {"MIN_SCORE": 0},
+            },
+            _WeeklyAIStorage(),
+            lambda: None,
+            rss_window=window,
+            allowed_rss_ids={1, 2},
+        )
+
+    def test_week_start_survives_but_current_monday_is_excluded(self):
+        pending = self.pipeline._collect_pending_news("ai_interests.txt")
+        self.assertEqual([item["id"] for item in pending[1]], [1, 2])
+        self.assertEqual(pending[-1], 1)
+
+    def test_report_conversion_rejects_unapproved_duplicate_id(self):
+        result = AIFilterResult(success=True, tags=[{
+            "tag": "育种", "count": 2, "items": [
+                {"news_item_id": 1, "title": "Allowed", "source_type": "rss",
+                 "source_id": "journal",
+                 "first_time": "2026-08-03T00:00:00+08:00",
+                 "relevance_score": 0.9},
+                {"news_item_id": 9, "title": "Duplicate", "source_type": "rss",
+                 "source_id": "journal",
+                 "first_time": "2026-08-04T00:00:00+08:00",
+                 "relevance_score": 0.9},
+            ],
+        }])
+
+        _, rss_stats, _ = self.pipeline.convert_to_report_data(
+            result, mode="weekly"
+        )
+
+        self.assertEqual(
+            [item["title"] for item in rss_stats[0]["titles"]],
+            ["Allowed"],
+        )
 
 
 class NaturalWeekWindowTests(unittest.TestCase):
