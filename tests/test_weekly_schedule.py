@@ -309,6 +309,7 @@ class WeeklyScheduleTests(unittest.TestCase):
             format_date=MagicMock(return_value="2026-08-10"),
         )
         analyzer.report_mode = "weekly"
+        analyzer._report_period_label = "2026-08-03—2026-08-09"
         analyzer.frequency_file = None
         analyzer._hotlist_total_count = 0
         analyzer._rss_matched_count = 1
