@@ -40,8 +40,8 @@ app:
 # 详细时间线图请查看 config/timeline.yaml
 # ===============================================================
 schedule:
-  enabled: false                        # 是否启用调度系统（true=启用, false=关闭，默认关闭）
-  preset: "morning_evening"             # 预设模板名称（见上方说明）
+  enabled: true                         # 是否启用调度系统（true=启用, false=关闭，默认关闭）
+  preset: "custom"                      # 预设模板名称（见上方说明）
 
 
 # ===============================================================
@@ -120,7 +120,7 @@ rss:
   freshness_filter:
     enabled: true                     # 是否启用新鲜度过滤（true=启用, false=关闭）
 
-    max_age_days: 1                   # 最大文章年龄（天）
+    max_age_days: 2                   # 最大文章年龄（天）
                                       # - 正整数：只推送 N 天内的文章
                                       # - 0：禁用过滤，推送所有文章
 
@@ -188,75 +188,75 @@ rss:
       # 解析后保留的仍是 www.irri.org 官方文章链接。
       fetch_url: "https://www-irri-org.translate.goog/news-and-events/news?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     # ── 国际期刊与预印本 ──────────────────────────────────────
     - id: "nature-plants"
       name: "Nature Plants"
       url: "https://www.nature.com/nplants.rss"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "nature-genetics"
       name: "Nature Genetics"
       url: "https://www.nature.com/ng.rss"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "nature-biotechnology"
       name: "Nature Biotechnology"
       url: "https://www.nature.com/nbt.rss"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "science"
       name: "Science"
       url: "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "molecular-plant"
       name: "Molecular Plant"
       url: "https://rss.sciencedirect.com/publication/science/16742052"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "plant-communications"
       name: "Plant Communications"
       url: "https://rss.sciencedirect.com/publication/science/25903462"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "rice-science"
       name: "Rice Science"
       url: "https://rss.sciencedirect.com/publication/science/16726308"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "crop-journal"
       name: "The Crop Journal"
       url: "https://rss.sciencedirect.com/publication/science/22145141"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "biorxiv-plant-biology"
       name: "bioRxiv Plant Biology"
       url: "https://connect.biorxiv.org/biorxiv_xml.php?subject=plant_biology"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     # ── 育种数据库动态 ────────────────────────────────────────
     - id: "gramene-news"
       name: "Gramene News"
       url: "https://news.gramene.org/rss.xml"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "ensembl-news"
       name: "Ensembl News"
       url: "https://www.ensembl.info/feed/"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     # ── 国内水稻与作物育种科研机构 ────────────────────────────
     - id: "cnrri-research"
@@ -264,14 +264,14 @@ rss:
       url: "https://cnrri.caas.cn/kyjz/index.htm"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "hzau-crop-lab"
       name: "华中农大作物遗传改良实验室"
       url: "https://croplab.hzau.edu.cn/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "cemps-research"
       name: "中科院分子植物卓越中心科研进展"
@@ -279,14 +279,14 @@ rss:
       source_type: "web_news"
       fetch_url: "https://cemps.cas.cn/kyjz/kyjz{year}/"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "caas-crop-research"
       name: "中国农科院作科所科研进展"
       url: "https://ics.caas.cn/xwdt/kyjz1/index.htm"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     # ── 种业政策与生物技术监管 ────────────────────────────────
     - id: "moa-seed-news"
@@ -294,21 +294,21 @@ rss:
       url: "https://zys.moa.gov.cn/gzdt/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "moa-seed-notices"
       name: "农业农村部种业管理司公示公告"
       url: "https://zys.moa.gov.cn/gsgg/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "moa-seed-policy"
       name: "农业农村部种业管理司政策文件"
       url: "https://zys.moa.gov.cn/zcwj/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "aphis-biotech"
       name: "USDA APHIS Biotechnology"
@@ -317,14 +317,14 @@ rss:
       # APHIS 主站在当前出口连接不稳定，代理只用于读取，文章链接会还原为官方域名。
       fetch_url: "https://www-aphis-usda-gov.translate.goog/biotechnology?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "eu-plants-policy"
       name: "欧盟植物与 NGT 政策"
       url: "https://food.ec.europa.eu/plants_en"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "cgiar-news"
       name: "CGIAR News"
@@ -333,7 +333,7 @@ rss:
       # CGIAR 的直接请求返回 403，代理只用于读取，文章链接会还原为官方域名。
       fetch_url: "https://www-cgiar-org.translate.goog/news?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     # ── 种业企业（仍需同时命中育种技术词，避免财报和人事消息） ──
     - id: "winall-news"
@@ -341,14 +341,14 @@ rss:
       url: "https://www.winallseed.com/"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "syngenta-news"
       name: "Syngenta Group Newsroom"
       url: "https://www.syngentagroup.com/newsroom"
       source_type: "web_news"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     - id: "corteva-news"
       name: "Corteva Media Center"
@@ -356,7 +356,7 @@ rss:
       source_type: "corteva_news"
       fetch_url: "https://www.corteva.com/content/corteva/corporate/our-homepage/resources/media-center/jcr:content/root/responsivegrid/navheadertabs/News-%26-Media/columncontrol/8-4-col-1/articlefilter.mediacenter.json"
       max_items: 30
-      max_age_days: 1
+      max_age_days: 2
 
     # 自定义源示例
     # - id: "custom-feed"

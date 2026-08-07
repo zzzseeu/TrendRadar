@@ -511,7 +511,7 @@ class GDELTClient:
             "query": query,
             "mode": "artlist",
             "format": "json",
-            "timespan": "24h",
+            "timespan": "48h",
             "sort": "datedesc",
             "maxrecords": max_results,
         }
@@ -584,7 +584,7 @@ class GoogleNewsRSSClient:
             if language == "zh"
             else {"hl": "en-US", "gl": "US", "ceid": "US:en"}
         )
-        return {"q": f"{query} when:1d", **locale}
+        return {"q": f"{query} when:2d", **locale}
 
     def fetch(self, query: str, topic: str, language: str) -> list[SearchArticle]:
         response = self.session.get(

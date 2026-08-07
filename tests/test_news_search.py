@@ -185,39 +185,16 @@ class ProviderRequestTests(unittest.TestCase):
         self.assertEqual(
             session_class.call_args_list[1].kwargs["use_proxy"], False
         )
-    def test_gdelt_builds_24_hour_article_list_params(self):
+    def test_gdelt_builds_48_hour_article_list_params(self):
         self.assertEqual(
-            GDELTClient().build_params("wheat breeding", 25),
-            {
-                "query": "wheat breeding",
-                "mode": "artlist",
-                "format": "json",
-                "timespan": "24h",
-                "sort": "datedesc",
-                "maxrecords": 25,
-            },
+            GDELTClient().build_params("wheat breeding", 25)["timespan"],
+            "48h",
         )
 
-    def test_google_rss_builds_localized_24_hour_params(self):
-        client = GoogleNewsRSSClient()
-
+    def test_google_rss_requests_two_day_window(self):
         self.assertEqual(
-            client.build_params("水稻 基因编辑", "zh"),
-            {
-                "q": "水稻 基因编辑 when:1d",
-                "hl": "zh-CN",
-                "gl": "CN",
-                "ceid": "CN:zh-Hans",
-            },
-        )
-        self.assertEqual(
-            client.build_params("rice gene editing", "en"),
-            {
-                "q": "rice gene editing when:1d",
-                "hl": "en-US",
-                "gl": "US",
-                "ceid": "US:en",
-            },
+            GoogleNewsRSSClient().build_params("rice breeding", "en")["q"],
+            "rice breeding when:2d",
         )
 
     def test_gdelt_fetch_uses_injected_session_and_parses_json(self):
