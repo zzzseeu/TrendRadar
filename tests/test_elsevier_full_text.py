@@ -135,10 +135,54 @@ class ArticleContentElsevierIntegrationTests(unittest.TestCase):
         self.assertEqual(result.level, "full_text")
         self.assertEqual(result.fetch_status, "full_text")
 
+    def test_api_runtime_error_falls_back_to_existing_html(self):
+        api_client = MagicMock()
+        api_client.fetch.side_effect = RuntimeError("API client failed")
+        fetcher = ArticleContentFetcher(elsevier_client=api_client)
+        fetcher.session = build_html_session("<article><p>" + "B" * 400 + "</p></article>")
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.level, "full_text")
+        self.assertEqual(result.fetch_status, "full_text")
+
     def test_missing_credentials_preserves_existing_html_summary_title_behavior(self):
         fetcher = ArticleContentFetcher(elsevier_api_key="", elsevier_inst_token="")
 
         self.assertIsNone(fetcher.elsevier_client)
+
+    def test_missing_credentials_uses_existing_html_full_text_behavior(self):
+        fetcher = ArticleContentFetcher(elsevier_api_key="", elsevier_inst_token="")
+        fetcher.session = build_html_session("<article><p>" + "B" * 400 + "</p></article>")
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.level, "full_text")
+        self.assertEqual(result.fetch_status, "full_text")
+
+    def test_missing_credentials_uses_existing_rss_summary_behavior(self):
+        fetcher = ArticleContentFetcher(elsevier_api_key="", elsevier_inst_token="")
+        fetcher.session = build_html_session("<html><body>Unavailable</body></html>")
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get(
+            {"title": "Paper", "summary": "RSS summary", "url": SCIENCEDIRECT_URL}
+        )
+
+        self.assertEqual(result.level, "summary")
+        self.assertEqual(result.text, "RSS summary")
+
+    def test_missing_credentials_uses_existing_title_only_behavior(self):
+        fetcher = ArticleContentFetcher(elsevier_api_key="", elsevier_inst_token="")
+        fetcher.session = build_html_session("<html><body>Unavailable</body></html>")
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.level, "title_only")
+        self.assertEqual(result.text, "Paper")
 
     def test_sciencedirect_api_full_text_uses_existing_truncation_warning(self):
         api_client = MagicMock()

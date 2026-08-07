@@ -218,7 +218,8 @@ class ArticleContentFetcher:
                             fetch_status="elsevier_full_text",
                             source_note="正文来自 Elsevier Article Retrieval API",
                         )
-                except requests.RequestException:
+                except Exception:
+                    # API 客户端异常不能中断既有 HTML → RSS → 标题降级链路。
                     pass
             try:
                 request_url = _build_fetch_url(url)
