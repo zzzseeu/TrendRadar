@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from trendradar.crawler.elsevier import ElsevierFullTextClient, extract_sciencedirect_pii
 from trendradar.crawler.http import DirectFirstSession
 
 
@@ -174,6 +175,9 @@ class ArticleContentFetcher:
         min_body_chars: int = 300,
         use_proxy: bool = False,
         proxy_url: str = "",
+        elsevier_api_key: str = "",
+        elsevier_inst_token: str = "",
+        elsevier_client: Optional[ElsevierFullTextClient] = None,
     ) -> None:
         self.timeout = max(1, int(timeout))
         self.max_content_chars = max(500, int(max_content_chars))
@@ -187,6 +191,13 @@ class ArticleContentFetcher:
             use_proxy=use_proxy,
             proxy_url=proxy_url,
         )
+        self.elsevier_client = elsevier_client
+        if self.elsevier_client is None and elsevier_api_key and elsevier_inst_token:
+            self.elsevier_client = ElsevierFullTextClient(
+                elsevier_api_key,
+                elsevier_inst_token,
+                timeout=self.timeout,
+            )
 
     def get(self, item: Dict) -> ArticleContent:
         title = _clean_text(str(item.get("title", "")))
@@ -198,6 +209,17 @@ class ArticleContentFetcher:
         fetch_note = "未提供可访问的原文链接"
 
         if url and self._is_public_http_url(url):
+            if self.elsevier_client and extract_sciencedirect_pii(url):
+                try:
+                    api_result = self.elsevier_client.fetch(url)
+                    if len(api_result.text) >= self.min_body_chars:
+                        return self._build_full_text_content(
+                            api_result.text,
+                            fetch_status="elsevier_full_text",
+                            source_note="正文来自 Elsevier Article Retrieval API",
+                        )
+                except requests.RequestException:
+                    pass
             try:
                 request_url = _build_fetch_url(url)
                 response = self.session.get(request_url, timeout=self.timeout)
@@ -214,20 +236,7 @@ class ArticleContentFetcher:
                         response.encoding = response.apparent_encoding or response.encoding
                         body, page_summary, is_paywalled = self._extract(response.text)
                         if body:
-                            truncated = len(body) > self.max_content_chars
-                            body = body[:self.max_content_chars].rstrip()
-                            risk = (
-                                "正文已截断，仅能依据所提供正文片段判断；"
-                                "不得推断片段中未出现的方法、结果或验证阶段。"
-                                if truncated else
-                                "已获取正文，但仍应以原始论文、数据和补充材料作为最终证据。"
-                            )
-                            return ArticleContent(
-                                text=body,
-                                level="full_text",
-                                risk_warning=risk,
-                                fetch_status="full_text",
-                            )
+                            return self._build_full_text_content(body, fetch_status="full_text")
                         if is_paywalled:
                             fetch_status = "paywalled"
                             fetch_note = "页面存在付费墙或订阅限制，未取得正文"
@@ -267,6 +276,30 @@ class ArticleContentFetcher:
                 f"{fetch_note}，且无可用摘要；当前仅依据标题判断，可靠性较低，"
                 "不得推断标题未明确说明的研究方法、结果、因果关系或证据阶段。"
             ),
+            fetch_status=fetch_status,
+        )
+
+    def _build_full_text_content(
+        self,
+        body: str,
+        *,
+        fetch_status: str,
+        source_note: str = "",
+    ) -> ArticleContent:
+        truncated = len(body) > self.max_content_chars
+        body = body[:self.max_content_chars].rstrip()
+        risk = (
+            "正文已截断，仅能依据所提供正文片段判断；"
+            "不得推断片段中未出现的方法、结果或验证阶段。"
+            if truncated else
+            "已获取正文，但仍应以原始论文、数据和补充材料作为最终证据。"
+        )
+        if source_note:
+            risk = f"{source_note}；{risk}"
+        return ArticleContent(
+            text=body,
+            level="full_text",
+            risk_warning=risk,
             fetch_status=fetch_status,
         )
 

@@ -3,7 +3,9 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
+from trendradar.crawler.article_content import ArticleContentFetcher
 from trendradar.crawler.elsevier import (
+    ElsevierFetchResult,
     ElsevierFullTextClient,
     extract_sciencedirect_pii,
     parse_full_text_xml,
@@ -22,6 +24,13 @@ FULL_TEXT_XML = b"""\
 """
 METADATA_ONLY_XML = b"<full-text-retrieval-response><coredata /></full-text-retrieval-response>"
 SCIENCEDIRECT_URL = "https://www.sciencedirect.com/science/article/pii/S1672630826000545"
+
+
+def build_html_session(content: str):
+    response = MagicMock(status_code=200, text=content)
+    response.headers = {"Content-Type": "text/html"}
+    response.apparent_encoding = "utf-8"
+    return MagicMock(get=MagicMock(return_value=response))
 
 
 class ElsevierFullTextClientTests(unittest.TestCase):
@@ -71,3 +80,76 @@ class ElsevierFullTextClientTests(unittest.TestCase):
         statuses = [client.fetch(SCIENCEDIRECT_URL).status for _ in range(4)]
 
         self.assertEqual(statuses, ["http_401", "timeout", "invalid_xml", "body_unavailable"])
+
+
+class ArticleContentElsevierIntegrationTests(unittest.TestCase):
+    def test_sciencedirect_api_full_text_is_used_before_html(self):
+        api_client = MagicMock()
+        api_client.fetch.return_value = ElsevierFetchResult("A" * 800, "full_text")
+        fetcher = ArticleContentFetcher(
+            min_body_chars=300,
+            elsevier_client=api_client,
+        )
+        fetcher.session = MagicMock()
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.level, "full_text")
+        self.assertEqual(result.fetch_status, "elsevier_full_text")
+        fetcher.session.get.assert_not_called()
+
+    def test_metadata_only_api_response_falls_back_to_existing_html(self):
+        api_client = MagicMock()
+        api_client.fetch.return_value = ElsevierFetchResult("", "body_unavailable")
+        fetcher = ArticleContentFetcher(elsevier_client=api_client)
+        fetcher.session = build_html_session("<article><p>" + "B" * 400 + "</p></article>")
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.level, "full_text")
+        self.assertEqual(result.fetch_status, "full_text")
+
+    def test_short_api_response_falls_back_to_existing_html(self):
+        api_client = MagicMock()
+        api_client.fetch.return_value = ElsevierFetchResult("A" * 299, "full_text")
+        fetcher = ArticleContentFetcher(min_body_chars=300, elsevier_client=api_client)
+        fetcher.session = build_html_session("<article><p>" + "B" * 400 + "</p></article>")
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.level, "full_text")
+        self.assertEqual(result.fetch_status, "full_text")
+
+    def test_api_exception_falls_back_to_existing_html(self):
+        api_client = MagicMock()
+        api_client.fetch.side_effect = requests.RequestException("API unavailable")
+        fetcher = ArticleContentFetcher(elsevier_client=api_client)
+        fetcher.session = build_html_session("<article><p>" + "B" * 400 + "</p></article>")
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.level, "full_text")
+        self.assertEqual(result.fetch_status, "full_text")
+
+    def test_missing_credentials_preserves_existing_html_summary_title_behavior(self):
+        fetcher = ArticleContentFetcher(elsevier_api_key="", elsevier_inst_token="")
+
+        self.assertIsNone(fetcher.elsevier_client)
+
+    def test_sciencedirect_api_full_text_uses_existing_truncation_warning(self):
+        api_client = MagicMock()
+        api_client.fetch.return_value = ElsevierFetchResult("C" * 800, "full_text")
+        fetcher = ArticleContentFetcher(
+            max_content_chars=500,
+            elsevier_client=api_client,
+        )
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.text, "C" * 500)
+        self.assertIn("正文已截断", result.risk_warning)
