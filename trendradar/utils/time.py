@@ -14,6 +14,25 @@ import pytz
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 
+def parse_iso_datetime(
+    iso_time: str, timezone: str = DEFAULT_TIMEZONE
+) -> Optional[datetime]:
+    """将 ISO 时间解析并转换到指定时区。"""
+    if not iso_time:
+        return None
+    try:
+        parsed = datetime.fromisoformat(iso_time.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = pytz.UTC.localize(parsed)
+    try:
+        target_tz = pytz.timezone(timezone)
+    except pytz.UnknownTimeZoneError:
+        target_tz = pytz.timezone(DEFAULT_TIMEZONE)
+    return parsed.astimezone(target_tz)
+
+
 def get_configured_time(timezone: str = DEFAULT_TIMEZONE) -> datetime:
     """
     获取配置时区的当前时间
@@ -195,31 +214,8 @@ def is_within_days(
     """
     if max_days <= 0:
         return True  # max_days=0 表示禁用过滤
-    if not iso_time:
-        return False
-
     try:
-        dt = None
-
-        # 尝试解析带时区的格式
-        if "+" in iso_time or iso_time.endswith("Z"):
-            iso_time_normalized = iso_time.replace("Z", "+00:00")
-            try:
-                dt = datetime.fromisoformat(iso_time_normalized)
-            except ValueError:
-                pass
-
-        # 尝试解析不带时区的格式（假设为 UTC）
-        if dt is None:
-            try:
-                if "T" in iso_time:
-                    dt = datetime.fromisoformat(iso_time.replace("T", " ").split(".")[0])
-                else:
-                    dt = datetime.fromisoformat(iso_time.split(".")[0])
-                dt = pytz.UTC.localize(dt)
-            except ValueError:
-                pass
-
+        dt = parse_iso_datetime(iso_time, timezone)
         if dt is None:
             return False
 
