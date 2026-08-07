@@ -242,6 +242,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
         )
 
         self.assertEqual(result.data.failed_ids, [])
+        self.assertEqual(result.failed_ids, ["unavailable-feed"])
         self.assertEqual(
             result.failed_sources,
             {"2026-08-05": ["unavailable-feed"]},
@@ -406,6 +407,68 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
 
             self.assertEqual(
                 rebuilt.failed_sources,
+                {"2026-08-05": ["unavailable-feed"]},
+            )
+            storage.cleanup()
+
+    def test_cross_feed_canonical_url_reuses_existing_snapshot_row(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        tz = pytz.timezone("Asia/Shanghai")
+        now = tz.localize(datetime(2026, 8, 10, 10, 0))
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir, enable_txt=False, enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            storage.save_rss_data(rss_data("2026-08-05", RSSItem(
+                title="Shared story", feed_id="feed-a",
+                url="https://example.org/story?utm_source=feed-a",
+                summary="short", published_at="2026-08-05T08:00:00+08:00",
+            )))
+            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+
+            storage.save_rss_data(rss_data("2026-08-06", RSSItem(
+                title="Shared story", feed_id="feed-b",
+                url="https://example.org/story", summary="richer summary",
+                published_at="2026-08-05T08:00:00+08:00",
+            )))
+            result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+
+            monday = storage.get_rss_data("2026-08-10")
+            items = [item for values in monday.items.values() for item in values]
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0].feed_id, "feed-a")
+            self.assertEqual(items[0].summary, "richer summary")
+            self.assertEqual(len(result.allowed_rss_ids), 1)
+            storage.cleanup()
+
+    def test_failed_day_without_items_is_not_missing(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        tz = pytz.timezone("Asia/Shanghai")
+        now = tz.localize(datetime(2026, 8, 10, 10, 0))
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir, enable_txt=False, enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            storage.save_rss_data(RSSData(
+                date="2026-08-05", crawl_time="10-00", items={},
+                failed_ids=["unavailable-feed"],
+            ))
+
+            daily = storage.get_rss_data("2026-08-05")
+            result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+
+            self.assertEqual(daily.items, {})
+            self.assertEqual(daily.failed_ids, ["unavailable-feed"])
+            self.assertIsNone(result.data)
+            self.assertNotIn("2026-08-05", result.missing_dates)
+            self.assertEqual(
+                result.failed_sources,
                 {"2026-08-05": ["unavailable-feed"]},
             )
             storage.cleanup()

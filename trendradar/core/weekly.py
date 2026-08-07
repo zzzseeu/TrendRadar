@@ -50,6 +50,7 @@ class WeeklyRSSSnapshot:
     allowed_rss_ids: set[int] = field(default_factory=set)
     missing_dates: list[str] = field(default_factory=list)
     failed_sources: dict[str, list[str]] = field(default_factory=dict)
+    failed_ids: list[str] = field(default_factory=list)
     total_read: int = 0
     filtered_out: int = 0
     duplicate_count: int = 0
@@ -109,6 +110,7 @@ class WeeklyRSSAggregator:
         feed_names: dict[str, str] = {}
         deduplicated: dict[tuple[str, ...], RSSItem] = {}
         provider_sets: dict[tuple[str, ...], set[str]] = {}
+        canonical_anchors: dict[str, tuple[str, str]] = {}
         total_read = 0
         filtered_out = 0
         duplicate_count = 0
@@ -142,6 +144,10 @@ class WeeklyRSSAggregator:
                     canonical_url = canonicalize_url(candidate.url)
                     if canonical_url:
                         candidate.url = canonical_url
+                        anchor = (candidate.feed_id, candidate.feed_name)
+                        current_anchor = canonical_anchors.get(canonical_url)
+                        if current_anchor is None or anchor[0] < current_anchor[0]:
+                            canonical_anchors[canonical_url] = anchor
                     if candidate.feed_name:
                         feed_names[candidate.feed_id] = candidate.feed_name
 
@@ -176,6 +182,11 @@ class WeeklyRSSAggregator:
             data=None,
             missing_dates=missing_dates,
             failed_sources=failed_sources,
+            failed_ids=sorted({
+                failed_id
+                for failed in failed_sources.values()
+                for failed_id in failed
+            }),
             total_read=total_read,
             filtered_out=filtered_out,
             duplicate_count=duplicate_count,
@@ -189,7 +200,23 @@ class WeeklyRSSAggregator:
         )
         grouped_items: dict[str, list[RSSItem]] = {}
         id_to_name: dict[str, str] = {}
+        existing_rows = self.storage.get_all_rss_ids(
+            window.end.strftime("%Y-%m-%d")
+        )
+        existing_anchors = {
+            canonicalize_url(row.get("url", "")): (
+                row.get("source_id", ""), row.get("source_name", ""),
+            )
+            for row in existing_rows
+            if canonicalize_url(row.get("url", ""))
+        }
         for item in ordered_items:
+            canonical_url = canonicalize_url(item.url)
+            anchor = existing_anchors.get(canonical_url) or canonical_anchors.get(
+                canonical_url
+            )
+            if anchor:
+                item.feed_id, item.feed_name = anchor
             grouped_items.setdefault(item.feed_id, []).append(item)
             id_to_name[item.feed_id] = item.feed_name or feed_names.get(
                 item.feed_id, item.feed_id

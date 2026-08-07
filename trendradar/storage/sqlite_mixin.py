@@ -1049,13 +1049,33 @@ class SQLiteStorageMixin:
                 ORDER BY i.published_at DESC
             """)
 
-            rows = cursor.fetchall()
-            if not rows:
-                return None
-
             items: Dict[str, List[RSSItem]] = {}
             id_to_name: Dict[str, str] = {}
             crawl_date = self._format_date_folder(date)
+            rows = cursor.fetchall()
+            if not rows:
+                cursor.execute("""
+                    SELECT DISTINCT cs.feed_id
+                    FROM rss_crawl_status cs
+                    JOIN rss_crawl_records cr ON cs.crawl_record_id = cr.id
+                    WHERE cs.status = 'failed'
+                """)
+                failed_ids = [row[0] for row in cursor.fetchall()]
+                if not failed_ids:
+                    return None
+                cursor.execute("""
+                    SELECT crawl_time FROM rss_crawl_records
+                    ORDER BY crawl_time DESC
+                    LIMIT 1
+                """)
+                time_row = cursor.fetchone()
+                return RSSData(
+                    date=crawl_date,
+                    crawl_time=time_row[0] if time_row else self._format_time_filename(),
+                    items=items,
+                    id_to_name=id_to_name,
+                    failed_ids=failed_ids,
+                )
 
             for row in rows:
                 feed_id = row[2]
