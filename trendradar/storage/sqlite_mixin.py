@@ -1043,7 +1043,7 @@ class SQLiteStorageMixin:
                        i.url, i.published_at, i.summary, i.author,
                        i.first_crawl_time, i.last_crawl_time, i.crawl_count,
                        i.source_count, i.pre_hot_score, i.search_topic,
-                       i.search_providers
+                       i.search_providers, i.guid
                 FROM rss_items i
                 LEFT JOIN rss_feeds f ON i.feed_id = f.id
                 ORDER BY i.published_at DESC
@@ -1071,6 +1071,7 @@ class SQLiteStorageMixin:
                     feed_id=feed_id,
                     feed_name=feed_name,
                     url=row[4] or "",
+                    guid=row[15] or "",
                     published_at=row[5] or "",
                     summary=row[6] or "",
                     author=row[7] or "",
@@ -1204,7 +1205,7 @@ class SQLiteStorageMixin:
                        i.url, i.published_at, i.summary, i.author,
                        i.first_crawl_time, i.last_crawl_time, i.crawl_count,
                        i.source_count, i.pre_hot_score, i.search_topic,
-                       i.search_providers
+                       i.search_providers, i.guid
                 FROM rss_items i
                 LEFT JOIN rss_feeds f ON i.feed_id = f.id
                 WHERE i.last_crawl_time = ?
@@ -1233,6 +1234,7 @@ class SQLiteStorageMixin:
                     feed_id=feed_id,
                     feed_name=feed_name,
                     url=row[4] or "",
+                    guid=row[15] or "",
                     published_at=row[5] or "",
                     summary=row[6] or "",
                     author=row[7] or "",
