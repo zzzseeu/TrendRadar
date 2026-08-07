@@ -241,7 +241,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(result.data.failed_ids, ["unavailable-feed"])
+        self.assertEqual(result.data.failed_ids, [])
         self.assertEqual(
             result.failed_sources,
             {"2026-08-05": ["unavailable-feed"]},
@@ -339,4 +339,73 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             self.assertEqual([item.guid for item in items], ["stable-guid"])
             self.assertEqual(len(first.allowed_rss_ids), 1)
             self.assertEqual(len(second.allowed_rss_ids), 1)
+            storage.cleanup()
+
+    def test_canonical_snapshot_url_stays_idempotent_across_builds(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        tz = pytz.timezone("Asia/Shanghai")
+        now = tz.localize(datetime(2026, 8, 10, 10, 0))
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            storage.save_rss_data(rss_data("2026-08-05", RSSItem(
+                title="Canonical story", feed_id="journal",
+                url="https://example.org/story?utm_source=newsletter",
+                summary="short",
+                published_at="2026-08-05T08:00:00+08:00",
+            )))
+
+            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+
+            storage.save_rss_data(rss_data("2026-08-06", RSSItem(
+                title="Canonical story", feed_id="journal",
+                url="https://example.org/story",
+                summary="richer summary",
+                published_at="2026-08-05T08:00:00+08:00",
+            )))
+            result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+
+            monday = storage.get_rss_data("2026-08-10")
+            items = [item for values in monday.items.values() for item in values]
+            self.assertEqual([item.url for item in items], [
+                "https://example.org/story",
+            ])
+            self.assertEqual([item.summary for item in items], ["richer summary"])
+            self.assertEqual(len(result.allowed_rss_ids), 1)
+            storage.cleanup()
+
+    def test_rebuild_keeps_failed_sources_at_their_original_dates(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        tz = pytz.timezone("Asia/Shanghai")
+        now = tz.localize(datetime(2026, 8, 10, 10, 0))
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            daily = rss_data("2026-08-05", RSSItem(
+                title="Available", feed_id="journal",
+                url="https://example.org/available",
+                published_at="2026-08-05T08:00:00+08:00",
+            ))
+            daily.failed_ids = ["unavailable-feed"]
+            storage.save_rss_data(daily)
+
+            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+            rebuilt = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+
+            self.assertEqual(
+                rebuilt.failed_sources,
+                {"2026-08-05": ["unavailable-feed"]},
+            )
             storage.cleanup()

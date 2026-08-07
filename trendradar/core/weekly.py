@@ -106,7 +106,6 @@ class WeeklyRSSAggregator:
         window = previous_natural_week(now, self.timezone)
         missing_dates: list[str] = []
         failed_sources: dict[str, list[str]] = {}
-        failed_ids: list[str] = []
         feed_names: dict[str, str] = {}
         deduplicated: dict[tuple[str, ...], RSSItem] = {}
         provider_sets: dict[tuple[str, ...], set[str]] = {}
@@ -120,9 +119,6 @@ class WeeklyRSSAggregator:
                 missing_dates.append(date)
                 continue
 
-            for failed_id in daily_data.failed_ids:
-                if failed_id not in failed_ids:
-                    failed_ids.append(failed_id)
             if daily_data.failed_ids:
                 failed_sources[date] = list(daily_data.failed_ids)
 
@@ -143,6 +139,9 @@ class WeeklyRSSAggregator:
                         continue
 
                     candidate = replace(item)
+                    canonical_url = canonicalize_url(candidate.url)
+                    if canonical_url:
+                        candidate.url = canonical_url
                     if candidate.feed_name:
                         feed_names[candidate.feed_id] = candidate.feed_name
 
@@ -201,7 +200,7 @@ class WeeklyRSSAggregator:
             crawl_time="weekly",
             items=grouped_items,
             id_to_name=id_to_name,
-            failed_ids=failed_ids,
+            failed_ids=[],
         )
         if not self.storage.save_rss_data(data):
             raise RuntimeError("周快照保存失败")
