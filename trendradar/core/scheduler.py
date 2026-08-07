@@ -349,7 +349,9 @@ class Scheduler:
                     f"period '{period_key}' 缺少 start 或 end 字段"
                 )
             self._validate_hhmm(period["start"], f"{period_key}.start")
-            self._validate_hhmm(period["end"], f"{period_key}.end")
+            self._validate_hhmm(
+                period["end"], f"{period_key}.end", allow_end_of_day=True
+            )
             if period["start"] == period["end"]:
                 raise ValueError(
                     f"period '{period_key}' 的 start 与 end 不能相同: {period['start']}"
@@ -422,10 +424,19 @@ class Scheduler:
         return False
 
     @staticmethod
-    def _validate_hhmm(value: str, field_name: str) -> None:
+    def _validate_hhmm(
+        value: str, field_name: str, allow_end_of_day: bool = False
+    ) -> None:
         """校验 HH:MM 格式"""
         if not re.match(r"^\d{2}:\d{2}$", value):
             raise ValueError(f"{field_name} 格式错误: '{value}'，期望 HH:MM")
         h, m = value.split(":")
-        if not (0 <= int(h) <= 23 and 0 <= int(m) <= 59):
+        hour = int(h)
+        minute = int(m)
+        if not (0 <= minute <= 59):
             raise ValueError(f"{field_name} 时间值超出范围: '{value}'")
+        if 0 <= hour <= 23 or (
+            allow_end_of_day and hour == 24 and minute == 0
+        ):
+            return
+        raise ValueError(f"{field_name} 时间值超出范围: '{value}'")

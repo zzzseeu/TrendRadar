@@ -461,7 +461,7 @@ custom:
     monday_weekly:
       name: "自然周周报"
       start: "00:00"
-      end: "23:59"
+      end: "24:00"
       collect: true
       analyze: true
       ai_mode: "follow_report"
