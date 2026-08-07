@@ -31,7 +31,10 @@ def extract_sciencedirect_pii(url: str) -> Optional[str]:
         not in {"sciencedirect.com", "www.sciencedirect.com"}
     ):
         return None
-    match = re.fullmatch(r"/science/article/pii/([A-Za-z0-9]+)", parsed.path.rstrip("/"))
+    match = re.fullmatch(
+        r"/science/article/pii/([SB][A-Z0-9]{16})",
+        parsed.path.rstrip("/"),
+    )
     return match.group(1) if match else None
 
 

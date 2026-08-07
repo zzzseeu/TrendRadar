@@ -27,7 +27,17 @@ FULL_TEXT_XML = b"""\
 </full-text-retrieval-response>
 """
 METADATA_ONLY_XML = b"<full-text-retrieval-response><coredata /></full-text-retrieval-response>"
-SCIENCEDIRECT_URL = "https://www.sciencedirect.com/science/article/pii/S1672630826000545"
+TEST_ARTICLE_PII = "S0000000000000000"
+TEST_BOOK_PII = "B1234567890123456"
+TEST_X_PII = "S123456789012345X"
+INVALID_TEST_PIIS = (
+    "S123",
+    "S12345678901234567",
+    "A1234567890123456",
+)
+SCIENCEDIRECT_URL = (
+    f"https://www.sciencedirect.com/science/article/pii/{TEST_ARTICLE_PII}"
+)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -39,30 +49,69 @@ def build_html_session(content: str):
 
 
 class ElsevierFullTextClientTests(unittest.TestCase):
-    def test_extracts_only_sciencedirect_pii_urls(self):
-        self.assertEqual(
-            extract_sciencedirect_pii(f"{SCIENCEDIRECT_URL}?dgcid=rss"),
-            "S1672630826000545",
-        )
-        self.assertEqual(
+    def test_extracts_article_book_and_terminal_x_piis(self):
+        cases = {
+            f"{SCIENCEDIRECT_URL}?dgcid=rss": TEST_ARTICLE_PII,
+            (
+                "https://www.sciencedirect.com:443/science/article/pii/"
+                f"{TEST_BOOK_PII}"
+            ): TEST_BOOK_PII,
+            (
+                "https://www.sciencedirect.com/science/article/pii/"
+                f"{TEST_X_PII}"
+            ): TEST_X_PII,
+        }
+
+        for url, expected in cases.items():
+            with self.subTest(pii=expected):
+                self.assertEqual(extract_sciencedirect_pii(url), expected)
+
+    def test_rejects_invalid_pii_lengths_and_prefixes(self):
+        for pii in INVALID_TEST_PIIS:
+            with self.subTest(pii=pii):
+                self.assertIsNone(
+                    extract_sciencedirect_pii(
+                        f"https://www.sciencedirect.com/science/article/pii/{pii}"
+                    )
+                )
+
+        self.assertIsNone(
             extract_sciencedirect_pii(
-                "https://www.sciencedirect.com:443/science/article/pii/S123"
-            ),
-            "S123",
+                f"https://example.com/science/article/pii/{TEST_ARTICLE_PII}"
+            )
         )
-        self.assertIsNone(extract_sciencedirect_pii("https://example.com/science/article/pii/S123"))
 
     def test_rejects_noncanonical_sciencedirect_urls(self):
         urls = [
-            "ftp://www.sciencedirect.com/science/article/pii/S123",
-            "https://user@www.sciencedirect.com/science/article/pii/S123",
-            "https://user:password@www.sciencedirect.com/science/article/pii/S123",
-            "https://www.sciencedirect.com:8443/science/article/pii/S123",
+            f"ftp://www.sciencedirect.com/science/article/pii/{TEST_ARTICLE_PII}",
+            f"https://user@www.sciencedirect.com/science/article/pii/{TEST_ARTICLE_PII}",
+            (
+                "https://user:password@www.sciencedirect.com/science/article/pii/"
+                f"{TEST_ARTICLE_PII}"
+            ),
+            (
+                "https://www.sciencedirect.com:8443/science/article/pii/"
+                f"{TEST_ARTICLE_PII}"
+            ),
         ]
 
         for url in urls:
             with self.subTest(url=url):
                 self.assertIsNone(extract_sciencedirect_pii(url))
+
+    @patch("trendradar.crawler.elsevier.requests.Session")
+    def test_invalid_piis_never_request_the_api(self, session_factory):
+        client = ElsevierFullTextClient("test-api-key", "test-inst-token")
+
+        statuses = [
+            client.fetch(
+                f"https://www.sciencedirect.com/science/article/pii/{pii}"
+            ).status
+            for pii in INVALID_TEST_PIIS
+        ]
+
+        self.assertEqual(statuses, ["unsupported_url"] * len(INVALID_TEST_PIIS))
+        session_factory.return_value.get.assert_not_called()
 
     @patch("trendradar.crawler.elsevier.requests.Session")
     def test_requests_full_xml_with_server_side_headers_and_no_proxy(self, session_factory):
@@ -81,7 +130,7 @@ class ElsevierFullTextClientTests(unittest.TestCase):
             }
         )
         session_factory.return_value.get.assert_called_once_with(
-            "https://api.elsevier.com/content/article/pii/S1672630826000545",
+            f"https://api.elsevier.com/content/article/pii/{TEST_ARTICLE_PII}",
             params={"view": "FULL"},
             timeout=12,
             allow_redirects=False,
