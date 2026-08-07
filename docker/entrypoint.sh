@@ -14,7 +14,7 @@ case "${RUN_MODE:-cron}" in
     ;;
 "cron")
     # 校验 CRON_SCHEDULE 格式（仅允许 cron 表达式合法字符）
-    CRON_EXPR="${CRON_SCHEDULE:-*/30 * * * *}"
+    CRON_EXPR="${CRON_SCHEDULE:-0 10 * * *}"
     if ! echo "$CRON_EXPR" | grep -qE '^[0-9*/,[:space:]-]+$'; then
         echo "❌ CRON_SCHEDULE 格式非法: $CRON_EXPR"
         exit 1

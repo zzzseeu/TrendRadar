@@ -1,13 +1,16 @@
 import unittest
+import hashlib
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytz
 
 from trendradar.core.weekly import WeeklyRSSAggregator, previous_natural_week
+from trendradar.crawler.news_search import normalize_title
 from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.storage.base import RSSData, RSSItem
+from trendradar.storage.sqlite_mixin import SQLiteStorageMixin
 from trendradar.utils.time import parse_iso_datetime
 
 
@@ -87,6 +90,58 @@ class WeeklyAIFilterScopeTests(unittest.TestCase):
             ["Allowed"],
         )
 
+    def test_partial_weekly_batch_failure_returns_failed_filter_result(self):
+        storage = MagicMock()
+        storage.get_latest_prompt_hash.return_value = "stable-hash"
+        storage.get_active_ai_filter_tags.return_value = [{
+            "id": 1, "tag": "育种", "priority": 1,
+        }]
+        storage.get_all_news_ids.return_value = []
+        storage.get_all_rss_ids.return_value = [
+            {
+                "id": 1, "title": "First", "source_id": "journal",
+                "published_at": "2026-08-05T08:00:00+08:00",
+            },
+            {
+                "id": 2, "title": "Second", "source_id": "journal",
+                "published_at": "2026-08-06T08:00:00+08:00",
+            },
+        ]
+        storage.get_analyzed_news_ids.return_value = set()
+        storage.get_active_ai_filter_results.return_value = []
+        pipeline = AIFilterPipeline(
+            {
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {
+                    "ENABLED": True,
+                    "FRESHNESS_FILTER": {"ENABLED": False},
+                },
+                "AI_FILTER": {
+                    "BATCH_SIZE": 1,
+                    "BATCH_INTERVAL": 0,
+                },
+            },
+            storage,
+            lambda: None,
+            rss_window=self.pipeline._rss_window,
+            allowed_rss_ids={1, 2},
+        )
+        pipeline._enrich_pending_items = MagicMock(
+            side_effect=lambda items, _label: items
+        )
+
+        with patch("trendradar.ai.filter_pipeline.AIFilter") as filter_class:
+            ai_filter = filter_class.return_value
+            ai_filter.load_interests_content.return_value = "育种"
+            ai_filter.compute_interests_hash.return_value = "stable-hash"
+            ai_filter.classify_batch.side_effect = [[], None]
+
+            result = pipeline.run("weekly.txt")
+
+        self.assertFalse(result.success)
+        self.assertIn("批次", result.error)
+        storage.end_batch.assert_called_once_with()
+
 
 class NaturalWeekWindowTests(unittest.TestCase):
     def test_previous_week_is_monday_to_monday_in_shanghai(self):
@@ -123,6 +178,12 @@ class NaturalWeekWindowTests(unittest.TestCase):
     def test_naive_iso_time_keeps_existing_utc_assumption(self):
         parsed = parse_iso_datetime("2026-08-02T16:00:00", "Asia/Shanghai")
         self.assertEqual(parsed.isoformat(), "2026-08-03T00:00:00+08:00")
+
+    def test_rss_read_doc_describes_zero_item_all_source_failure(self):
+        self.assertIn(
+            "全源失败且零条目时返回空 RSSData",
+            SQLiteStorageMixin._get_rss_data_impl.__doc__,
+        )
 
 
 class WeeklyRSSAggregatorTests(unittest.TestCase):
@@ -276,9 +337,28 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             ["First alpha", "Middle zeta", "Last alpha"],
         )
 
-    def test_empty_week_does_not_write_snapshot(self):
+    def test_all_eight_missing_databases_raise_clear_error(self):
         storage = MagicMock()
         storage.get_rss_data.return_value = None
+
+        with self.assertRaisesRegex(RuntimeError, "八个日库全部缺失"):
+            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
+                pytz.timezone("Asia/Shanghai").localize(
+                    datetime(2026, 8, 10, 10, 0)
+                )
+            )
+
+        storage.save_rss_data.assert_not_called()
+
+    def test_existing_daily_database_with_no_in_window_items_is_empty_week(self):
+        storage = MagicMock()
+        storage.get_rss_data.side_effect = lambda date: (
+            rss_data(date, RSSItem(
+                title="Outside window", feed_id="journal",
+                url="https://example.org/old",
+                published_at="2026-08-02T23:59:59+08:00",
+            )) if date == "2026-08-03" else None
+        )
 
         result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
             pytz.timezone("Asia/Shanghai").localize(
@@ -287,6 +367,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
         )
 
         self.assertIsNone(result.data)
+        self.assertEqual(result.filtered_out, 1)
         storage.save_rss_data.assert_not_called()
 
     def test_records_failed_sources_by_storage_date(self):
@@ -329,6 +410,36 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
         )
         storage.save_rss_data.return_value = True
         storage.get_all_rss_ids.return_value = []
+
+        with self.assertRaisesRegex(RuntimeError, "周快照 ID 解析失败"):
+            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
+                pytz.timezone("Asia/Shanghai").localize(
+                    datetime(2026, 8, 10, 10, 0)
+                )
+            )
+
+    def test_every_snapshot_identity_requires_a_resolved_database_id(self):
+        storage = MagicMock()
+        storage.get_rss_data.side_effect = lambda date: (
+            rss_data(
+                date,
+                RSSItem(
+                    title="Resolved", feed_id="journal",
+                    url="https://example.org/resolved",
+                    published_at="2026-08-05T08:00:00+08:00",
+                ),
+                RSSItem(
+                    title="Missing", feed_id="journal",
+                    url="https://example.org/missing",
+                    published_at="2026-08-05T09:00:00+08:00",
+                ),
+            ) if date == "2026-08-05" else None
+        )
+        storage.save_rss_data.return_value = True
+        storage.get_all_rss_ids.return_value = [{
+            "id": 51, "source_id": "journal", "title": "Resolved",
+            "url": "https://example.org/resolved",
+        }]
 
         with self.assertRaisesRegex(RuntimeError, "周快照 ID 解析失败"):
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
@@ -411,6 +522,65 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             self.assertEqual(len(first.allowed_rss_ids), 1)
             self.assertEqual(len(second.allowed_rss_ids), 1)
             storage.cleanup()
+
+    def test_title_fallback_and_url_items_persist_idempotently_in_sqlite(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        tz = pytz.timezone("Asia/Shanghai")
+        now = tz.localize(datetime(2026, 8, 10, 10, 0))
+        title = "Breeding: a title-only identity"
+        expected_guid = "weekly-title:" + hashlib.sha256(
+            f"journal\0{normalize_title(title)}".encode("utf-8")
+        ).hexdigest()
+
+        with TemporaryDirectory() as data_dir:
+            backend = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            source_data = rss_data(
+                "2026-08-05",
+                RSSItem(
+                    title=title, feed_id="journal", summary="first body",
+                    published_at="2026-08-05T08:00:00+08:00",
+                ),
+                RSSItem(
+                    title="Normal URL item", feed_id="journal",
+                    url="https://example.org/normal",
+                    published_at="2026-08-05T09:00:00+08:00",
+                ),
+            )
+
+            class SnapshotStorage:
+                def get_rss_data(self, date):
+                    if date == "2026-08-05":
+                        return source_data
+                    return backend.get_rss_data(date)
+
+                def __getattr__(self, name):
+                    return getattr(backend, name)
+
+            storage = SnapshotStorage()
+
+            first = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+            second = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+
+            monday = storage.get_rss_data("2026-08-10")
+            items = sorted(
+                (item for values in monday.items.values() for item in values),
+                key=lambda item: item.title,
+            )
+            self.assertEqual([item.title for item in items], [
+                "Breeding: a title-only identity", "Normal URL item",
+            ])
+            self.assertEqual(items[0].guid, expected_guid)
+            self.assertEqual(items[1].guid, "")
+            self.assertEqual(len(first.allowed_rss_ids), 2)
+            self.assertEqual(len(second.allowed_rss_ids), 2)
+            backend.cleanup()
 
     def test_canonical_snapshot_url_stays_idempotent_across_builds(self):
         from tempfile import TemporaryDirectory

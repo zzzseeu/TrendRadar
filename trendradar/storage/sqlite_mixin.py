@@ -1031,7 +1031,7 @@ class SQLiteStorageMixin:
             date: 日期字符串（YYYY-MM-DD），默认为今天
 
         Returns:
-            RSSData 对象，如果没有数据返回 None
+            RSSData 对象；没有数据返回 None；全源失败且零条目时返回空 RSSData
         """
         try:
             conn = self._get_connection(date, db_type="rss")

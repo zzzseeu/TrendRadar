@@ -215,6 +215,10 @@ class AIFilterPipeline:
         total_results, succeeded_news_ids, succeeded_rss_ids = self._classify_batches(
             ai_filter, pending_news, pending_rss, active_tags, interests_content, filter_config,
         )
+        weekly_batch_failed = (
+            (self._rss_window is not None or self._allowed_rss_ids is not None)
+            and len(succeeded_news_ids) + len(succeeded_rss_ids) < total_pending
+        )
 
         # 6. 保存结果
         self._save_results(
@@ -224,6 +228,12 @@ class AIFilterPipeline:
 
         # 7. 结束批量模式
         self.storage.end_batch()
+
+        if weekly_batch_failed:
+            return AIFilterResult(
+                success=False,
+                error="周报 AI 分类批次失败，已拒绝使用部分结果",
+            )
 
         # 8. 查询并组装返回结果
         all_results = self.storage.get_active_ai_filter_results(interests_file=effective_interests_file)

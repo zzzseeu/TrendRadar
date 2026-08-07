@@ -258,6 +258,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         standalone_data: Optional[Dict] = None,
         skip_translation: bool = False,
+        require_all_targets: bool = False,
     ) -> Dict[str, bool]:
         """
         分发通知到所有已配置的渠道（支持热榜+RSS合并推送+AI分析+独立展示区）
@@ -274,6 +275,7 @@ class NotificationDispatcher:
             ai_analysis: AI 分析结果（可选）
             standalone_data: 独立展示区数据（可选）
             skip_translation: 跳过翻译（当数据已在上游翻译过时使用）
+            require_all_targets: 所有已配置账号/端点均成功才算渠道成功
 
         Returns:
             Dict[str, bool]: 每个渠道的发送结果，key 为渠道名，value 为是否成功
@@ -300,56 +302,57 @@ class NotificationDispatcher:
         if self.config.get("FEISHU_WEBHOOK_URL"):
             results["feishu"] = self._send_feishu(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
         # 钉钉
         if self.config.get("DINGTALK_WEBHOOK_URL"):
             results["dingtalk"] = self._send_dingtalk(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
         # 企业微信
         if self.config.get("WEWORK_WEBHOOK_URL"):
             results["wework"] = self._send_wework(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data, html_file_path
+                ai_analysis, display_regions, standalone_data, html_file_path,
+                require_all_targets,
             )
 
         # Telegram（需要配对验证）
         if self.config.get("TELEGRAM_BOT_TOKEN") and self.config.get("TELEGRAM_CHAT_ID"):
             results["telegram"] = self._send_telegram(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
         # ntfy（需要配对验证）
         if self.config.get("NTFY_SERVER_URL") and self.config.get("NTFY_TOPIC"):
             results["ntfy"] = self._send_ntfy(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
         # Bark
         if self.config.get("BARK_URL"):
             results["bark"] = self._send_bark(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
         # Slack
         if self.config.get("SLACK_WEBHOOK_URL"):
             results["slack"] = self._send_slack(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
         # 通用 Webhook
         if self.config.get("GENERIC_WEBHOOK_URL"):
             results["generic_webhook"] = self._send_generic_webhook(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data
+                ai_analysis, display_regions, standalone_data, require_all_targets
             )
 
         # 邮件（保持原有逻辑，已支持多收件人，AI 分析已嵌入 HTML）
@@ -367,6 +370,7 @@ class NotificationDispatcher:
         channel_name: str,
         config_value: str,
         send_func: Callable[..., bool],
+        require_all_targets: bool = False,
         **kwargs,
     ) -> bool:
         """
@@ -379,7 +383,7 @@ class NotificationDispatcher:
             **kwargs: 传递给发送函数的其他参数
 
         Returns:
-            bool: 任一账号发送成功则返回 True
+            bool: 根据 require_all_targets 选择全部成功或任一成功
         """
         accounts = parse_multi_account_config(config_value)
         if not accounts:
@@ -394,7 +398,15 @@ class NotificationDispatcher:
                 result = send_func(account, account_label=account_label, **kwargs)
                 results.append(result)
 
-        return any(results) if results else False
+        return self._aggregate_target_results(results, require_all_targets)
+
+    @staticmethod
+    def _aggregate_target_results(
+        results: List[bool], require_all_targets: bool = False
+    ) -> bool:
+        if not results:
+            return False
+        return all(results) if require_all_targets else any(results)
 
     def _apply_display_regions(
         self,
@@ -430,6 +442,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到飞书（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
         rd, ri, rn, ai, sd = self._apply_display_regions(
@@ -439,6 +452,7 @@ class NotificationDispatcher:
         return self._send_to_multi_accounts(
             channel_name="飞书",
             config_value=self.config["FEISHU_WEBHOOK_URL"],
+            require_all_targets=require_all_targets,
             send_func=lambda url, account_label: send_to_feishu(
                 webhook_url=url,
                 report_data=rd,
@@ -471,6 +485,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到钉钉（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
         rd, ri, rn, ai, sd = self._apply_display_regions(
@@ -480,6 +495,7 @@ class NotificationDispatcher:
         return self._send_to_multi_accounts(
             channel_name="钉钉",
             config_value=self.config["DINGTALK_WEBHOOK_URL"],
+            require_all_targets=require_all_targets,
             send_func=lambda url, account_label: send_to_dingtalk(
                 webhook_url=url,
                 report_data=rd,
@@ -512,6 +528,7 @@ class NotificationDispatcher:
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
         html_file_path: Optional[str] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到企业微信（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
         rd, ri, rn, ai, sd = self._apply_display_regions(
@@ -521,6 +538,7 @@ class NotificationDispatcher:
         return self._send_to_multi_accounts(
             channel_name="企业微信",
             config_value=self.config["WEWORK_WEBHOOK_URL"],
+            require_all_targets=require_all_targets,
             send_func=lambda url, account_label: send_to_wework(
                 webhook_url=url,
                 report_data=rd,
@@ -556,6 +574,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到 Telegram（多账号，需验证 token 和 chat_id 配对，支持热榜+RSS合并+AI分析+独立展示区）"""
         report_data, rss_items, rss_new_items, ai_analysis, standalone_data = self._apply_display_regions(
@@ -606,7 +625,7 @@ class NotificationDispatcher:
                 )
                 results.append(result)
 
-        return any(results) if results else False
+        return self._aggregate_target_results(results, require_all_targets)
 
     def _send_ntfy(
         self,
@@ -620,6 +639,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到 ntfy（多账号，需验证 topic 和 token 配对，支持热榜+RSS合并+AI分析+独立展示区）"""
         report_data, rss_items, rss_new_items, ai_analysis, standalone_data = self._apply_display_regions(
@@ -669,7 +689,7 @@ class NotificationDispatcher:
                 )
                 results.append(result)
 
-        return any(results) if results else False
+        return self._aggregate_target_results(results, require_all_targets)
 
     def _send_bark(
         self,
@@ -683,6 +703,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到 Bark（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
         rd, ri, rn, ai, sd = self._apply_display_regions(
@@ -692,6 +713,7 @@ class NotificationDispatcher:
         return self._send_to_multi_accounts(
             channel_name="Bark",
             config_value=self.config["BARK_URL"],
+            require_all_targets=require_all_targets,
             send_func=lambda url, account_label: send_to_bark(
                 bark_url=url,
                 report_data=rd,
@@ -723,6 +745,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到 Slack（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
         rd, ri, rn, ai, sd = self._apply_display_regions(
@@ -732,6 +755,7 @@ class NotificationDispatcher:
         return self._send_to_multi_accounts(
             channel_name="Slack",
             config_value=self.config["SLACK_WEBHOOK_URL"],
+            require_all_targets=require_all_targets,
             send_func=lambda url, account_label: send_to_slack(
                 webhook_url=url,
                 report_data=rd,
@@ -763,6 +787,7 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
+        require_all_targets: bool = False,
     ) -> bool:
         """发送到通用 Webhook（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
         report_data, rss_items, rss_new_items, ai_analysis, standalone_data = self._apply_display_regions(
@@ -812,7 +837,7 @@ class NotificationDispatcher:
             )
             results.append(result)
 
-        return any(results) if results else False
+        return self._aggregate_target_results(results, require_all_targets)
 
     def _send_email(
         self,

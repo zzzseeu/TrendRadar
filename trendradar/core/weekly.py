@@ -1,5 +1,6 @@
 """自然周时间窗口和 RSS 周快照聚合。"""
 
+import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Iterator
@@ -76,6 +77,13 @@ def _item_identity(item: RSSItem) -> tuple[str, ...]:
         return ("url", canonical)
     normalized = normalize_title(item.title)
     return ("title", item.feed_id, normalized) if normalized else ()
+
+
+def _title_fallback_guid(item: RSSItem) -> str:
+    """为无 URL/GUID 的标题回退身份生成不含正文的稳定 GUID。"""
+    identity = f"{item.feed_id}\0{normalize_title(item.title)}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"weekly-title:{digest}"
 
 
 def _richness(item: RSSItem) -> tuple[int, int, float, bool]:
@@ -177,6 +185,9 @@ class WeeklyRSSAggregator:
                     )
                     merged.search_providers = ",".join(sorted(providers))
 
+        if len(missing_dates) == len(window.storage_dates):
+            raise RuntimeError("周快照构建失败：八个日库全部缺失")
+
         snapshot = WeeklyRSSSnapshot(
             window=window,
             data=None,
@@ -212,6 +223,8 @@ class WeeklyRSSAggregator:
         }
         for item in ordered_items:
             canonical_url = canonicalize_url(item.url)
+            if not canonical_url and not item.guid:
+                item.guid = _title_fallback_guid(item)
             anchor = existing_anchors.get(canonical_url) or canonical_anchors.get(
                 canonical_url
             )
@@ -234,8 +247,6 @@ class WeeklyRSSAggregator:
 
         snapshot.data = data
         snapshot.allowed_rss_ids = self._resolve_allowed_ids(data)
-        if not snapshot.allowed_rss_ids:
-            raise RuntimeError("周快照 ID 解析失败")
         return snapshot
 
     def _resolve_allowed_ids(self, data: RSSData) -> set[int]:
@@ -244,12 +255,18 @@ class WeeklyRSSAggregator:
             for items in data.items.values()
             for item in items
         }
-        return {
-            row["id"]
-            for row in self.storage.get_all_rss_ids(data.date)
-            if (
+        resolved_ids: set[int] = set()
+        resolved_identities: set[tuple[str, str, str]] = set()
+        for row in self.storage.get_all_rss_ids(data.date):
+            identity = (
                 row.get("source_id", ""),
                 canonicalize_url(row.get("url", "")),
                 normalize_title(row.get("title", "")),
-            ) in identities
-        }
+            )
+            if identity in identities:
+                resolved_ids.add(row["id"])
+                resolved_identities.add(identity)
+
+        if resolved_identities != identities:
+            raise RuntimeError("周快照 ID 解析失败：存在未持久化条目")
+        return resolved_ids

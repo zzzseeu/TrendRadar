@@ -295,7 +295,7 @@ class Scheduler:
         """
         return self.storage.has_period_executed(date_str, period_key, action)
 
-    def record_execution(self, period_key: str, action: str, date_str: str) -> None:
+    def record_execution(self, period_key: str, action: str, date_str: str) -> bool:
         """
         记录时间段的 action 执行
 
@@ -304,7 +304,7 @@ class Scheduler:
             action: 动作类型 (analyze / push)
             date_str: 日期 YYYY-MM-DD
         """
-        self.storage.record_period_execution(date_str, period_key, action)
+        return self.storage.record_period_execution(date_str, period_key, action)
 
     # ========================================
     # 校验

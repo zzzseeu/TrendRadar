@@ -24,6 +24,8 @@ assert_not_contains() {
 SCHEDULER="${PROJECT_ROOT}/scripts/start_daily_scheduler.sh"
 CRONTAB="${PROJECT_ROOT}/config/daily.crontab"
 COMPOSE="${PROJECT_ROOT}/docker/docker-compose.yml"
+COMPOSE_BUILD="${PROJECT_ROOT}/docker/docker-compose-build.yml"
+ENTRYPOINT="${PROJECT_ROOT}/docker/entrypoint.sh"
 DOCKER_ENV_EXAMPLE="${PROJECT_ROOT}/docker/.env.example"
 GITIGNORE="${PROJECT_ROOT}/.gitignore"
 CONFIG="${PROJECT_ROOT}/config/config.yaml"
@@ -37,8 +39,12 @@ assert_contains "${SCHEDULER}" 'command -v uv'
 assert_contains "${CRONTAB}" '"$PROJECT_DIR"'
 assert_contains "${CRONTAB}" '"$UV_BIN"'
 assert_contains "${CRONTAB}" '0 10 * * *'
+assert_contains "${CRONTAB}" '每日采集，周一汇总上一自然周'
 assert_contains "${SCHEDULER}" '每天 10:00'
 assert_contains "${COMPOSE}" 'dockerfile: docker/Dockerfile'
+assert_contains "${COMPOSE}" 'CRON_SCHEDULE=${CRON_SCHEDULE:-0 10 * * *}'
+assert_contains "${COMPOSE_BUILD}" 'CRON_SCHEDULE=${CRON_SCHEDULE:-0 10 * * *}'
+assert_contains "${ENTRYPOINT}" 'CRON_EXPR="${CRON_SCHEDULE:-0 10 * * *}"'
 assert_not_contains "${COMPOSE}" 'image: wantcat/trendradar:latest'
 assert_contains "${COMPOSE}" 'HTTP_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
 assert_contains "${COMPOSE}" 'HTTPS_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'

@@ -513,7 +513,13 @@ class NewsAnalyzer:
                 if schedule.once_analyze and schedule.period_key:
                     scheduler = self.ctx.create_scheduler()
                     date_str = self.ctx.format_date()
-                    scheduler.record_execution(schedule.period_key, "analyze", date_str)
+                    if not scheduler.record_execution(
+                        schedule.period_key, "analyze", date_str
+                    ):
+                        return AIAnalysisResult(
+                            success=False,
+                            error="AI 分析完成，但 once_analyze 持久化失败",
+                        )
             elif result.skipped:
                 print(f"[AI] {result.error}")
             else:
@@ -960,6 +966,15 @@ class NewsAnalyzer:
                         standalone_data=standalone_data,
                     )
 
+            if (
+                mode == "weekly"
+                and cfg.get("AI_ANALYSIS", {}).get("ENABLED", False)
+                and (ai_result is None or not ai_result.success)
+            ):
+                error = ai_result.error if ai_result is not None else "无有效结果"
+                print(f"[推送] 周报 AI 摘要失败，取消推送: {error}")
+                return False
+
             # 准备报告数据
             report_data = self.ctx.prepare_report(stats, failed_ids, new_titles, id_to_name, mode, frequency_file=self.frequency_file)
 
@@ -990,6 +1005,7 @@ class NewsAnalyzer:
                 ai_analysis=ai_result,
                 standalone_data=standalone_data,
                 skip_translation=True,
+                require_all_targets=(mode == "weekly"),
             )
 
             if not results:
@@ -1001,7 +1017,11 @@ class NewsAnalyzer:
                 if schedule.once_push and schedule.period_key:
                     scheduler = self.ctx.create_scheduler()
                     date_str = self.ctx.format_date()
-                    scheduler.record_execution(schedule.period_key, "push", date_str)
+                    if not scheduler.record_execution(
+                        schedule.period_key, "push", date_str
+                    ):
+                        print("[推送] once_push 持久化失败，本次任务标记失败")
+                        return False
             elif mode == "weekly":
                 print("[推送] 周报存在发送失败，未记录 once_push，可人工补跑")
 
@@ -1239,14 +1259,20 @@ class NewsAnalyzer:
                 return self._process_rss_data_by_mode(rss_data)
             else:
                 print(f"[RSS] 数据保存失败")
+                if self.report_mode == "weekly":
+                    raise RuntimeError("RSS 数据保存失败")
                 return None, None, None, set()
 
         except ImportError as e:
             print(f"[RSS] 缺少依赖: {e}")
             print("[RSS] 请安装 feedparser: pip install feedparser")
+            if self.report_mode == "weekly":
+                raise
             return None, None, None, set()
         except Exception as e:
             print(f"[RSS] 抓取失败: {e}")
+            if self.report_mode == "weekly":
+                raise
             return None, None, None, set()
 
     def _process_rss_data_by_mode(self, rss_data) -> Tuple[Optional[List[Dict]], Optional[List[Dict]], Optional[List[Dict]], set]:

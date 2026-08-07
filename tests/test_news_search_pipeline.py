@@ -639,6 +639,31 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         self.assertIn("[新闻搜索]", output.getvalue())
         self.assertIn("provider outage", output.getvalue())
 
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_weekly_snapshot_exception_is_not_swallowed(self, fetcher_class):
+        analyzer = self._analyzer(enabled=False)
+        analyzer.report_mode = "weekly"
+        fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
+        analyzer._process_rss_data_by_mode.side_effect = RuntimeError(
+            "周快照 ID 解析失败"
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "周快照 ID 解析失败"):
+            analyzer._crawl_rss_data()
+
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_weekly_current_rss_save_failure_is_not_swallowed(self, fetcher_class):
+        analyzer = self._analyzer(enabled=False)
+        analyzer.report_mode = "weekly"
+        analyzer.storage_manager = Mock()
+        analyzer.storage_manager.save_rss_data.return_value = False
+        fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
+
+        with self.assertRaisesRegex(RuntimeError, "RSS 数据保存失败"):
+            analyzer._crawl_rss_data()
+
+        analyzer._process_rss_data_by_mode.assert_not_called()
+
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")
     def test_empty_search_result_preserves_fixed_rss_data(
