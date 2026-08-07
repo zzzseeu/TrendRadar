@@ -10,6 +10,7 @@ from trendradar.__main__ import NewsAnalyzer
 from trendradar.ai.filter import AIFilterResult
 from trendradar.core.scheduler import ResolvedSchedule, Scheduler
 from trendradar.core.weekly import previous_natural_week
+from trendradar.storage.base import RSSData, RSSItem
 
 
 TIMELINE = {"custom": {
@@ -89,11 +90,13 @@ class WeeklyScheduleTests(unittest.TestCase):
     def test_silent_run_never_enters_analysis_pipeline(self):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer.ctx = SimpleNamespace(cleanup=MagicMock(), config={"DEBUG": False})
-        analyzer.report_mode = "weekly"
-        analyzer._rss_window = None
+        analyzer.report_mode = "current"
         analyzer._initialize_and_check_config = MagicMock(return_value=True)
         analyzer._resolve_and_apply_schedule = MagicMock(
-            return_value=schedule(analyze=False, push=False)
+            return_value=schedule(
+                report_mode="current", ai_mode="current",
+                analyze=False, push=False,
+            )
         )
         analyzer._crawl_data = MagicMock(return_value=({}, {}, []))
         analyzer._crawl_rss_data = MagicMock(
@@ -106,6 +109,78 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._crawl_data.assert_called_once()
         analyzer._crawl_rss_data.assert_called_once()
         analyzer._execute_mode_strategy.assert_not_called()
+
+    def test_weekly_snapshot_scope_flows_from_aggregator_to_both_ai_steps(self):
+        window = SimpleNamespace(label="唯一自然周")
+        allowed_ids = {101, 202}
+        snapshot = SimpleNamespace(
+            window=window,
+            allowed_rss_ids=allowed_ids,
+            data=RSSData(
+                date="2026-08-10", crawl_time="10-00",
+                items={"journal": [RSSItem(
+                    title="Weekly item", feed_id="journal",
+                    url="https://example.org/weekly",
+                    published_at="2026-08-05T10:00:00+08:00",
+                )]},
+                id_to_name={"journal": "Journal"},
+            ),
+            total_read=8,
+            filtered_out=2,
+            duplicate_count=1,
+            missing_dates=["2026-08-04"],
+            failed_sources={"journal": ["2026-08-04"]},
+        )
+        ai_result = AIFilterResult(success=True, tags=[])
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={
+                "DISPLAY": {"REGIONS": {"RSS": True}},
+                "AI_ANALYSIS": {"ENABLED": False},
+                "STORAGE": {"FORMATS": {"HTML": False}},
+            },
+            timezone="Asia/Shanghai",
+            get_time=MagicMock(),
+            load_frequency_words=MagicMock(return_value=([], [], [])),
+            rss_config={"FRESHNESS_FILTER": {"ENABLED": True}},
+            rss_feeds=[],
+            run_ai_filter=MagicMock(return_value=ai_result),
+            convert_ai_filter_to_report_data=MagicMock(return_value=([], [], [])),
+            display_mode="keyword",
+        )
+        analyzer.storage_manager = MagicMock()
+        analyzer.report_mode = "weekly"
+        analyzer.frequency_file = None
+        analyzer.filter_method = "ai"
+        analyzer.interests_file = None
+        analyzer.rank_threshold = 5
+
+        with patch("trendradar.__main__.WeeklyRSSAggregator") as aggregator, \
+             patch("builtins.print") as printed:
+            aggregator.return_value.build.return_value = snapshot
+            rss_items, rss_new_items, _, rss_new_urls = \
+                analyzer._process_rss_data_by_mode(MagicMock())
+            analyzer._run_analysis_pipeline(
+                {}, "weekly", {}, {}, [], [], {},
+                rss_items=rss_items,
+                rss_new_items=rss_new_items,
+                rss_new_urls=rss_new_urls,
+                schedule=schedule(),
+            )
+
+        filter_kwargs = analyzer.ctx.run_ai_filter.call_args.kwargs
+        conversion_kwargs = analyzer.ctx.convert_ai_filter_to_report_data.call_args.kwargs
+        self.assertIs(filter_kwargs["rss_window"], window)
+        self.assertIs(conversion_kwargs["rss_window"], window)
+        self.assertIs(filter_kwargs["allowed_rss_ids"], allowed_ids)
+        self.assertIs(conversion_kwargs["allowed_rss_ids"], allowed_ids)
+        log_lines = "\n".join(str(call.args[0]) for call in printed.call_args_list)
+        self.assertIn("total_read=8", log_lines)
+        self.assertIn("filtered_out=2", log_lines)
+        self.assertIn("duplicate_count=1", log_lines)
+        self.assertIn("retained=1", log_lines)
+        self.assertIn("missing_dates=['2026-08-04']", log_lines)
+        self.assertIn("failed_sources={'journal': ['2026-08-04']}", log_lines)
 
     def test_schedule_is_resolved_once_before_initialization_and_crawl(self):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)

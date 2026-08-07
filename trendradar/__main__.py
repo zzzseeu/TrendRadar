@@ -1301,6 +1301,15 @@ class NewsAnalyzer:
             self._rss_total_count = sum(
                 len(items) for items in snapshot.data.items.values()
             )
+            print(
+                "[周报] 快照汇总: "
+                f"total_read={snapshot.total_read}, "
+                f"filtered_out={snapshot.filtered_out}, "
+                f"duplicate_count={snapshot.duplicate_count}, "
+                f"retained={self._rss_total_count}, "
+                f"missing_dates={snapshot.missing_dates}, "
+                f"failed_sources={snapshot.failed_sources}"
+            )
             raw_rss_items = self._convert_rss_items_to_list(
                 snapshot.data.items,
                 snapshot.data.id_to_name,
@@ -1849,6 +1858,10 @@ class NewsAnalyzer:
 
             # 抓取 RSS 数据（如果启用），返回统计条目、新增条目和原始条目
             rss_items, rss_new_items, raw_rss_items, rss_new_urls = self._crawl_rss_data()
+
+            if not schedule.analyze and not schedule.push:
+                print("[调度] 静默采集完成，本次不执行 AI 和推送")
+                return True
 
             if schedule.report_mode == "weekly" and self._rss_window is None:
                 print("[周报] 上一自然周没有可用数据，本次成功结束")
