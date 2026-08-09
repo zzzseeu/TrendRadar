@@ -30,6 +30,7 @@ from trendradar.storage.base import RSSItem
 from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import DEFAULT_TIMEZONE, is_within_days, calculate_days_old
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
+from trendradar.core.daily_delivery import DailyDeliveryAggregator
 from trendradar.core.scheduler import ResolvedSchedule
 from trendradar.core.weekly import WeeklyRSSAggregator
 from trendradar.commands import check_all_versions, run_doctor, run_test_notification, handle_status_commands
@@ -112,6 +113,12 @@ class NewsAnalyzer:
             "report_type": "全天汇总",
             "should_send_notification": True,
         },
+        "daily_delivery": {
+            "mode_name": "每日新增模式",
+            "description": "每日新增模式（上次成功后首次发现的内容）",
+            "report_type": "每日新增",
+            "should_send_notification": True,
+        },
         "weekly": {
             "mode_name": "自然周周报模式",
             "description": "自然周周报模式（上一周一至周日）",
@@ -156,6 +163,8 @@ class NewsAnalyzer:
         self._hotlist_total_count = 0
         self._rss_window = None
         self._allowed_rss_ids = None
+        self._rss_ids_authoritative = False
+        self._daily_delivery_rss_data = None
         self._report_period_label = ""
 
         # 初始化存储管理器（使用 AppContext）
@@ -237,16 +246,31 @@ class NewsAnalyzer:
 
     @staticmethod
     def _should_fallback_ai_filter(mode: str) -> bool:
-        """周报必须由 AI 筛选成功，不允许降级到关键词结果。"""
-        return mode != "weekly"
+        """严格交付必须由 AI 筛选成功，不允许降级到关键词结果。"""
+        return not NewsAnalyzer._is_strict_delivery_mode(mode)
+
+    @staticmethod
+    def _is_strict_delivery_mode(mode: str) -> bool:
+        return mode in {"weekly", "daily_delivery"}
 
     @staticmethod
     def _notification_delivery_succeeded(
         mode: str, results: Dict[str, bool]
     ) -> bool:
-        """周报需所有配置渠道成功；既有模式保留任一成功即算成功。"""
+        """严格交付需所有配置渠道成功；既有模式保留任一成功。"""
         return bool(results) and (
-            all(results.values()) if mode == "weekly" else any(results.values())
+            all(results.values())
+            if NewsAnalyzer._is_strict_delivery_mode(mode)
+            else any(results.values())
+        )
+
+    def _record_delivery_checkpoint(
+        self, schedule: ResolvedSchedule
+    ) -> bool:
+        if not schedule.period_key:
+            return False
+        return self.ctx.create_scheduler().record_execution(
+            schedule.period_key, "push", self.ctx.format_date()
         )
 
     def _has_notification_configured(self) -> bool:
@@ -421,19 +445,19 @@ class NewsAnalyzer:
             scheduler = self.ctx.create_scheduler()
             date_str = self.ctx.format_date()
             if scheduler.already_executed(schedule.period_key, "analyze", date_str):
-                weekly_push_pending = (
-                    mode == "weekly"
+                strict_push_pending = (
+                    self._is_strict_delivery_mode(mode)
                     and schedule.once_push
                     and not scheduler.already_executed(
                         schedule.period_key, "push", date_str
                     )
                 )
-                if not weekly_push_pending:
+                if not strict_push_pending:
                     print(f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天已分析过，跳过")
                     return None
                 print(
                     f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} "
-                    "已分析但周报推送未完成，重新分析用于补跑"
+                    "已分析但严格交付推送未完成，重新分析用于补跑"
                 )
             else:
                 print(f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天首次分析")
@@ -790,6 +814,9 @@ class NewsAnalyzer:
                 interests_file=self.interests_file,
                 rss_window=self._rss_window,
                 allowed_rss_ids=self._allowed_rss_ids,
+                rss_ids_authoritative=getattr(
+                    self, "_rss_ids_authoritative", False
+                ),
             )
 
             if ai_filter_result and ai_filter_result.success:
@@ -800,6 +827,9 @@ class NewsAnalyzer:
                     new_titles=new_titles, rss_new_urls=rss_new_urls,
                     rss_window=self._rss_window,
                     allowed_rss_ids=self._allowed_rss_ids,
+                    rss_ids_authoritative=getattr(
+                        self, "_rss_ids_authoritative", False
+                    ),
                 )
                 total_titles = sum(len(titles) for titles in data_source.values())
 
@@ -810,7 +840,8 @@ class NewsAnalyzer:
             else:
                 error_msg = ai_filter_result.error if ai_filter_result else "未知错误"
                 if not self._should_fallback_ai_filter(mode):
-                    raise RuntimeError("周报 AI 筛选失败")
+                    label = "周报" if mode == "weekly" else "每日交付"
+                    raise RuntimeError(f"{label} AI 筛选失败")
                 # AI 筛选失败，回退到关键词匹配
                 print(f"[筛选] AI 筛选失败: {error_msg}，回退到关键词匹配")
                 stats, total_titles = self.ctx.count_frequency(
@@ -836,6 +867,16 @@ class NewsAnalyzer:
                 self.ctx.rank_threshold,
             )
 
+        has_delivery_content = (
+            any(stat.get("count", 0) > 0 for stat in stats)
+            or any(stat.get("count", 0) > 0 for stat in (rss_items or []))
+        )
+        if mode == "daily_delivery" and not has_delivery_content:
+            self._rss_matched_count = 0
+            return (
+                stats, None, None, rss_items, standalone_data, rss_new_items
+            )
+
         # AI 分析（如果启用，用于 HTML 报告）
         ai_result = None
         ai_config = self.ctx.config.get("AI_ANALYSIS", {})
@@ -848,6 +889,13 @@ class NewsAnalyzer:
                 current_results=data_source, schedule=schedule,
                 standalone_data=standalone_data
             )
+            if (
+                self._is_strict_delivery_mode(mode)
+                and (ai_result is None or not ai_result.success)
+            ):
+                label = "周报" if mode == "weekly" else "每日交付"
+                error = ai_result.error if ai_result is not None else "无有效结果"
+                raise RuntimeError(f"{label} AI 摘要失败: {error}")
 
         # 翻译 RSS 和独立展示区内容（如果启用）— 在 HTML 生成前执行，确保网页版也能展示翻译内容
         # standalone_data 在此翻译一次后贯穿到推送阶段复用，避免重复翻译并保证网页与推送译文一致
@@ -908,6 +956,10 @@ class NewsAnalyzer:
                 },
                 translate_report_func=translate_report_func,
             )
+            if not html_file and self._is_strict_delivery_mode(mode):
+                if mode == "daily_delivery":
+                    raise RuntimeError("每日交付 HTML 报告生成失败")
+                raise RuntimeError("周报 HTML 报告生成失败")
 
         return stats, html_file, ai_result, rss_items, standalone_data, rss_new_items
 
@@ -979,12 +1031,13 @@ class NewsAnalyzer:
                     )
 
             if (
-                mode == "weekly"
+                self._is_strict_delivery_mode(mode)
                 and cfg.get("AI_ANALYSIS", {}).get("ENABLED", False)
                 and (ai_result is None or not ai_result.success)
             ):
                 error = ai_result.error if ai_result is not None else "无有效结果"
-                print(f"[推送] 周报 AI 摘要失败，取消推送: {error}")
+                label = "周报" if mode == "weekly" else "每日交付"
+                print(f"[推送] {label} AI 摘要失败，取消推送: {error}")
                 return False
 
             # 准备报告数据
@@ -1017,7 +1070,7 @@ class NewsAnalyzer:
                 ai_analysis=ai_result,
                 standalone_data=standalone_data,
                 skip_translation=True,
-                require_all_targets=(mode == "weekly"),
+                require_all_targets=self._is_strict_delivery_mode(mode),
             )
 
             if not results:
@@ -1027,15 +1080,12 @@ class NewsAnalyzer:
             delivery_succeeded = self._notification_delivery_succeeded(mode, results)
             if delivery_succeeded:
                 if schedule.once_push and schedule.period_key:
-                    scheduler = self.ctx.create_scheduler()
-                    date_str = self.ctx.format_date()
-                    if not scheduler.record_execution(
-                        schedule.period_key, "push", date_str
-                    ):
+                    if not self._record_delivery_checkpoint(schedule):
                         print("[推送] once_push 持久化失败，本次任务标记失败")
                         return False
-            elif mode == "weekly":
-                print("[推送] 周报存在发送失败，未记录 once_push，可人工补跑")
+            elif self._is_strict_delivery_mode(mode):
+                label = "周报" if mode == "weekly" else "每日交付"
+                print(f"[推送] {label}存在发送失败，未记录 once_push，可人工补跑")
 
             return delivery_succeeded
 
@@ -1136,6 +1186,12 @@ class NewsAnalyzer:
             - rss_new_urls: 原始新增 RSS 条目的 URL 集合（用于 AI 模式 is_new 检测）
             如果未启用或失败返回 (None, None, None, set())
         """
+        if self.report_mode == "daily_delivery":
+            self._daily_delivery_rss_data = None
+            self._rss_window = None
+            self._allowed_rss_ids = None
+            self._rss_ids_authoritative = False
+
         if not self.ctx.rss_enabled:
             return None, None, None, set()
 
@@ -1209,6 +1265,7 @@ class NewsAnalyzer:
 
             self._rss_source_total = len(feeds)
             self._rss_source_failed = len(rss_data.failed_ids)
+            search_failure = None
 
             news_search_value = rss_config.get("NEWS_SEARCH", {})
             news_search_config = (
@@ -1259,31 +1316,50 @@ class NewsAnalyzer:
                     if search_result.failed_providers:
                         failed = ", ".join(search_result.failed_providers)
                         print(f"[新闻搜索] 部分来源失败: {failed}")
+                        if self.report_mode == "daily_delivery":
+                            search_failure = (
+                                f"每日交付新闻搜索来源失败: {failed}"
+                            )
                     merge_news_search_into_rss(rss_data, search_result)
                 except Exception as e:
                     print(f"[新闻搜索] 搜索失败，继续使用固定 RSS: {e}")
+                    if self.report_mode == "daily_delivery":
+                        search_failure = f"每日交付新闻搜索失败: {e}"
 
             # 保存到存储后端
             if self.storage_manager.save_rss_data(rss_data):
                 print(f"[RSS] 数据已保存到存储后端")
 
+                if (
+                    self.report_mode == "daily_delivery"
+                    and rss_data.failed_ids
+                ):
+                    failed = ", ".join(rss_data.failed_ids)
+                    raise RuntimeError(f"每日交付 RSS 来源失败: {failed}")
+                if search_failure:
+                    raise RuntimeError(search_failure)
+
+                if self.report_mode == "daily_delivery":
+                    self._daily_delivery_rss_data = rss_data
+                    return None, None, None, set()
+
                 # 处理 RSS 数据（按模式过滤）并返回用于合并推送
                 return self._process_rss_data_by_mode(rss_data)
             else:
                 print(f"[RSS] 数据保存失败")
-                if self.report_mode == "weekly":
+                if self._is_strict_delivery_mode(self.report_mode):
                     raise RuntimeError("RSS 数据保存失败")
                 return None, None, None, set()
 
         except ImportError as e:
             print(f"[RSS] 缺少依赖: {e}")
             print("[RSS] 请安装 feedparser: pip install feedparser")
-            if self.report_mode == "weekly":
+            if self._is_strict_delivery_mode(self.report_mode):
                 raise
             return None, None, None, set()
         except Exception as e:
             print(f"[RSS] 抓取失败: {e}")
-            if self.report_mode == "weekly":
+            if self._is_strict_delivery_mode(self.report_mode):
                 raise
             return None, None, None, set()
 
@@ -1326,6 +1402,49 @@ class NewsAnalyzer:
         rss_new_stats = None
         raw_rss_items = None  # 原始 RSS 条目列表（用于独立展示区）
         rss_new_urls = set()  # 原始新增 RSS URLs（未经关键词过滤）
+
+        if self.report_mode == "daily_delivery":
+            scheduler = self.ctx.create_scheduler()
+            date_str = self.ctx.format_date()
+            checkpoint = scheduler.latest_execution(
+                "daily_delivery", "push", date_str
+            )
+            snapshot = DailyDeliveryAggregator(
+                self.storage_manager, self.ctx.timezone
+            ).build(self.ctx.get_time(), checkpoint)
+            self._rss_window = None
+            self._allowed_rss_ids = snapshot.allowed_rss_ids
+            self._rss_ids_authoritative = True
+            self._report_period_label = snapshot.window.label
+            self._rss_total_count = (
+                sum(len(items) for items in snapshot.data.items.values())
+                if snapshot.data
+                else 0
+            )
+            raw_rss_items = (
+                self._convert_rss_items_to_list(
+                    snapshot.data.items,
+                    snapshot.data.id_to_name,
+                    apply_freshness=False,
+                )
+                if snapshot.data
+                else []
+            )
+            if not rss_display_enabled or not raw_rss_items:
+                return None, None, raw_rss_items, set()
+
+            rss_stats, _ = count_rss_frequency(
+                rss_items=raw_rss_items,
+                word_groups=word_groups,
+                filter_words=filter_words,
+                global_filters=global_filters,
+                max_news_per_keyword=max_news_per_keyword,
+                sort_by_position_first=sort_by_position_first,
+                timezone=timezone,
+                rank_threshold=self.rank_threshold,
+                quiet=False,
+            )
+            return rss_stats, None, raw_rss_items, set()
 
         if self.report_mode == "weekly":
             snapshot = WeeklyRSSAggregator(
@@ -1667,8 +1786,42 @@ class NewsAnalyzer:
         title_info = None
         standalone_data = None
 
+        # 每日交付只使用上次成功检查点后的 RSS 快照；热榜仍采集保存，
+        # 但不能进入交付报告，避免和当前榜单内容重复。
+        if self.report_mode == "daily_delivery":
+            new_titles = {}
+            title_info = {}
+            results = {}
+            id_to_name = {}
+            failed_ids = []
+            standalone_data = self._prepare_standalone_data(
+                {}, {}, title_info, raw_rss_items
+            )
+            (
+                stats,
+                html_file,
+                ai_result,
+                rss_items,
+                standalone_data,
+                rss_new_items,
+            ) = self._run_analysis_pipeline(
+                {},
+                self.report_mode,
+                title_info,
+                new_titles,
+                word_groups,
+                filter_words,
+                id_to_name,
+                failed_ids=[],
+                global_filters=global_filters,
+                rss_items=rss_items,
+                rss_new_items=None,
+                standalone_data=standalone_data,
+                schedule=schedule,
+                rss_new_urls=set(),
+            )
         # weekly 模式使用本轮热榜和已聚合的自然周 RSS，不读取当日历史热榜。
-        if self.report_mode == "weekly":
+        elif self.report_mode == "weekly":
             title_info = self._prepare_current_title_info(results, time_info)
             standalone_data = self._prepare_standalone_data(
                 results, id_to_name, title_info, raw_rss_items
@@ -1844,6 +1997,19 @@ class NewsAnalyzer:
             print(f"HTML报告已生成: {html_file}")
             print(f"最新报告已更新: output/html/latest/{self.report_mode}.html")
 
+        has_content = self._has_valid_content(stats, new_titles) or bool(
+            rss_items
+        )
+        if self.report_mode == "daily_delivery" and not has_content:
+            print("[每日交付] 快照没有匹配内容，跳过摘要、报告和通知")
+            if not schedule.push:
+                print("[每日交付] 调度器未启用推送，不记录 push 检查点")
+                return True
+            if not self._record_delivery_checkpoint(schedule):
+                print("[每日交付] 空周期 push 检查点持久化失败")
+                return False
+            return True
+
         # 发送通知
         if mode_strategy["should_send_notification"]:
             # standalone_data 已在分析流水线中翻译，直接复用（不再重新 prepare 原文，
@@ -1863,8 +2029,9 @@ class NewsAnalyzer:
                 current_results=results,
                 schedule=schedule,
             )
+            if self.report_mode == "daily_delivery" and not delivered:
+                return False
             if self.report_mode == "weekly":
-                has_content = self._has_valid_content(stats, new_titles) or bool(rss_items)
                 if (
                     has_content
                     and self.ctx.config["ENABLE_NOTIFICATION"]
@@ -1899,8 +2066,62 @@ class NewsAnalyzer:
             # 抓取 RSS 数据（如果启用），返回统计条目、新增条目和原始条目
             rss_items, rss_new_items, raw_rss_items, rss_new_urls = self._crawl_rss_data()
 
+            if (
+                schedule.report_mode == "daily_delivery"
+                and getattr(self, "_daily_delivery_rss_data", None) is None
+                and not getattr(self, "_rss_ids_authoritative", False)
+            ):
+                raise RuntimeError("每日交付未保存当前 RSS 数据")
+
+            if schedule.report_mode == "daily_delivery" and failed_ids:
+                failed = ", ".join(str(source_id) for source_id in failed_ids)
+                raise RuntimeError(f"每日交付热榜来源失败: {failed}")
+
+            if (
+                schedule.report_mode == "daily_delivery"
+                and schedule.once_push
+                and schedule.period_key
+                and self.ctx.create_scheduler().already_executed(
+                    schedule.period_key, "push", self.ctx.format_date()
+                )
+            ):
+                print("[每日交付] 今天已成功交付，保留采集结果并跳过分析和通知")
+                return True
+
             if not schedule.analyze and not schedule.push:
                 print("[调度] 静默采集完成，本次不执行 AI 和推送")
+                return True
+
+            if (
+                schedule.report_mode == "daily_delivery"
+                and getattr(self, "_daily_delivery_rss_data", None) is not None
+            ):
+                (
+                    rss_items,
+                    rss_new_items,
+                    raw_rss_items,
+                    rss_new_urls,
+                ) = self._process_rss_data_by_mode(
+                    self._daily_delivery_rss_data
+                )
+
+            if (
+                schedule.report_mode == "daily_delivery"
+                and not getattr(self, "_rss_ids_authoritative", False)
+            ):
+                raise RuntimeError("每日交付未生成权威 RSS 快照")
+
+            if (
+                schedule.report_mode == "daily_delivery"
+                and raw_rss_items == []
+            ):
+                print("[每日交付] 快照为空，跳过分析、报告和通知")
+                if not schedule.push:
+                    print("[每日交付] 调度器未启用推送，不记录 push 检查点")
+                    return True
+                if not self._record_delivery_checkpoint(schedule):
+                    print("[每日交付] 空快照 push 检查点持久化失败")
+                    return False
                 return True
 
             if schedule.report_mode == "weekly" and self._rss_window is None:

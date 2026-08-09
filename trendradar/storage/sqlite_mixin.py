@@ -1052,6 +1052,25 @@ class SQLiteStorageMixin:
             print(f"{log_prefix} 保存 RSS 数据失败: {e}")
             return False, 0, 0
 
+    @staticmethod
+    def _get_latest_failed_rss_ids(cursor) -> List[str]:
+        """返回每个 RSS 源最新一次抓取仍为失败的源 ID。"""
+        cursor.execute("""
+            SELECT cs.feed_id
+            FROM rss_crawl_status cs
+            JOIN rss_crawl_records cr ON cs.crawl_record_id = cr.id
+            WHERE cs.status = 'failed'
+              AND cr.id = (
+                  SELECT MAX(cr2.id)
+                  FROM rss_crawl_status cs2
+                  JOIN rss_crawl_records cr2
+                    ON cs2.crawl_record_id = cr2.id
+                  WHERE cs2.feed_id = cs.feed_id
+              )
+            ORDER BY cs.feed_id
+        """)
+        return [row[0] for row in cursor.fetchall()]
+
     def _get_rss_data_impl(self, date: Optional[str] = None) -> Optional[RSSData]:
         """
         获取指定日期的所有 RSS 数据
@@ -1102,13 +1121,7 @@ class SQLiteStorageMixin:
                     for row in cursor.fetchall()
                 }
 
-                cursor.execute("""
-                    SELECT DISTINCT cs.feed_id
-                    FROM rss_crawl_status cs
-                    JOIN rss_crawl_records cr ON cs.crawl_record_id = cr.id
-                    WHERE cs.status = 'failed'
-                """)
-                failed_ids = [row[0] for row in cursor.fetchall()]
+                failed_ids = self._get_latest_failed_rss_ids(cursor)
                 return RSSData(
                     date=crawl_date,
                     crawl_time=time_row[0],
@@ -1155,13 +1168,7 @@ class SQLiteStorageMixin:
             crawl_time = time_row[0] if time_row else self._format_time_filename()
 
             # 获取失败的源
-            cursor.execute("""
-                SELECT DISTINCT cs.feed_id
-                FROM rss_crawl_status cs
-                JOIN rss_crawl_records cr ON cs.crawl_record_id = cr.id
-                WHERE cs.status = 'failed'
-            """)
-            failed_ids = [row[0] for row in cursor.fetchall()]
+            failed_ids = self._get_latest_failed_rss_ids(cursor)
 
             return RSSData(
                 date=crawl_date,

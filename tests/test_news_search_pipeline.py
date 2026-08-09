@@ -466,6 +466,7 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
             config={"TIMEZONE": "Asia/Shanghai"},
         )
         analyzer.proxy_url = None
+        analyzer.report_mode = "daily"
         analyzer.storage_manager = _StorageStub()
         analyzer._rss_source_total = 0
         analyzer._rss_source_failed = 0
