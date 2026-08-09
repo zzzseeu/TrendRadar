@@ -245,11 +245,23 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
         """获取指定日期的所有 RSS 数据"""
         return self._get_rss_data_impl(date)
 
+    def get_rss_data_strict(
+        self, date: Optional[str] = None
+    ) -> Optional[RSSData]:
+        """严格获取指定日期的 RSS 数据，数据库异常向上抛出。"""
+        return self._get_rss_data_impl(date, strict=True)
+
     def get_rss_feed_statuses(
         self, date: Optional[str] = None
     ) -> Dict[str, str]:
         """获取指定日库中每个 RSS 源的最新抓取状态。"""
         return self._get_rss_feed_statuses_impl(date)
+
+    def get_rss_feed_statuses_strict(
+        self, date: Optional[str] = None
+    ) -> Dict[str, str]:
+        """严格获取指定日库中每个 RSS 源的最新抓取状态。"""
+        return self._get_rss_feed_statuses_impl(date, strict=True)
 
     def detect_new_rss_items(self, current_data: RSSData) -> Dict[str, List[RSSItem]]:
         """检测新增的 RSS 条目"""

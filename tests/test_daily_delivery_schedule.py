@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import sqlite3
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -518,6 +519,67 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
 
         dispatcher.dispatch_all.assert_not_called()
         scheduler.record_execution.assert_not_called()
+
+    def test_multi_day_sql_status_failure_makes_run_fail_without_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = StorageManager(
+                backend_type="local",
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            backend = manager.get_backend()
+            try:
+                self.assertTrue(
+                    DailyDeliveryStorageContractTests._save_feed_status(
+                        backend,
+                        "2026-08-08",
+                        "11:00",
+                        "journal",
+                        "success",
+                    )
+                )
+                self.assertTrue(
+                    DailyDeliveryStorageContractTests._save_feed_status(
+                        backend,
+                        "2026-08-09",
+                        "09:00",
+                        "journal",
+                        "success",
+                    )
+                )
+                current_rss = backend.get_rss_data("2026-08-09")
+                broken = backend._get_connection(
+                    "2026-08-08", db_type="rss"
+                )
+                broken.execute("DROP TABLE rss_crawl_status")
+                broken.commit()
+
+                analyzer, scheduler, dispatcher = self.build_analyzer(
+                    rss_items=[RSS_STAT],
+                    raw_rss_items=[{"title": "journal recovered"}],
+                )
+                analyzer.storage_manager = manager
+                analyzer._rss_ids_authoritative = False
+                analyzer._allowed_rss_ids = None
+
+                def crawl_saved_rss():
+                    analyzer._daily_delivery_rss_data = current_rss
+                    return [RSS_STAT], None, [
+                        {"title": "journal recovered"}
+                    ], set()
+
+                analyzer._crawl_rss_data = MagicMock(
+                    side_effect=crawl_saved_rss
+                )
+
+                self.assertFalse(analyzer.run())
+
+                dispatcher.dispatch_all.assert_not_called()
+                scheduler.record_execution.assert_not_called()
+            finally:
+                manager.cleanup()
 
     def test_ai_filter_failure_aborts_without_keyword_fallback(self):
         analyzer, scheduler, dispatcher = self.build_analyzer(
@@ -1082,6 +1144,32 @@ class DailyDeliveryStorageContractTests(unittest.TestCase):
                     [item.title for item in snapshot.iter_items()],
                     ["journal recovered"],
                 )
+            finally:
+                backend.cleanup()
+
+    def test_cross_day_sql_read_failure_is_not_treated_as_missing_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            try:
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-09", "09:00", "journal", "success"
+                ))
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-10", "09:00", "journal", "success"
+                ))
+                broken = backend._get_connection(
+                    "2026-08-09", db_type="rss"
+                )
+                broken.execute("DROP TABLE rss_items")
+                broken.commit()
+
+                with self.assertRaises(sqlite3.OperationalError):
+                    self._build_cross_day_snapshot(backend)
             finally:
                 backend.cleanup()
 

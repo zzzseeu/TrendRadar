@@ -656,6 +656,88 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
         storage.get_active_ai_filter_results.assert_not_called()
 
 
+class DailyDeliveryRemoteStrictReadTests(unittest.TestCase):
+    @staticmethod
+    def _build_remote_with_readable_current_day(tmp):
+        local = LocalStorageBackend(
+            data_dir=tmp,
+            enable_txt=False,
+            enable_html=False,
+            timezone="Asia/Shanghai",
+        )
+        save_rss_day(local, "2026-08-09", "09-00", [RSSItem(
+            title="Readable current day",
+            feed_id="journal",
+            feed_name="Journal",
+            url="https://example.org/current",
+        )])
+        local.cleanup()
+
+        backend = RemoteStorageBackend.__new__(RemoteStorageBackend)
+        backend.bucket_name = "test-bucket"
+        backend.temp_dir = Path(tmp)
+        backend.timezone = "Asia/Shanghai"
+        backend._db_connections = {}
+        backend._downloaded_files = []
+        backend.s3_client = MagicMock()
+        backend.save_rss_data = MagicMock(return_value=True)
+        return backend
+
+    @staticmethod
+    def _build_snapshot(backend):
+        return DailyDeliveryAggregator(
+            backend, "Asia/Shanghai"
+        ).build(
+            now=shanghai(2026, 8, 9, 10, 0),
+            checkpoint="2026-08-08 10:00:00",
+        )
+
+    def test_remote_access_denied_is_not_treated_as_missing_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._build_remote_with_readable_current_day(tmp)
+            access_denied = ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                "HeadObject",
+            )
+            backend.s3_client.head_object.side_effect = access_denied
+            try:
+                with self.assertRaises(ClientError) as raised:
+                    self._build_snapshot(backend)
+                self.assertIs(raised.exception, access_denied)
+            finally:
+                backend.cleanup()
+
+    def test_remote_download_exception_is_not_treated_as_missing_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._build_remote_with_readable_current_day(tmp)
+            backend.s3_client.head_object.return_value = {}
+            backend.s3_client.get_object.side_effect = RuntimeError(
+                "download failed"
+            )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "download failed"):
+                    self._build_snapshot(backend)
+            finally:
+                backend.cleanup()
+
+    def test_remote_404_remains_a_real_missing_day(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._build_remote_with_readable_current_day(tmp)
+            backend.s3_client.head_object.side_effect = ClientError(
+                {"Error": {"Code": "404", "Message": "not found"}},
+                "HeadObject",
+            )
+            try:
+                snapshot = self._build_snapshot(backend)
+                self.assertEqual(
+                    [item.title for item in snapshot.iter_items()],
+                    ["Readable current day"],
+                )
+                self.assertEqual(snapshot.missing_dates, ["2026-08-08"])
+            finally:
+                backend.cleanup()
+
+
 class DailyDeliveryCheckpointTests(unittest.TestCase):
     def test_latest_success_checkpoint_crosses_daily_databases(self):
         with tempfile.TemporaryDirectory() as tmp:

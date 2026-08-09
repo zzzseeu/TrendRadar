@@ -210,11 +210,23 @@ class StorageManager:
         """获取指定日期的所有 RSS 数据（当日汇总模式）"""
         return self.get_backend().get_rss_data(date)
 
+    def get_rss_data_strict(
+        self, date: Optional[str] = None
+    ) -> Optional[RSSData]:
+        """严格获取指定日期的 RSS 数据。"""
+        return self.get_backend().get_rss_data_strict(date)
+
     def get_rss_feed_statuses(
         self, date: Optional[str] = None
     ) -> dict:
         """获取指定日库中每个 RSS 源的最新抓取状态。"""
         return self.get_backend().get_rss_feed_statuses(date)
+
+    def get_rss_feed_statuses_strict(
+        self, date: Optional[str] = None
+    ) -> dict:
+        """严格获取指定日库中每个 RSS 源的最新抓取状态。"""
+        return self.get_backend().get_rss_feed_statuses_strict(date)
 
     def get_latest_rss_data(self, date: Optional[str] = None) -> Optional[RSSData]:
         """获取最新一次抓取的 RSS 数据（当前榜单模式）"""

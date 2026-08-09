@@ -568,6 +568,19 @@ class StorageBackend(ABC):
         statuses.update({feed_id: "failed" for feed_id in data.failed_ids})
         return statuses
 
+    def get_rss_data_strict(self, date: Optional[str] = None) -> Optional[RSSData]:
+        """严格读取 RSS 日库；默认转发以兼容第三方存储后端。"""
+        get_rss_data = getattr(self, "get_rss_data", None)
+        if not callable(get_rss_data):
+            return None
+        return get_rss_data(date)
+
+    def get_rss_feed_statuses_strict(
+        self, date: Optional[str] = None
+    ) -> Dict[str, str]:
+        """严格读取 RSS 来源状态；默认保持现有后端兼容。"""
+        return self.get_rss_feed_statuses(date)
+
 
 def convert_crawl_results_to_news_data(
     results: Dict[str, Dict],

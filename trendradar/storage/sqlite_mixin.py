@@ -50,6 +50,12 @@ class SQLiteStorageMixin:
         """格式化时间文件名 (格式: HH-MM)"""
         pass
 
+    def _get_rss_connection(
+        self, date: Optional[str] = None, strict: bool = False
+    ) -> sqlite3.Connection:
+        """获取 RSS 连接；远程后端可覆盖以启用严格存在性检查。"""
+        return self._get_connection(date, db_type="rss")
+
     # ========================================
     # Schema 管理
     # ========================================
@@ -1082,13 +1088,15 @@ class SQLiteStorageMixin:
         ]
 
     def _get_rss_feed_statuses_impl(
-        self, date: Optional[str] = None
+        self, date: Optional[str] = None, strict: bool = False
     ) -> Dict[str, str]:
         """返回指定日库中每个 RSS 源按记录 ID 判定的最新状态。"""
-        conn = self._get_connection(date, db_type="rss")
+        conn = self._get_rss_connection(date, strict=strict)
         return self._read_latest_rss_feed_statuses(conn.cursor())
 
-    def _get_rss_data_impl(self, date: Optional[str] = None) -> Optional[RSSData]:
+    def _get_rss_data_impl(
+        self, date: Optional[str] = None, strict: bool = False
+    ) -> Optional[RSSData]:
         """
         获取指定日期的所有 RSS 数据
 
@@ -1100,7 +1108,7 @@ class SQLiteStorageMixin:
             成功空抓取且零条目时也返回空 RSSData
         """
         try:
-            conn = self._get_connection(date, db_type="rss")
+            conn = self._get_rss_connection(date, strict=strict)
             cursor = conn.cursor()
 
             # 获取所有 RSS 数据
@@ -1196,6 +1204,8 @@ class SQLiteStorageMixin:
             )
 
         except Exception as e:
+            if strict:
+                raise
             print(f"[存储] 读取 RSS 数据失败: {e}")
             return None
 
