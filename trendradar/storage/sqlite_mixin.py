@@ -5,6 +5,7 @@ SQLite 存储 Mixin
 提供共用的 SQLite 数据库操作逻辑，供 LocalStorageBackend 和 RemoteStorageBackend 复用。
 """
 
+import json
 import sqlite3
 from abc import abstractmethod
 from datetime import datetime
@@ -63,6 +64,184 @@ class SQLiteStorageMixin:
     ) -> sqlite3.Connection:
         """获取 AI/news 连接；远程后端可覆盖以启用严格存在性检查。"""
         return self._get_connection(date, db_type="news")
+
+    def _get_first_seen_ledger_connection(
+        self, strict: bool = False
+    ) -> sqlite3.Connection:
+        """获取 first-seen 账本连接；具体路径和远端刷新由后端提供。"""
+        raise NotImplementedError("存储后端不支持 RSS first-seen 账本")
+
+    def _list_rss_history_dates_strict(self, through_date: str) -> List[str]:
+        """严格列举升级回填所需的既有 RSS 日库。"""
+        raise NotImplementedError("存储后端不支持 RSS first-seen 回填")
+
+    def _persist_first_seen_ledger_strict(self) -> None:
+        """持久化账本；本地后端无需额外动作。"""
+
+    @staticmethod
+    def _rss_identity_key(identity: tuple) -> str:
+        """把公共 canonical identity 编码为稳定账本主键。"""
+        return json.dumps(
+            identity, ensure_ascii=False, separators=(",", ":")
+        )
+
+    @staticmethod
+    def _rss_identity_from_key(identity_key: str) -> tuple:
+        value = json.loads(identity_key)
+        if not isinstance(value, list) or not value:
+            raise RuntimeError(f"RSS identity 账本键无效: {identity_key!r}")
+        return tuple(value)
+
+    def _init_first_seen_ledger(self, conn: sqlite3.Connection) -> None:
+        schema_path = Path(__file__).parent / "first_seen_schema.sql"
+        with open(schema_path, "r", encoding="utf-8") as schema_file:
+            conn.executescript(schema_file.read())
+
+    def _rss_identity_for_ledger(
+        self, title: str, feed_id: str, url: str
+    ) -> tuple:
+        canonical_url = canonicalize_url(url or "")
+        if canonical_url:
+            return ("url", canonical_url)
+        normalized_title = normalize_title(title or "")
+        if not normalized_title:
+            return ()
+        return ("title", feed_id, normalized_title)
+
+    def _upsert_first_seen_rows(
+        self,
+        conn: sqlite3.Connection,
+        rows,
+    ) -> None:
+        for identity, discovered, storage_date in rows:
+            if not identity:
+                continue
+            parsed = parse_storage_datetime(
+                discovered, storage_date, self.timezone
+            )
+            if parsed is None:
+                raise RuntimeError(
+                    f"RSS 首次发现时间无效: {storage_date}/{identity!r}"
+                )
+            conn.execute(
+                """
+                INSERT INTO rss_identity_first_seen
+                    (identity_key, first_seen, storage_date, first_seen_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(identity_key) DO UPDATE SET
+                    first_seen = excluded.first_seen,
+                    storage_date = excluded.storage_date,
+                    first_seen_at = excluded.first_seen_at
+                WHERE excluded.first_seen_at
+                      < rss_identity_first_seen.first_seen_at
+                """,
+                (
+                    self._rss_identity_key(identity),
+                    discovered,
+                    storage_date,
+                    parsed.isoformat(),
+                ),
+            )
+
+    def _read_rss_day_for_first_seen_backfill(self, date: str):
+        conn = self._get_rss_connection(date, strict=True)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT title, feed_id, url, first_crawl_time, last_crawl_time
+            FROM rss_items
+        """)
+        rows = []
+        for title, feed_id, url, first_time, last_time in cursor.fetchall():
+            identity = self._rss_identity_for_ledger(title, feed_id, url)
+            rows.append((identity, first_time or last_time or "", date))
+        return rows
+
+    def _ensure_first_seen_ledger_strict(self, through_date: str) -> None:
+        """首次升级严格回填全部既有日库；完成后永远只查固定索引。"""
+        conn = self._get_first_seen_ledger_connection(strict=True)
+        self._init_first_seen_ledger(conn)
+        row = conn.execute(
+            "SELECT value FROM ledger_metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        version = row[0] if row else None
+        row = conn.execute(
+            "SELECT value FROM ledger_metadata WHERE key = 'backfill_complete'"
+        ).fetchone()
+        complete = row is not None and row[0] == "1"
+        if version == "1" and complete:
+            if getattr(self, "_first_seen_needs_upload", False):
+                self._persist_first_seen_ledger_strict()
+            return
+
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM rss_identity_first_seen")
+            for date in self._list_rss_history_dates_strict(through_date):
+                self._upsert_first_seen_rows(
+                    conn, self._read_rss_day_for_first_seen_backfill(date)
+                )
+            conn.executemany(
+                """INSERT INTO ledger_metadata(key, value) VALUES (?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                [("schema_version", "1"), ("backfill_complete", "1")],
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        self._first_seen_needs_upload = True
+        self._persist_first_seen_ledger_strict()
+
+    def _sync_first_seen_ledger_strict(self, data: RSSData) -> None:
+        """原始 RSS 成功写入后同步不可变 first-seen 账本。"""
+        rows = []
+        for feed_id, items in data.items.items():
+            for item in items:
+                identity = self._rss_identity_for_ledger(
+                    item.title, feed_id, item.url
+                )
+                discovered = (
+                    item.first_time or item.crawl_time or data.crawl_time
+                )
+                rows.append((identity, discovered, data.date))
+        if not any(identity for identity, _, _ in rows):
+            return
+        self._ensure_first_seen_ledger_strict(data.date)
+        conn = self._get_first_seen_ledger_connection(strict=True)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._upsert_first_seen_rows(conn, rows)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        self._first_seen_needs_upload = True
+
+    def _query_first_seen_ledger_strict(
+        self, candidate_identities: set[tuple], through_date: str
+    ) -> Dict[tuple, tuple[str, str]]:
+        if not candidate_identities:
+            return {}
+        self._ensure_first_seen_ledger_strict(through_date)
+        conn = self._get_first_seen_ledger_connection(strict=True)
+        keys = [self._rss_identity_key(item) for item in candidate_identities]
+        result: Dict[tuple, tuple[str, str]] = {}
+        for offset in range(0, len(keys), 500):
+            chunk = keys[offset:offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            cursor = conn.execute(
+                f"""SELECT identity_key, first_seen, storage_date
+                    FROM rss_identity_first_seen
+                    WHERE identity_key IN ({placeholders})""",
+                chunk,
+            )
+            for identity_key, first_seen, storage_date in cursor.fetchall():
+                if storage_date <= through_date:
+                    result[self._rss_identity_from_key(identity_key)] = (
+                        first_seen,
+                        storage_date,
+                    )
+        return result
 
     # ========================================
     # Schema 管理
@@ -1009,7 +1188,10 @@ class SQLiteStorageMixin:
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
                                 """, (item.title, feed_id, item.url, item_guid,
                                       item.published_at, item.summary, item.author,
-                                      data.crawl_time, data.crawl_time,
+                                      item.first_time
+                                      or item.crawl_time
+                                      or data.crawl_time,
+                                      data.crawl_time,
                                       item.source_count, item.pre_hot_score,
                                       item.search_topic, item.search_providers,
                                       now_str, now_str))
@@ -1386,6 +1568,126 @@ class SQLiteStorageMixin:
     # ========================================
     # AI 智能筛选 - 标签管理
     # ========================================
+
+    def _tag_snapshot_from_connection(
+        self, conn: sqlite3.Connection, interests_file: str
+    ) -> Dict[str, Any]:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, tag, description, version, prompt_hash, priority
+            FROM ai_filter_tags
+            WHERE status = 'active' AND interests_file = ?
+            ORDER BY priority ASC, id ASC
+        """, (interests_file,))
+        tags = [
+            {
+                "id": row[0], "tag": row[1], "description": row[2],
+                "version": row[3], "prompt_hash": row[4],
+                "priority": row[5],
+            }
+            for row in cursor.fetchall()
+        ]
+        hashes = {tag["prompt_hash"] for tag in tags}
+        versions = {tag["version"] for tag in tags}
+        if len(hashes) > 1 or len(versions) > 1:
+            raise RuntimeError("严格 AI 标签快照存在混合 hash/version")
+        if len({tag["tag"] for tag in tags}) != len(tags):
+            raise RuntimeError("严格 AI 标签快照存在重复 active 标签")
+        cursor.execute("SELECT MAX(version) FROM ai_filter_tags")
+        row = cursor.fetchone()
+        latest_version = row[0] if row and row[0] is not None else 0
+        return {
+            "tags": tags,
+            "prompt_hash": next(iter(hashes), None),
+            "version": next(iter(versions), 0),
+            "latest_version": latest_version,
+        }
+
+    def _get_ai_filter_tag_snapshot_strict_impl(
+        self,
+        date: Optional[str] = None,
+        interests_file: str = "ai_interests.txt",
+    ) -> Dict[str, Any]:
+        conn = self._get_ai_connection(date, strict=True)
+        return self._tag_snapshot_from_connection(conn, interests_file)
+
+    def _replace_ai_filter_tags_strict_impl(
+        self,
+        date: Optional[str],
+        tags: List[Dict],
+        version: int,
+        prompt_hash: str,
+        interests_file: str = "ai_interests.txt",
+    ) -> Dict[str, Any]:
+        if not tags:
+            raise RuntimeError("严格 AI 标签替换不得保存空标签集")
+        normalized = []
+        for index, tag_data in enumerate(tags, start=1):
+            tag = str(tag_data.get("tag", "")).strip()
+            if not tag:
+                raise RuntimeError("严格 AI 标签名称为空")
+            try:
+                priority = int(tag_data.get("priority", index))
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("严格 AI 标签 priority 无效") from exc
+            normalized.append({
+                "tag": tag,
+                "description": str(tag_data.get("description", "")).strip(),
+                "priority": priority,
+            })
+        if len({item["tag"] for item in normalized}) != len(normalized):
+            raise RuntimeError("严格 AI 标签替换包含重复标签")
+        if len({item["priority"] for item in normalized}) != len(normalized):
+            raise RuntimeError("严格 AI 标签替换包含重复 priority")
+
+        conn = self._get_ai_connection(date, strict=True)
+        now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id FROM ai_filter_tags
+                   WHERE status = 'active' AND interests_file = ?""",
+                (interests_file,),
+            )
+            old_ids = [row[0] for row in cursor.fetchall()]
+            if old_ids:
+                placeholders = ",".join("?" for _ in old_ids)
+                cursor.execute(
+                    f"""UPDATE ai_filter_results
+                        SET status = 'deprecated', deprecated_at = ?
+                        WHERE status = 'active'
+                          AND tag_id IN ({placeholders})""",
+                    [now_str] + old_ids,
+                )
+            cursor.execute(
+                """UPDATE ai_filter_tags
+                   SET status = 'deprecated', deprecated_at = ?
+                   WHERE status = 'active' AND interests_file = ?""",
+                (now_str, interests_file),
+            )
+            cursor.execute(
+                "DELETE FROM ai_filter_analyzed_news WHERE interests_file = ?",
+                (interests_file,),
+            )
+            for item in normalized:
+                cursor.execute("""
+                    INSERT INTO ai_filter_tags
+                        (tag, description, priority, version, prompt_hash,
+                         interests_file, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    item["tag"], item["description"], item["priority"],
+                    version, prompt_hash, interests_file, now_str,
+                ))
+            snapshot = self._tag_snapshot_from_connection(
+                conn, interests_file
+            )
+            conn.commit()
+            return snapshot
+        except Exception:
+            conn.rollback()
+            raise
 
     def _get_active_tags_impl(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict[str, Any]]:
         """获取指定兴趣文件的 active 标签列表"""

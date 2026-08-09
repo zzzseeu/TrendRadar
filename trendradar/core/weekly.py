@@ -14,7 +14,7 @@ from trendradar.core.rss_snapshot import (
     stable_title_guid,
 )
 from trendradar.storage.base import RSSData, RSSItem
-from trendradar.utils.time import parse_iso_datetime
+from trendradar.utils.time import parse_iso_datetime, parse_storage_datetime
 
 
 @dataclass(frozen=True)
@@ -120,6 +120,19 @@ class WeeklyRSSAggregator:
                         continue
 
                     candidate = replace(item)
+                    # 周快照会把上一周条目写入本周一日库。把源日库中的
+                    # 分钟格式首次抓取时间先固定为完整时间，避免账本误把
+                    # 它解释为周快照日期；老数据缺少条目时间时使用该日
+                    # crawl record 作为首次观察时间。
+                    first_seen = parse_storage_datetime(
+                        candidate.first_time
+                        or candidate.crawl_time
+                        or daily_data.crawl_time,
+                        date,
+                        self.timezone,
+                    )
+                    if first_seen is not None:
+                        candidate.first_time = first_seen.isoformat()
                     canonical_url = canonicalize_url(candidate.url)
                     if canonical_url:
                         candidate.url = canonical_url

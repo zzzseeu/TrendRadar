@@ -1,3 +1,4 @@
+import json
 import unittest
 import tempfile
 import sqlite3
@@ -8,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytz
 
 from trendradar.__main__ import NewsAnalyzer
-from trendradar.ai.analyzer import AIAnalysisResult
+from trendradar.ai.analyzer import AIAnalyzer, AIAnalysisResult
 from trendradar.ai.filter import AIFilterResult
 from trendradar.core.daily_delivery import DailyDeliveryAggregator
 from trendradar.core.scheduler import ResolvedSchedule, Scheduler
@@ -649,6 +650,51 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         self.assertFalse(analyzer.run())
 
         analyzer.ctx.generate_html.assert_not_called()
+        dispatcher.dispatch_all.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+
+    @patch("trendradar.__main__.AIAnalyzer")
+    def test_empty_grounding_result_from_real_analyzer_does_not_advance(
+        self, analyzer_class
+    ):
+        analyzer, scheduler, dispatcher = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+        )
+        analyzer.ctx.config["AI"] = {
+            "MODEL": "test", "TIMEOUT": 1, "MAX_TOKENS": 100
+        }
+        analyzer.ctx.config["AI_ANALYSIS"] = {
+            "ENABLED": True,
+            "MODE": "follow_report",
+            "GROUNDING_REVIEW_ENABLED": True,
+        }
+        real = AIAnalyzer.__new__(AIAnalyzer)
+        real.ai_config = analyzer.ctx.config["AI"]
+        real.analysis_config = analyzer.ctx.config["AI_ANALYSIS"]
+        real.get_time_func = lambda: NOW
+        real.debug = False
+        real.client = MagicMock(api_key="secret")
+        real.client.chat.side_effect = [
+            json.dumps({"rss_insights": "首轮存在摘要"}),
+            "{}",
+        ]
+        real.max_news = 50
+        real.include_rss = True
+        real.include_rank_timeline = False
+        real.include_standalone = False
+        real.grounding_review_enabled = True
+        real.language = "Chinese"
+        real.system_prompt = "system"
+        real.user_prompt_template = (
+            "{report_mode}{report_type}{current_time}{news_count}{rss_count}"
+            "{platforms}{keywords}{news_content}{rss_content}{language}"
+            "{standalone_content}"
+        )
+        analyzer_class.return_value = real
+
+        self.assertFalse(analyzer.run())
+
         dispatcher.dispatch_all.assert_not_called()
         scheduler.record_execution.assert_not_called()
 

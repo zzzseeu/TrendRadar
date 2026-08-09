@@ -341,6 +341,27 @@ class StorageManager:
         """获取指定兴趣文件的 active 标签"""
         return self.get_backend().get_active_ai_filter_tags(date, interests_file)
 
+    def get_ai_filter_tag_snapshot_strict(
+        self, date=None, interests_file="ai_interests.txt"
+    ):
+        """严格读取 active 标签的同一事务快照。"""
+        return self.get_backend().get_ai_filter_tag_snapshot_strict(
+            date, interests_file
+        )
+
+    def replace_ai_filter_tags_strict(
+        self,
+        tags,
+        version,
+        prompt_hash,
+        date=None,
+        interests_file="ai_interests.txt",
+    ):
+        """事务性全量替换 active 标签。"""
+        return self.get_backend().replace_ai_filter_tags_strict(
+            tags, version, prompt_hash, date, interests_file
+        )
+
     def get_latest_prompt_hash(self, date=None, interests_file="ai_interests.txt"):
         """获取指定兴趣文件的最新 prompt_hash"""
         return self.get_backend().get_latest_prompt_hash(date, interests_file)

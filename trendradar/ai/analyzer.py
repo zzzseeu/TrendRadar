@@ -36,6 +36,19 @@ def _normalize_narrative_text(value: Any) -> str:
     return str(value)
 
 
+def has_required_narrative(result: "AIAnalysisResult") -> bool:
+    """最终可交付分析对象至少包含一个非空叙事字段。"""
+    values = (
+        result.core_trends,
+        result.sentiment_controversy,
+        result.signals,
+        result.rss_insights,
+        result.outlook_strategy,
+        *result.standalone_summaries.values(),
+    )
+    return any(_normalize_narrative_text(value).strip() for value in values)
+
+
 @dataclass
 class AIAnalysisResult:
     """AI 分析结果"""
@@ -248,17 +261,7 @@ class AIAnalyzer:
                 result.success = False
                 result.error = f"严格分析拒绝降级结果: {result.error}"
 
-            if strict and result.success and not any((
-                result.core_trends.strip(),
-                result.sentiment_controversy.strip(),
-                result.signals.strip(),
-                result.rss_insights.strip(),
-                result.outlook_strategy.strip(),
-                *(
-                    str(summary).strip()
-                    for summary in result.standalone_summaries.values()
-                ),
-            )):
+            if strict and result.success and not has_required_narrative(result):
                 result.success = False
                 result.error = "严格分析缺少必要摘要内容"
 
@@ -288,6 +291,12 @@ class AIAnalyzer:
             # 如果配置未启用 standalone 分析，强制清空
             if not self.include_standalone:
                 result.standalone_summaries = {}
+
+            # grounding 可能返回合法但全空的 JSON，配置裁剪也可能移除唯一叙事字段；
+            # strict 契约必须检查最终实际可交付对象，而不是首轮草稿。
+            if strict and result.success and not has_required_narrative(result):
+                result.success = False
+                result.error = "严格分析缺少必要摘要内容"
 
             # 填充统计数据
             result.total_news = total_news

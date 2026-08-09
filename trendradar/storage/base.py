@@ -507,6 +507,25 @@ class StorageBackend(ABC):
     def get_active_ai_filter_tags(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict]:
         return []
 
+    def get_ai_filter_tag_snapshot_strict(
+        self,
+        date: Optional[str] = None,
+        interests_file: str = "ai_interests.txt",
+    ) -> Dict:
+        """严格读取同一事务视图中的 active 标签/hash/version。"""
+        raise NotImplementedError("存储后端不支持严格 AI 标签快照")
+
+    def replace_ai_filter_tags_strict(
+        self,
+        tags: List[Dict],
+        version: int,
+        prompt_hash: str,
+        date: Optional[str] = None,
+        interests_file: str = "ai_interests.txt",
+    ) -> Dict:
+        """事务性全量替换标签并返回提交后的严格快照。"""
+        raise NotImplementedError("存储后端不支持严格 AI 标签替换")
+
     def get_latest_prompt_hash(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> Optional[str]:
         return None
 
@@ -578,8 +597,8 @@ class StorageBackend(ABC):
     def get_all_rss_ids_strict(
         self, date: Optional[str] = None
     ) -> List[Dict]:
-        """严格读取 RSS ID；默认转发以兼容第三方存储后端。"""
-        return self.get_all_rss_ids(date)
+        """严格读取 RSS ID；未显式实现的第三方后端必须失败关闭。"""
+        raise NotImplementedError("存储后端不支持严格 RSS ID 读取")
 
     def get_earliest_rss_discoveries_strict(
         self, candidate_identities: Set[tuple], through_date: str
@@ -605,17 +624,14 @@ class StorageBackend(ABC):
         return statuses
 
     def get_rss_data_strict(self, date: Optional[str] = None) -> Optional[RSSData]:
-        """严格读取 RSS 日库；默认转发以兼容第三方存储后端。"""
-        get_rss_data = getattr(self, "get_rss_data", None)
-        if not callable(get_rss_data):
-            return None
-        return get_rss_data(date)
+        """严格读取 RSS 日库；未显式实现的第三方后端必须失败关闭。"""
+        raise NotImplementedError("存储后端不支持严格 RSS 数据读取")
 
     def get_rss_feed_statuses_strict(
         self, date: Optional[str] = None
     ) -> Dict[str, str]:
-        """严格读取 RSS 来源状态；默认保持现有后端兼容。"""
-        return self.get_rss_feed_statuses(date)
+        """严格读取 RSS 来源状态；未显式实现的第三方后端失败关闭。"""
+        raise NotImplementedError("存储后端不支持严格 RSS 状态读取")
 
 
 def convert_crawl_results_to_news_data(

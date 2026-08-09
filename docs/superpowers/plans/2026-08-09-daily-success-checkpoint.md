@@ -4,7 +4,7 @@
 
 **目标：** 每天北京时间 10:00 推送上次完整成功交付之后首次发现的农业新闻，失败时保留积压，成功或合法空周期才推进检查点。
 
-**架构：** 在现有 `period_executions` 上增加跨日期读取最近成功时间的能力，并新增按首次抓取时间聚合 RSS/新闻搜索结果的 `DailyDeliveryAggregator`。`daily_delivery` 模式只把该快照交给 AI、报告和通知；全部配置端点成功后写入检查点，任何严格阶段失败都返回非零。
+**架构：** 在现有 `period_executions` 上增加跨日期读取最近成功时间的能力，并新增按首次抓取时间聚合 RSS/新闻搜索结果的 `DailyDeliveryAggregator`。系统级首次发现由固定、版本化且不可变的 first-seen identity 账本提供：旧数据仅一次性严格回填，之后按本轮候选查索引。`daily_delivery` 模式只把该快照交给 AI、报告和通知；strict AI 使用事务性标签快照、完整分类协议和最终叙事校验；全部配置端点成功后写入检查点，任何严格阶段失败都返回非零。远程 strict 读写绑定对象版本并拒绝陈旧缓存或并发覆盖。
 
 **技术栈：** Python 3.10+、SQLite、pytz、TrendRadar 存储抽象、现有 AI 筛选与通知调度器、Docker Compose、unittest
 
@@ -15,13 +15,16 @@
 - 创建 `trendradar/core/rss_snapshot.py`：周报和每日交付共用的 RSS 身份、标题 GUID、丰富度和来源合并工具。
 - 修改 `trendradar/core/weekly.py`：改用公共快照工具，行为保持不变。
 - 创建 `trendradar/core/daily_delivery.py`：成功检查点窗口、首次发现时间解析、跨日聚合、去重、快照落库和 ID 校验。
-- 修改 `trendradar/storage/base.py`：声明最近周期执行时间读取接口。
-- 修改 `trendradar/storage/sqlite_mixin.py`：读取单个日期库中的准确 `executed_at`。
-- 修改 `trendradar/storage/local.py`：枚举本地 `news/YYYY-MM-DD.db` 并倒序查找最近执行记录。
-- 修改 `trendradar/storage/remote.py`：枚举远程 `news/` 对象并倒序查找最近执行记录。
-- 修改 `trendradar/storage/manager.py`：转发最近执行时间查询。
+- 修改 `trendradar/storage/base.py`：声明最近周期执行、strict RSS、first-seen 和 strict 标签快照接口；未实现的第三方 strict 能力明确抛错。
+- 创建 `trendradar/storage/first_seen_schema.sql`：固定 `rss/first-seen-v1.db` 的版本元数据、canonical identity 主键和时间索引。
+- 修改 `trendradar/storage/sqlite_mixin.py`：读取准确 `executed_at`，实现一次性历史回填、不可变 first-seen upsert/候选查询和事务性 strict 标签替换。
+- 修改 `trendradar/storage/local.py`：本地固定账本、同步保存和 strict 标签快照。
+- 修改 `trendradar/storage/remote.py`：远端版本 provenance、连接失效/原子刷新、上传前并发检测、上传后版本验证和单一账本对象。
+- 修改 `trendradar/storage/manager.py`：一致转发检查点、first-seen 与 strict 标签接口。
 - 修改 `trendradar/core/scheduler.py`：向业务编排暴露最近执行时间。
-- 修改 `trendradar/ai/filter_pipeline.py`：允许快照 ID 成为权威范围，并让范围内分类批次失败时关闭交付。
+- 修改 `trendradar/ai/filter.py`：strict 分类解析完整 schema/ID/tag/唯一性/摘要协议，一次 repair 后仍非法则整批失败。
+- 修改 `trendradar/ai/filter_pipeline.py`：允许快照 ID 成为权威范围；strict 标签全量原子替换并读回；范围内分类或存储批次失败时关闭交付。
+- 修改 `trendradar/ai/analyzer.py`：grounding 和配置裁剪后校验最终可交付叙事。
 - 修改 `trendradar/context.py`：把权威快照范围同时传给 AI 分类和报告转换。
 - 修改 `trendradar/__main__.py`：接入每日快照、严格失败、重试、空周期成功和全部端点成功检查点。
 - 修改 `trendradar/report/html.py`：显示“每日新增”。
@@ -31,6 +34,7 @@
 - 创建 `tests/test_daily_delivery.py`：窗口、首次发现时间、聚合、幂等和检查点存储测试。
 - 创建 `tests/test_daily_delivery_schedule.py`：编排、重试、空周期、严格失败和配置测试。
 - 创建 `tests/test_daily_delivery_report.py`：HTML 与通知头部测试。
+- 创建 `tests/test_daily_delivery_review3.py`：first-seen 一次性回填/不可变/重试、远程 provenance、strict 分类协议、最终 grounding、标签事务和第三方 strict capability 测试。
 - 修改 `tests/test_weekly_digest.py`：公共快照工具重构后的周报回归断言。
 - 修改 `tests/test_weekly_schedule.py`：确认 weekly 能力保留且严格规则未退化。
 - 修改 `tests/test_news_search_pipeline.py`：确认每日交付下固定 RSS 或搜索来源失败会中止。
@@ -407,6 +411,12 @@ def daily_delivery_window(
 - 窗口内所有日库缺失时抛错；成功空抓取返回合法空快照；
 - 任一读到的日库含 `failed_ids` 时抛出明确错误，避免推进不完整检查点。
 - 检查点积压超过 2 天时仍读取完整日期范围，不设置静默丢弃上限。
+
+聚合器只读取窗口日库以取得本轮候选内容；候选的系统级最早发现时间必须查询
+`rss/first-seen-v1.db`，不得每轮重新扫描历史日库。账本缺失/旧版本时一次性严格回填
+截止窗口结束日期的所有现存 RSS 日库（含起点日期中早于起点的记录），完成元数据提交后
+后续查询不得再打开历史日库。原始 RSS 保存与账本同步同成败；失败重试从日库补齐，不写
+delivered 状态。
 
 ```python
 def save_rss_day(backend, date_str, crawl_time, items):
@@ -919,6 +929,11 @@ git diff --check
 ```
 
 预期：全部测试 PASS；两个 `bash -n` 和 `git diff --check` 无输出；LiteLLM 在禁网环境的价格表回退警告可忽略。
+
+最终审查还必须运行 `tests.test_daily_delivery_review3`，并确认以下性能/一致性契约：多日库
+backfill 后第二次候选查询不调用日库连接；远程 404→出现和 v1→v2 会刷新 checkpoint、
+RSS 和账本连接；strict tag 批次上传后 provenance 必须变化；未知/畸形/重复分类响应、
+最终空 grounding、标签中途失败或第三方缺 strict capability 都不形成成功交付。
 
 - [ ] **步骤 4：做只读代码审查并修复 Critical/Important**
 

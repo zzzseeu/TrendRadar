@@ -1140,6 +1140,19 @@ class DailyDeliveryStrictAIStorageTests(unittest.TestCase):
         storage.get_active_ai_filter_tags.return_value = [
             {"id": 1, "tag": "育种", "priority": 1}
         ]
+        storage.get_ai_filter_tag_snapshot_strict.return_value = {
+            "tags": [{
+                "id": 1,
+                "tag": "育种",
+                "description": "",
+                "priority": 1,
+                "version": 1,
+                "prompt_hash": "stable",
+            }],
+            "prompt_hash": "stable",
+            "version": 1,
+            "latest_version": 1,
+        }
         storage.get_all_rss_ids_strict.return_value = [self._rss_row()]
         storage.get_analyzed_news_ids.return_value = set()
         storage.get_active_ai_filter_results.return_value = [{
@@ -1582,6 +1595,11 @@ class DailyDeliveryRemoteStrictReadTests(unittest.TestCase):
         backend.timezone = "Asia/Shanghai"
         backend._db_connections = {}
         backend._downloaded_files = []
+        backend._remote_provenance = {}
+        backend._strict_local_authoritative = {
+            "rss/2026-08-09.db",
+            "rss/first-seen-v1.db",
+        }
         backend.s3_client = MagicMock()
         backend.save_rss_data = MagicMock(return_value=True)
         return backend

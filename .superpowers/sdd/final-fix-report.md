@@ -423,3 +423,72 @@ git diff --check
 - 未发现第二次清单中不成立的建议，也未出现需要扩大范围的架构冲突。
 
 第二次最终测试计数：聚焦 162、兼容 93、全量 359；三套最终命令合计执行 614 个测试（聚焦与兼容也包含于全量发现），全部为明确 exit 0。
+
+## 第三次最终复审修复（versioned ledger / strict AI protocol）
+
+### 1. 版本化 RSS identity first-seen 账本与远端一致性
+
+根因：第二次实现虽然按候选 identity 查询历史，但每次仍需枚举/打开历史日库；Remote 的严格读取也没有把本地 SQLite 连接绑定到 ETag/VersionId/LastModified，缓存 404、对象更新和并发覆盖无法形成可靠契约。
+
+RED 使用真实 Local SQLite、版本化 S3 fake 和 RemoteStorageBackend 路径，共 7 项：首次回填性能、保存失败重试、不可变最早时间、checkpoint 版本刷新、404 后出现、ledger 版本刷新和并发覆盖。首次结果 `Ran 7`，5 FAIL、1 ERROR、1 通过，exit 1。
+
+修复：
+
+- 新增固定 `rss/first-seen-v1.db` 与 `first_seen_schema.sql`，以公共 canonical URL / feed+标准化标题 identity 为主键，`first_seen_at` 建索引，只允许更早时间覆盖。
+- 首次升级严格枚举截至窗口结束的所有现存 RSS 日库并写入 `schema_version=1`、`backfill_complete=1`；完成后只对本轮候选 identity 查询账本，不再打开历史日库。
+- 每次 RSS 保存成功后同步账本；日库或账本本地提交/远程上传任一失败均使 save 失败，重试可补齐，不写 delivered 标记。
+- Remote strict 读取每次 head 对比 provenance；版本变化时关闭连接、临时下载、下载后二次 head 并原子替换。真实 404 可空，AccessDenied、网络、坏库和下载期版本变化上抛。
+- Remote 上传前检查基线版本，上传后要求 provenance 变化；并发变化拒绝覆盖。
+
+GREEN：原 7 项 `Ran 7 in 36.916s, OK`。提交前 diff 自审又发现 raw RSS 日库已有远端版本时，本地修改可能被 ledger backfill 的 strict refresh 覆盖，且 raw 日库上传未启用版本冲突检查；新增 2 项真实 Remote RED，结果 `Ran 2`、2 failures、exit 1。保存前绑定 day DB provenance、显式标记本轮本地修改为 authoritative、上传前/后校验版本后，`Ran 2 in 7.214s, OK`；Remote/review3 相关组最终 `Ran 24 in 79.782s, OK`。
+
+### 2. strict 分类响应协议
+
+根因：strict 标志此前只控制批次失败传播，解析层仍沿用普通模式的静默跳过/默认值逻辑；未知 news/tag ID、畸形项、缺字段和重复 ID 可能被转成部分合法结果。
+
+RED：2 个测试以 7 个失败子用例覆盖未知 news ID、未知 tag ID、缺字段、非法元素、重复 ID、空摘要及修复后仍非法；结果 7 个子用例失败。修复后 strict 解析要求每个非空项具备完整 flat schema、ID 属本批、tag 属 active、ID 唯一、分数范围有效、摘要非空；任何违规只允许一次低温 repair，第二次失败整批返回 None；合法无匹配只接受精确 `[]`。与普通 fail-soft 兼容用例合跑 `Ran 8, OK`。
+
+### 3. grounding 后最终叙事校验
+
+根因：strict 非空检查只发生在首轮 JSON 解析后；grounding 可返回合法 `{}`，include_rss/include_standalone 裁剪也可能移除唯一叙事字段，最终仍被视为 success。
+
+RED：真实 AIAnalyzer + NewsAnalyzer 链路构造“首轮非空、grounding 合法空对象”，确认会继续推进；1 项失败。新增 `has_required_narrative()` 并在 grounding 替换和配置裁剪后再次校验最终可交付对象，strict 全空 `success=False`。与 strict AI 相关组合跑 `Ran 9, OK`，调度链路确认不 dispatch、不写 checkpoint。
+
+### 4. strict 标签生命周期
+
+根因：strict pipeline 仍通过多个 fail-soft 标签 API 分步读取 hash、更新 active tags；中途写失败、读失败、保存 0、旧 active 残留及 Remote 上传未验证都可能形成混合版本标签快照。
+
+RED：5 项真实 SQLite/存储 fake 覆盖中途失败、读失败、保存 0、混合旧标签与快照不一致；初次 4 ERROR + 1 FAIL。新增 Base/Local/Remote/Manager `get_ai_filter_tag_snapshot_strict`、`replace_ai_filter_tags_strict`：SQLite 使用 `BEGIN IMMEDIATE` 全量 deprecate/replace/清理 analyzed cache，并在同事务读回；pipeline 精确验证 active 集合、顺序、描述、priority、prompt_hash 与 version。Remote `end_batch_strict` 上传后要求对象版本变化。5 项 GREEN；Remote 版本前进/不前进 2 项 `OK`。
+
+### 5. 第三方 RSS strict capability 默认失败
+
+根因：StorageBackend 的 strict RSS 默认方法转发普通 fail-soft API，使不支持严格错误区分的第三方后端在 daily_delivery 中被误认为安全。
+
+RED：假第三方仅实现普通 RSS 读取时，daily aggregator 未明确失败。Base 的 `get_all_rss_ids_strict`、`get_rss_data_strict`、`get_rss_feed_statuses_strict` 改为默认抛 `NotImplementedError`；daily aggregator 只调用 strict API。GREEN 证明 daily fail-closed，普通 API 仍可用。
+
+### 6. 文档、weekly 与兼容修复
+
+- design spec 与 implementation plan 已改为固定版本化 first-seen ledger、一次性严格 backfill、后续候选索引查询、Remote provenance/版本冲突、strict tag snapshot 和 strict 分类/grounding 协议；不再声称每日扫描历史日库。
+- 93 项兼容首跑发现 1 个既有 weekly title-fallback 用例 ERROR：周快照字面 crawl_time=`weekly` 被新账本当作首次时间。保留该 RED 后，将源日库分钟时间正规化为带源日期 ISO first_time，并让 SQLite 新 RSS 行优先保存 item.first_time；定向 `Ran 1 in 19.052s, OK`，93 项重跑 `Ran 93 in 183.806s, OK`。
+- 普通与 weekly 继续走原 fail-soft AI/通知语义；没有改变用户可见调度、窗口、freshness 或密钥持久化要求。
+
+## 第三次复审最终验证
+
+所有 Python 命令均使用断网 Docker 与 `/app/.venv/bin/python`。
+
+- 第三次新增测试：`tests.test_daily_delivery_review3` 最终 20 项；与既有 Remote strict 4 项合跑 `Ran 24 in 79.782s, OK`。
+- 相关模块修复后：`Ran 143 in 312.353s, OK`。
+- 聚焦：`tests.test_daily_delivery tests.test_daily_delivery_schedule tests.test_daily_delivery_report tests.test_news_search_pipeline`，`Ran 163 in 268.128s, OK`。
+- 固定兼容：`Ran 93 in 183.806s, OK`。
+- 最终全量：`python -m unittest discover -s /workspace/tests`，`Ran 380 in 493.225s, OK`，exit 0。
+- `bash -n docker/entrypoint.sh`、`bash -n config/daily.crontab`、`bash tests/test_portable_deployment.sh`、`git diff --check` 均 exit 0；portable 输出 `PASS: 本地部署路径可移植性检查通过`。
+
+## 第三次复审 Diff 自审
+
+- first-seen 写入与 raw RSS 保存同成败，不与 delivered/checkpoint 耦合；失败重试可通过 earliest-only upsert 补齐。
+- ledger 完成元数据阻止后续查询重新打开日库；查询 SQL 仅使用本轮 candidate identity 的分块 IN 集合。
+- Remote strict 对 404、权限/网络错误、对象出现、版本更新、下载期竞争、上传前竞争和上传后版本未前进均有显式区分。
+- strict 标签替换与 strict 分类结果写入均为事务式提交、结构化读回验证；普通模式保留增量标签与 fail-soft 解析。
+- strict 最终摘要在 grounding 与配置裁剪后检查，合法 JSON 空对象不能推进 once/checkpoint。
+- 第三方 strict capability 不再隐式降级；Local、Remote、Manager 均显式实现。
+- 未合并 main、未部署、未真实发送或推送，未发现遗留架构冲突。

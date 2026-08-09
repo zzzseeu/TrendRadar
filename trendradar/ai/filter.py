@@ -460,7 +460,9 @@ class AIFilter:
         try:
             response = self.client.chat(messages, temperature=0)
             try:
-                results = self._parse_classify_response(response, titles, tags)
+                results = self._parse_classify_response(
+                    response, titles, tags, strict=strict
+                )
             except _InvalidClassificationResponse as error:
                 print(f"[AI筛选] 分类 JSON 解析失败，低温重试一次: {error}")
                 repair_messages = list(messages)
@@ -469,7 +471,9 @@ class AIFilter:
                 repair_messages.append({"role": "user", "content": CLASSIFY_JSON_REPAIR_PROMPT})
                 try:
                     repaired = self.client.chat(repair_messages, temperature=0)
-                    results = self._parse_classify_response(repaired, titles, tags)
+                    results = self._parse_classify_response(
+                        repaired, titles, tags, strict=strict
+                    )
                 except _InvalidClassificationResponse as repair_error:
                     print(f"[AI筛选] 分类响应修复失败，将在下次运行重试: {repair_error}")
                     return None
@@ -580,6 +584,7 @@ class AIFilter:
         response: str,
         titles: List[Dict],
         tags: List[Dict],
+        strict: bool = False,
     ) -> List[Dict]:
         """解析分类的 AI 响应
 
@@ -628,6 +633,57 @@ class AIFilter:
         }
         tag_id_set = {t["id"] for t in tags}
         tag_name_map = {t["id"]: t["tag"] for t in tags}
+
+        if strict:
+            if not data:
+                if (response or "").strip() != "[]":
+                    raise _InvalidClassificationResponse(
+                        "严格模式的合法无匹配响应必须精确为 []"
+                    )
+                return []
+            required_fields = {
+                "id", "tag_id", "score", "importance_score", "summary"
+            }
+            seen_news_ids = set()
+            for index, item in enumerate(data):
+                if not isinstance(item, dict):
+                    raise _InvalidClassificationResponse(
+                        f"严格模式分类第 {index + 1} 项不是对象"
+                    )
+                missing = required_fields - set(item)
+                if missing:
+                    raise _InvalidClassificationResponse(
+                        f"严格模式分类缺少字段: {sorted(missing)}"
+                    )
+                news_id = item["id"]
+                if news_id not in title_ids:
+                    raise _InvalidClassificationResponse(
+                        f"严格模式分类包含未知 news id: {news_id!r}"
+                    )
+                if news_id in seen_news_ids:
+                    raise _InvalidClassificationResponse(
+                        f"严格模式分类包含重复 news id: {news_id!r}"
+                    )
+                seen_news_ids.add(news_id)
+                if item["tag_id"] not in tag_id_set:
+                    raise _InvalidClassificationResponse(
+                        f"严格模式分类包含未知 tag id: {item['tag_id']!r}"
+                    )
+                try:
+                    score = float(item["score"])
+                    importance = float(item["importance_score"])
+                except (TypeError, ValueError) as exc:
+                    raise _InvalidClassificationResponse(
+                        "严格模式分类分数不是数值"
+                    ) from exc
+                if not 0 <= score <= 1 or not 0 <= importance <= 1:
+                    raise _InvalidClassificationResponse(
+                        "严格模式分类分数不在 [0, 1]"
+                    )
+                if not " ".join(str(item["summary"]).split()):
+                    raise _InvalidClassificationResponse(
+                        f"严格模式分类摘要为空: {news_id!r}"
+                    )
 
         # 每条新闻只保留一个最高分的 tag
         best_per_news: Dict[int, Dict] = {}  # news_id -> {"tag_id": ..., "score": ...}

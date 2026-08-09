@@ -120,6 +120,35 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         return self._db_connections[db_path]
 
+    def _get_first_seen_ledger_connection(
+        self, strict: bool = False
+    ) -> sqlite3.Connection:
+        del strict
+        ledger_path = self.data_dir / "rss" / "first-seen-v1.db"
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        db_path = str(ledger_path)
+        if db_path not in self._db_connections:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            self._init_first_seen_ledger(conn)
+            self._db_connections[db_path] = conn
+        return self._db_connections[db_path]
+
+    def _list_rss_history_dates_strict(self, through_date: str) -> List[str]:
+        rss_dir = self.data_dir / "rss"
+        dates = []
+        if rss_dir.exists():
+            for db_path in rss_dir.glob("*.db"):
+                match = re.fullmatch(
+                    r"(\d{4}-\d{2}-\d{2})\.db", db_path.name
+                )
+                if match and match.group(1) <= through_date:
+                    dates.append(match.group(1))
+        return sorted(dates)
+
+    def _persist_first_seen_ledger_strict(self) -> None:
+        self._first_seen_needs_upload = False
+
     # ========================================
     # StorageBackend 接口实现（委托给 mixin）
     # ========================================
@@ -233,6 +262,12 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
         success, new_count, updated_count = self._save_rss_data_impl(data, "[本地存储]")
 
         if success:
+            try:
+                self._sync_first_seen_ledger_strict(data)
+                self._persist_first_seen_ledger_strict()
+            except Exception as exc:
+                print(f"[本地存储] RSS first-seen 账本同步失败: {exc}")
+                return False
             # 输出统计日志
             log_parts = [f"[本地存储] RSS 处理完成：新增 {new_count} 条"]
             if updated_count > 0:
@@ -284,6 +319,25 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def get_active_ai_filter_tags(self, date=None, interests_file="ai_interests.txt"):
         return self._get_active_tags_impl(date, interests_file)
+
+    def get_ai_filter_tag_snapshot_strict(
+        self, date=None, interests_file="ai_interests.txt"
+    ):
+        return self._get_ai_filter_tag_snapshot_strict_impl(
+            date, interests_file
+        )
+
+    def replace_ai_filter_tags_strict(
+        self,
+        tags,
+        version,
+        prompt_hash,
+        date=None,
+        interests_file="ai_interests.txt",
+    ):
+        return self._replace_ai_filter_tags_strict_impl(
+            date, tags, version, prompt_hash, interests_file
+        )
 
     def get_latest_prompt_hash(self, date=None, interests_file="ai_interests.txt"):
         return self._get_latest_prompt_hash_impl(date, interests_file)
@@ -367,17 +421,8 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
     def get_earliest_rss_discoveries_strict(
         self, candidate_identities, through_date
     ):
-        rss_dir = self.data_dir / "rss"
-        dates = []
-        if rss_dir.exists():
-            for db_path in rss_dir.glob("*.db"):
-                match = re.fullmatch(
-                    r"(\d{4}-\d{2}-\d{2})\.db", db_path.name
-                )
-                if match and match.group(1) <= through_date:
-                    dates.append(match.group(1))
-        return self._merge_earliest_rss_discoveries(
-            candidate_identities, dates
+        return self._query_first_seen_ledger_strict(
+            set(candidate_identities), through_date
         )
 
     # ========================================

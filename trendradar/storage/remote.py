@@ -122,6 +122,9 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         # 批量模式：延迟上传，避免频繁上传同一文件
         self._batch_mode = False
         self._batch_dirty: set = set()  # 待上传的 (date, db_type) 集合
+        self._remote_provenance: Dict[str, Optional[tuple]] = {}
+        self._strict_local_authoritative: set[str] = set()
+        self._first_seen_needs_upload = False
 
         print(f"[远程存储] 初始化完成，存储桶: {bucket_name}，签名版本: {signature_version}")
 
@@ -250,6 +253,8 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
                 for chunk in response['Body'].iter_chunks(chunk_size=1024*1024):
                     f.write(chunk)
             self._downloaded_files.append(local_path)
+            if hasattr(self, "_strict_local_authoritative"):
+                self._strict_local_authoritative.discard(r2_key)
             print(f"[远程存储] 已下载: {r2_key} -> {local_path}")
             return local_path
         except ClientError as e:
@@ -264,6 +269,114 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         except Exception as e:
             print(f"[远程存储] 下载异常: {e}")
             raise
+
+    @staticmethod
+    def _provenance_from_head(response: Dict) -> tuple:
+        modified = response.get("LastModified")
+        if hasattr(modified, "isoformat"):
+            modified = modified.isoformat()
+        return (
+            response.get("VersionId") or "",
+            response.get("ETag") or "",
+            str(modified or ""),
+        )
+
+    def _head_provenance_strict(self, remote_key: str) -> Optional[tuple]:
+        try:
+            response = self.s3_client.head_object(
+                Bucket=self.bucket_name, Key=remote_key
+            )
+            return self._provenance_from_head(response)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey", "Not Found"):
+                return None
+            raise
+
+    def _close_cached_connection(self, local_path: Path) -> None:
+        db_path = str(local_path)
+        connection = self._db_connections.pop(db_path, None)
+        if connection is not None:
+            connection.close()
+
+    def _download_object_atomic_strict(
+        self, remote_key: str, local_path: Path
+    ) -> None:
+        response = self.s3_client.get_object(
+            Bucket=self.bucket_name, Key=remote_key
+        )
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = local_path.with_name(f".{local_path.name}.refresh")
+        try:
+            with open(temporary_path, "wb") as target:
+                for chunk in response["Body"].iter_chunks(
+                    chunk_size=1024 * 1024
+                ):
+                    target.write(chunk)
+            temporary_path.replace(local_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+        if local_path not in self._downloaded_files:
+            self._downloaded_files.append(local_path)
+
+    def _refresh_remote_sqlite_strict(
+        self, remote_key: str, local_path: Path
+    ) -> bool:
+        """按远端对象版本刷新严格读取缓存。"""
+        if not hasattr(self, "_remote_provenance"):
+            self._remote_provenance = {}
+        if not hasattr(self, "_strict_local_authoritative"):
+            self._strict_local_authoritative = set()
+        provenance = self._head_provenance_strict(remote_key)
+        cached = self._remote_provenance.get(remote_key)
+        has_cached_provenance = remote_key in self._remote_provenance
+        if provenance is None:
+            # 只有明确由当前进程新建/修改的本地数据库可在远端 404 时保留；
+            # 普通读取留下的旧缓存必须失效。
+            if (
+                local_path.exists()
+                and remote_key not in self._strict_local_authoritative
+            ):
+                self._close_cached_connection(local_path)
+                local_path.unlink()
+            self._remote_provenance[remote_key] = None
+            return local_path.exists()
+        if (
+            has_cached_provenance
+            and provenance != cached
+            and remote_key in self._strict_local_authoritative
+        ):
+            raise RuntimeError(
+                f"远程对象版本已变化，拒绝覆盖本地修改: {remote_key}"
+            )
+        if provenance != cached or not local_path.exists():
+            self._close_cached_connection(local_path)
+            self._download_object_atomic_strict(remote_key, local_path)
+            confirmed = self._head_provenance_strict(remote_key)
+            if confirmed != provenance:
+                if local_path.exists():
+                    local_path.unlink()
+                raise RuntimeError(
+                    f"远程对象下载期间版本已变化: {remote_key}"
+                )
+            provenance = confirmed
+        self._strict_local_authoritative.discard(remote_key)
+        self._remote_provenance[remote_key] = provenance
+        return True
+
+    def _assert_remote_version_unchanged(self, remote_key: str) -> None:
+        if not hasattr(self, "_remote_provenance"):
+            self._remote_provenance = {}
+        baseline = getattr(self, "_remote_provenance", {}).get(remote_key)
+        if remote_key not in getattr(self, "_remote_provenance", {}):
+            baseline = self._head_provenance_strict(remote_key)
+            self._remote_provenance[remote_key] = baseline
+        current = self._head_provenance_strict(remote_key)
+        if current != baseline:
+            raise RuntimeError(
+                f"远程对象版本已变化，拒绝覆盖: {remote_key}"
+            )
 
     def begin_batch(self):
         """开启批量模式：延迟上传，避免频繁上传同一文件"""
@@ -284,12 +397,17 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         self._batch_dirty.clear()
         failed = []
         for date, db_type in dirty:
-            if not self._upload_sqlite(date, db_type):
+            if not self._upload_sqlite(date, db_type, strict_version=True):
                 failed.append((date, db_type))
         if failed:
             raise RuntimeError(f"远程数据库上传失败: {failed}")
 
-    def _upload_sqlite(self, date: Optional[str] = None, db_type: str = "news") -> bool:
+    def _upload_sqlite(
+        self,
+        date: Optional[str] = None,
+        db_type: str = "news",
+        strict_version: bool = False,
+    ) -> bool:
         """
         上传本地 SQLite 文件到远程存储
 
@@ -313,6 +431,10 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             return False
 
         try:
+            baseline_provenance = None
+            if strict_version:
+                self._assert_remote_version_unchanged(r2_key)
+                baseline_provenance = self._remote_provenance.get(r2_key)
             # 获取本地文件大小
             local_size = local_path.stat().st_size
             print(f"[远程存储] 准备上传: {local_path} ({local_size} bytes) -> {r2_key}")
@@ -334,7 +456,16 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             print(f"[远程存储] 已上传: {local_path} -> {r2_key}")
 
             # 验证上传成功
-            if self._check_object_exists(r2_key):
+            if self._check_object_exists(r2_key, strict=strict_version):
+                if strict_version:
+                    uploaded_provenance = self._head_provenance_strict(r2_key)
+                    if uploaded_provenance == baseline_provenance:
+                        raise RuntimeError(
+                            f"远程对象上传后版本未变化: {r2_key}"
+                        )
+                    self._remote_provenance[r2_key] = uploaded_provenance
+                    if hasattr(self, "_strict_local_authoritative"):
+                        self._strict_local_authoritative.discard(r2_key)
                 print(f"[远程存储] 上传验证成功: {r2_key}")
                 return True
             else:
@@ -343,6 +474,8 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         except Exception as e:
             print(f"[远程存储] 上传失败: {e}")
+            if strict_version:
+                raise
             return False
 
     def _get_connection(
@@ -363,6 +496,13 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         """
         local_path = self._get_local_db_path(date, db_type)
         db_path = str(local_path)
+        remote_key = self._get_remote_db_key(date, db_type)
+        remote_exists = None
+
+        if strict_exists:
+            remote_exists = self._refresh_remote_sqlite_strict(
+                remote_key, local_path
+            )
 
         if db_path not in self._db_connections:
             # 确保目录存在
@@ -370,9 +510,10 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
             # 如果本地不存在，尝试从远程存储下载
             if not local_path.exists():
-                self._download_sqlite(
-                    date, db_type, strict_exists=strict_exists
-                )
+                if remote_exists is not False:
+                    self._download_sqlite(
+                        date, db_type, strict_exists=strict_exists
+                    )
 
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
@@ -380,6 +521,63 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             self._db_connections[db_path] = conn
 
         return self._db_connections[db_path]
+
+    def _get_first_seen_ledger_connection(
+        self, strict: bool = False
+    ) -> sqlite3.Connection:
+        local_path = self.temp_dir / "rss" / "first-seen-v1.db"
+        remote_key = "rss/first-seen-v1.db"
+        if strict:
+            self._refresh_remote_sqlite_strict(remote_key, local_path)
+        db_path = str(local_path)
+        if db_path not in self._db_connections:
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            self._init_first_seen_ledger(conn)
+            self._db_connections[db_path] = conn
+        return self._db_connections[db_path]
+
+    def _list_rss_history_dates_strict(self, through_date: str) -> List[str]:
+        dates = set()
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=self.bucket_name, Prefix="rss/"
+        ):
+            for obj in page.get("Contents", []):
+                match = re.fullmatch(
+                    r"rss/(\d{4}-\d{2}-\d{2})\.db", obj["Key"]
+                )
+                if match and match.group(1) <= through_date:
+                    dates.add(match.group(1))
+        return sorted(dates)
+
+    def _upload_first_seen_ledger_strict(self) -> None:
+        local_path = self.temp_dir / "rss" / "first-seen-v1.db"
+        remote_key = "rss/first-seen-v1.db"
+        self._assert_remote_version_unchanged(remote_key)
+        baseline = self._remote_provenance.get(remote_key)
+        content = local_path.read_bytes()
+        self.s3_client.put_object(
+            Bucket=self.bucket_name,
+            Key=remote_key,
+            Body=content,
+            ContentLength=len(content),
+            ContentType="application/x-sqlite3",
+        )
+        uploaded = self._head_provenance_strict(remote_key)
+        if uploaded is None:
+            raise RuntimeError("RSS first-seen 账本上传验证失败")
+        if uploaded == baseline:
+            raise RuntimeError("RSS first-seen 账本上传后版本未变化")
+        self._remote_provenance[remote_key] = uploaded
+        if hasattr(self, "_strict_local_authoritative"):
+            self._strict_local_authoritative.discard(remote_key)
+        self._first_seen_needs_upload = False
+
+    def _persist_first_seen_ledger_strict(self) -> None:
+        if getattr(self, "_first_seen_needs_upload", False):
+            self._upload_first_seen_ledger_strict()
 
     def _get_rss_connection(
         self, date: Optional[str] = None, strict: bool = False
@@ -526,9 +724,27 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         流程：下载现有数据库 → 插入/更新数据 → 上传回远程存储
         """
+        remote_key = self._get_remote_db_key(data.date, "rss")
+        try:
+            # 保存前绑定 authoritative 远端版本；后续账本回填不得重新下载
+            # 覆盖本轮尚未上传的本地修改。
+            self._get_rss_connection(data.date, strict=True)
+        except Exception as exc:
+            print(f"[远程存储] RSS 严格版本绑定失败: {exc}")
+            return False
+
         success, new_count, updated_count = self._save_rss_data_impl(data, "[远程存储]")
 
         if not success:
+            return False
+        if not hasattr(self, "_strict_local_authoritative"):
+            self._strict_local_authoritative = set()
+        self._strict_local_authoritative.add(remote_key)
+
+        try:
+            self._sync_first_seen_ledger_strict(data)
+        except Exception as exc:
+            print(f"[远程存储] RSS first-seen 账本同步失败: {exc}")
             return False
 
         # 输出统计日志
@@ -538,12 +754,23 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         print("，".join(log_parts))
 
         # 上传到远程存储
-        if self._upload_sqlite(data.date, db_type="rss"):
-            print(f"[远程存储] RSS 数据已同步到远程存储")
-            return True
-        else:
+        try:
+            uploaded = self._upload_sqlite(
+                data.date, db_type="rss", strict_version=True
+            )
+        except Exception as exc:
+            print(f"[远程存储] RSS 上传版本校验失败: {exc}")
+            return False
+        if not uploaded:
             print(f"[远程存储] RSS 上传远程存储失败")
             return False
+        try:
+            self._persist_first_seen_ledger_strict()
+        except Exception as exc:
+            print(f"[远程存储] RSS first-seen 账本上传失败: {exc}")
+            return False
+        print(f"[远程存储] RSS 数据及 first-seen 账本已同步")
+        return True
 
     def get_rss_data(self, date: Optional[str] = None) -> Optional[RSSData]:
         """获取指定日期的所有 RSS 数据"""
@@ -581,6 +808,30 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def get_active_ai_filter_tags(self, date=None, interests_file="ai_interests.txt"):
         return self._get_active_tags_impl(date, interests_file)
+
+    def get_ai_filter_tag_snapshot_strict(
+        self, date=None, interests_file="ai_interests.txt"
+    ):
+        return self._get_ai_filter_tag_snapshot_strict_impl(
+            date, interests_file
+        )
+
+    def replace_ai_filter_tags_strict(
+        self,
+        tags,
+        version,
+        prompt_hash,
+        date=None,
+        interests_file="ai_interests.txt",
+    ):
+        snapshot = self._replace_ai_filter_tags_strict_impl(
+            date, tags, version, prompt_hash, interests_file
+        )
+        if not self._upload_sqlite(
+            date, strict_version=not self._batch_mode
+        ):
+            raise RuntimeError("严格 AI 标签快照上传失败")
+        return snapshot
 
     def get_latest_prompt_hash(self, date=None, interests_file="ai_interests.txt"):
         return self._get_latest_prompt_hash_impl(date, interests_file)
@@ -696,27 +947,8 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     def get_earliest_rss_discoveries_strict(
         self, candidate_identities, through_date
     ):
-        dates = set()
-        paginator = self.s3_client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(
-            Bucket=self.bucket_name, Prefix="rss/"
-        ):
-            for obj in page.get("Contents", []):
-                match = re.fullmatch(
-                    r"rss/(\d{4}-\d{2}-\d{2})\.db", obj["Key"]
-                )
-                if match and match.group(1) <= through_date:
-                    dates.add(match.group(1))
-        local_rss_dir = self.temp_dir / "rss"
-        if local_rss_dir.exists():
-            for db_path in local_rss_dir.glob("*.db"):
-                match = re.fullmatch(
-                    r"(\d{4}-\d{2}-\d{2})\.db", db_path.name
-                )
-                if match and match.group(1) <= through_date:
-                    dates.add(match.group(1))
-        return self._merge_earliest_rss_discoveries(
-            candidate_identities, dates
+        return self._query_first_seen_ledger_strict(
+            set(candidate_identities), through_date
         )
 
     # ========================================

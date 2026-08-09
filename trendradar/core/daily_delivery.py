@@ -144,25 +144,13 @@ class DailyDeliveryAggregator:
         latest_feed_statuses: dict[str, str] = {}
 
         for storage_date in window.storage_dates:
-            get_rss_data = getattr(
-                self.storage, "get_rss_data_strict", None
-            )
-            if not callable(get_rss_data):
-                get_rss_data = self.storage.get_rss_data
-            daily_data = get_rss_data(storage_date)
+            daily_data = self.storage.get_rss_data_strict(storage_date)
             if daily_data is None:
                 missing_dates.append(storage_date)
                 continue
 
-            get_statuses = getattr(
-                self.storage, "get_rss_feed_statuses_strict", None
-            )
-            if not callable(get_statuses):
-                get_statuses = getattr(
-                    self.storage, "get_rss_feed_statuses", None
-                )
-            daily_statuses = (
-                get_statuses(storage_date) if callable(get_statuses) else None
+            daily_statuses = self.storage.get_rss_feed_statuses_strict(
+                storage_date
             )
             if not isinstance(daily_statuses, dict):
                 daily_statuses = {

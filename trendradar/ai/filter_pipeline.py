@@ -178,21 +178,69 @@ class AIFilterPipeline:
         # 2. 开启批量模式
         self.storage.begin_batch()
 
-        # 3. 检查提示词是否变更
-        stored_hash = self.storage.get_latest_prompt_hash(interests_file=effective_interests_file)
+        # 3. 检查提示词是否变更。严格模式使用同一事务标签快照，
+        # hash 变化时只允许全量原子替换，禁止复用 fail-soft 增量路径。
+        if self._strict:
+            try:
+                tag_snapshot = self.storage.get_ai_filter_tag_snapshot_strict(
+                    interests_file=effective_interests_file
+                )
+                stored_hash = tag_snapshot.get("prompt_hash")
+                if stored_hash != current_hash:
+                    tags_data = ai_filter.extract_tags(interests_content)
+                    if not tags_data:
+                        raise RuntimeError("严格 AI 标签提取未返回标签")
+                    tags_data = _with_ordered_priorities(
+                        tags_data, start_priority=1
+                    )
+                    new_version = int(
+                        tag_snapshot.get("latest_version", 0)
+                    ) + 1
+                    tag_snapshot = self.storage.replace_ai_filter_tags_strict(
+                        tags_data,
+                        new_version,
+                        current_hash,
+                        interests_file=effective_interests_file,
+                    )
+                    active_tags = self._validate_strict_tag_snapshot(
+                        tag_snapshot,
+                        current_hash,
+                        expected_tags=tags_data,
+                        expected_version=new_version,
+                    )
+                else:
+                    active_tags = self._validate_strict_tag_snapshot(
+                        tag_snapshot, current_hash
+                    )
+            except Exception as exc:
+                self._end_batch_after_storage_error()
+                return AIFilterResult(
+                    success=False,
+                    error=(
+                        "严格 AI 标签生命周期失败: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
+        else:
+            stored_hash = self.storage.get_latest_prompt_hash(
+                interests_file=effective_interests_file
+            )
 
         if self._debug:
             print(f"[AI筛选][DEBUG] 数据库存储 hash: {stored_hash}")
             print(f"[AI筛选][DEBUG] hash 对比: stored={stored_hash} vs current={current_hash} → {'匹配' if stored_hash == current_hash else '不匹配'}")
 
-        if stored_hash != current_hash:
+        if not self._strict and stored_hash != current_hash:
             self._handle_tag_update(
                 ai_filter, interests_content, current_hash, stored_hash,
                 effective_interests_file, filter_config,
             )
 
         # 获取当前 active 标签
-        active_tags = self.storage.get_active_ai_filter_tags(interests_file=effective_interests_file)
+        if not self._strict:
+            active_tags = self.storage.get_active_ai_filter_tags(
+                interests_file=effective_interests_file
+            )
         if self._debug:
             print(f"[AI筛选][DEBUG] 从数据库获取 active 标签: {len(active_tags)} 个")
             for t in active_tags:
@@ -342,6 +390,62 @@ class AIFilterPipeline:
                 print(f"[AI筛选][DEBUG]   {key}: {count} 条")
 
         return self._build_filter_result(all_results, active_tags, total_pending)
+
+    @staticmethod
+    def _validate_strict_tag_snapshot(
+        snapshot: Dict,
+        current_hash: str,
+        expected_tags: Optional[List[Dict]] = None,
+        expected_version: Optional[int] = None,
+    ) -> List[Dict]:
+        if not isinstance(snapshot, dict):
+            raise RuntimeError("严格 AI 标签读回不是快照对象")
+        tags = snapshot.get("tags")
+        if not isinstance(tags, list) or not tags:
+            raise RuntimeError("严格 AI 标签保存/读回数量为 0")
+        if snapshot.get("prompt_hash") != current_hash:
+            raise RuntimeError("严格 AI 标签读回 prompt_hash 不一致")
+        version = snapshot.get("version")
+        if expected_version is not None and version != expected_version:
+            raise RuntimeError("严格 AI 标签读回 version 不一致")
+
+        normalized = []
+        seen_names = set()
+        seen_priorities = set()
+        for tag in tags:
+            if not isinstance(tag, dict):
+                raise RuntimeError("严格 AI 标签读回包含非法项")
+            name = str(tag.get("tag", "")).strip()
+            description = str(tag.get("description", "")).strip()
+            try:
+                priority = int(tag["priority"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError("严格 AI 标签读回 priority 无效") from exc
+            if (
+                not name
+                or name in seen_names
+                or priority in seen_priorities
+                or tag.get("prompt_hash") != current_hash
+                or tag.get("version") != version
+            ):
+                raise RuntimeError("严格 AI 标签读回 active 集合不一致")
+            seen_names.add(name)
+            seen_priorities.add(priority)
+            normalized.append((name, description, priority))
+        if [item[2] for item in normalized] != sorted(seen_priorities):
+            raise RuntimeError("严格 AI 标签读回顺序不一致")
+        if expected_tags is not None:
+            expected = [
+                (
+                    str(tag.get("tag", "")).strip(),
+                    str(tag.get("description", "")).strip(),
+                    int(tag.get("priority", index)),
+                )
+                for index, tag in enumerate(expected_tags, start=1)
+            ]
+            if normalized != expected:
+                raise RuntimeError("严格 AI 标签读回集合/描述/priority 不一致")
+        return tags
 
     def _end_batch(self) -> None:
         if self._strict:
