@@ -504,6 +504,7 @@ class AppContext:
         self,
         rss_window: Optional[NaturalWeekWindow] = None,
         allowed_rss_ids: Optional[set[int]] = None,
+        rss_ids_authoritative: bool = False,
     ) -> "AIFilterPipeline":
         return AIFilterPipeline(
             config=self.config,
@@ -511,6 +512,7 @@ class AppContext:
             get_time_func=self.get_time,
             rss_window=rss_window,
             allowed_rss_ids=allowed_rss_ids,
+            rss_ids_authoritative=rss_ids_authoritative,
         )
 
     def run_ai_filter(
@@ -518,13 +520,14 @@ class AppContext:
         interests_file: Optional[str] = None,
         rss_window: Optional[NaturalWeekWindow] = None,
         allowed_rss_ids: Optional[set[int]] = None,
+        rss_ids_authoritative: bool = False,
     ) -> Optional[AIFilterResult]:
         """执行 AI 智能筛选完整流程"""
         if not self.ai_filter_enabled:
             return None
         try:
             return self._get_ai_filter_pipeline(
-                rss_window, allowed_rss_ids
+                rss_window, allowed_rss_ids, rss_ids_authoritative
             ).run(interests_file)
         except _TagExtractionError:
             return AIFilterResult(success=False, error="标签提取失败")
@@ -537,10 +540,11 @@ class AppContext:
         rss_new_urls: Optional[set] = None,
         rss_window: Optional[NaturalWeekWindow] = None,
         allowed_rss_ids: Optional[set[int]] = None,
+        rss_ids_authoritative: bool = False,
     ) -> tuple:
         """将 AI 筛选结果转换为与关键词匹配相同的数据结构"""
         return self._get_ai_filter_pipeline(
-            rss_window, allowed_rss_ids
+            rss_window, allowed_rss_ids, rss_ids_authoritative
         ).convert_to_report_data(
             ai_filter_result, mode, new_titles, rss_new_urls,
         )

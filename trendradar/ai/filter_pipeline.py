@@ -49,6 +49,7 @@ class AIFilterPipeline:
         get_time_func: Callable,
         rss_window: Optional[NaturalWeekWindow] = None,
         allowed_rss_ids: Optional[set[int]] = None,
+        rss_ids_authoritative: bool = False,
     ):
         self.config = config
         self.storage = storage_manager
@@ -84,6 +85,7 @@ class AIFilterPipeline:
         self._allowed_rss_ids = (
             frozenset(allowed_rss_ids) if allowed_rss_ids is not None else None
         )
+        self._rss_ids_authoritative = rss_ids_authoritative
 
         self._priority_sort_enabled = config.get("FILTER", {}).get("PRIORITY_SORT_ENABLED", False)
         self._rank_threshold = config.get("RANK_THRESHOLD", 50)
@@ -123,11 +125,12 @@ class AIFilterPipeline:
         published_at: str,
         news_item_id: Optional[int] = None,
     ) -> bool:
-        if (
-            self._allowed_rss_ids is not None
-            and news_item_id not in self._allowed_rss_ids
-        ):
-            return False
+        if self._allowed_rss_ids is not None:
+            allowed = news_item_id in self._allowed_rss_ids
+            if self._rss_ids_authoritative:
+                return allowed
+            if not allowed:
+                return False
         if self._rss_window is not None:
             return self._rss_window.contains(published_at)
         return self._is_rss_item_fresh(feed_id, published_at)
@@ -215,7 +218,7 @@ class AIFilterPipeline:
         total_results, succeeded_news_ids, succeeded_rss_ids = self._classify_batches(
             ai_filter, pending_news, pending_rss, active_tags, interests_content, filter_config,
         )
-        weekly_batch_failed = (
+        scoped_batch_failed = (
             (self._rss_window is not None or self._allowed_rss_ids is not None)
             and len(succeeded_news_ids) + len(succeeded_rss_ids) < total_pending
         )
@@ -229,10 +232,10 @@ class AIFilterPipeline:
         # 7. 结束批量模式
         self.storage.end_batch()
 
-        if weekly_batch_failed:
+        if scoped_batch_failed:
             return AIFilterResult(
                 success=False,
-                error="周报 AI 分类批次失败，已拒绝使用部分结果",
+                error="范围内 AI 分类批次失败，已拒绝使用部分结果",
             )
 
         # 8. 查询并组装返回结果

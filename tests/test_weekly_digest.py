@@ -66,6 +66,7 @@ class WeeklyAIFilterScopeTests(unittest.TestCase):
             lambda: None,
             rss_window=window,
             allowed_rss_ids={1, 2},
+            rss_ids_authoritative=False,
         )
 
     def test_week_start_survives_but_current_monday_is_excluded(self):

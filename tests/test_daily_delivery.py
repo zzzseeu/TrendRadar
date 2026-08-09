@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, call, patch
 import pytz
 from botocore.exceptions import ClientError
 
+from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.daily_delivery import (
     DailyDeliveryAggregator,
     daily_delivery_window,
@@ -448,6 +449,74 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
                 "每日交付快照 ID 解析失败：存在未持久化条目",
             ):
                 self.build()
+
+
+class DailyDeliveryAIScopeTests(unittest.TestCase):
+    def test_authoritative_snapshot_ids_override_publication_freshness(self):
+        pipeline = AIFilterPipeline(
+            config={
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {
+                    "ENABLED": True,
+                    "FEEDS": [],
+                    "FRESHNESS_FILTER": {"ENABLED": True, "MAX_AGE_DAYS": 2},
+                },
+                "AI": {},
+                "AI_FILTER": {},
+                "FILTER": {},
+            },
+            storage_manager=MagicMock(),
+            get_time_func=lambda: shanghai(2026, 8, 9, 10, 0),
+            allowed_rss_ids={7},
+            rss_ids_authoritative=True,
+        )
+
+        self.assertTrue(pipeline._is_rss_item_in_scope(
+            "search", "2026-07-01T00:00:00Z", 7
+        ))
+        self.assertFalse(pipeline._is_rss_item_in_scope(
+            "search", "2026-08-09T01:00:00Z", 8
+        ))
+
+    def test_authoritative_scope_rejects_partial_classification_results(self):
+        storage = MagicMock()
+        storage.get_latest_prompt_hash.return_value = "unchanged"
+        storage.get_active_ai_filter_tags.return_value = [
+            {"id": 1, "tag": "育种"}
+        ]
+        pipeline = AIFilterPipeline(
+            config={
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {"ENABLED": True, "FRESHNESS_FILTER": {}},
+                "AI": {},
+                "AI_FILTER": {},
+                "FILTER": {},
+            },
+            storage_manager=storage,
+            get_time_func=lambda: shanghai(2026, 8, 9, 10, 0),
+            allowed_rss_ids={7, 8},
+            rss_ids_authoritative=True,
+        )
+        pipeline._collect_pending_news = MagicMock(return_value=(
+            [], [{"id": 7}, {"id": 8}], [], set(),
+            [{"id": 7}, {"id": 8}], set(), 0,
+        ))
+        pipeline._classify_batches = MagicMock(return_value=([], [], [7]))
+        pipeline._save_results = MagicMock()
+
+        with patch("trendradar.ai.filter_pipeline.AIFilter") as ai_filter_class:
+            ai_filter = ai_filter_class.return_value
+            ai_filter.load_interests_content.return_value = "育种"
+            ai_filter.compute_interests_hash.return_value = "unchanged"
+
+            result = pipeline.run()
+
+        self.assertFalse(result.success)
+        self.assertEqual(
+            result.error,
+            "范围内 AI 分类批次失败，已拒绝使用部分结果",
+        )
+        storage.get_active_ai_filter_results.assert_not_called()
 
 
 class DailyDeliveryCheckpointTests(unittest.TestCase):
