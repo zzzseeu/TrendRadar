@@ -8,7 +8,9 @@ from unittest.mock import MagicMock, call, patch
 import pytz
 from botocore.exceptions import ClientError
 
+from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
+from trendradar.context import AppContext
 from trendradar.core.daily_delivery import (
     DailyDeliveryAggregator,
     daily_delivery_window,
@@ -452,6 +454,83 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
 
 
 class DailyDeliveryAIScopeTests(unittest.TestCase):
+    @staticmethod
+    def _rss_rows():
+        return [
+            {
+                "id": 7,
+                "news_item_id": 7,
+                "tag": "育种",
+                "title": "Approved old article",
+                "source_type": "rss",
+                "source_id": "journal",
+                "source_name": "Journal",
+                "published_at": "2026-07-01T00:00:00Z",
+                "first_time": "2026-07-01T00:00:00Z",
+                "relevance_score": 0.9,
+            },
+            {
+                "id": 8,
+                "news_item_id": 8,
+                "tag": "育种",
+                "title": "Unapproved fresh article",
+                "source_type": "rss",
+                "source_id": "journal",
+                "source_name": "Journal",
+                "published_at": "2026-08-09T01:00:00Z",
+                "first_time": "2026-08-09T01:00:00Z",
+                "relevance_score": 0.9,
+            },
+        ]
+
+    def _pipeline_with_authoritative_ids(self, storage):
+        return AIFilterPipeline(
+            config={
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {
+                    "ENABLED": True,
+                    "FRESHNESS_FILTER": {"ENABLED": True, "MAX_AGE_DAYS": 2},
+                },
+                "AI": {},
+                "AI_FILTER": {},
+                "FILTER": {},
+            },
+            storage_manager=storage,
+            get_time_func=lambda: shanghai(2026, 8, 9, 10, 0),
+            allowed_rss_ids={7},
+            rss_ids_authoritative=True,
+        )
+
+    def test_app_context_passes_authoritative_ids_to_filter_and_conversion(self):
+        allowed_ids = {7}
+        context = AppContext({"FILTER": {"METHOD": "ai"}})
+        context._storage_manager = MagicMock()
+        ai_result = AIFilterResult(success=True)
+
+        with patch("trendradar.context.AIFilterPipeline") as pipeline_class:
+            pipeline_class.return_value.run.return_value = ai_result
+            pipeline_class.return_value.convert_to_report_data.return_value = (
+                [], [], [],
+            )
+
+            self.assertIs(
+                context.run_ai_filter(
+                    allowed_rss_ids=allowed_ids,
+                    rss_ids_authoritative=True,
+                ),
+                ai_result,
+            )
+            context.convert_ai_filter_to_report_data(
+                ai_result,
+                allowed_rss_ids=allowed_ids,
+                rss_ids_authoritative=True,
+            )
+
+        self.assertEqual(pipeline_class.call_count, 2)
+        for call_args in pipeline_class.call_args_list:
+            self.assertIs(call_args.kwargs["allowed_rss_ids"], allowed_ids)
+            self.assertTrue(call_args.kwargs["rss_ids_authoritative"])
+
     def test_authoritative_snapshot_ids_override_publication_freshness(self):
         pipeline = AIFilterPipeline(
             config={
@@ -477,6 +556,64 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
         self.assertFalse(pipeline._is_rss_item_in_scope(
             "search", "2026-08-09T01:00:00Z", 8
         ))
+
+    def test_authoritative_scope_collects_only_approved_ids(self):
+        storage = MagicMock()
+        storage.get_all_news_ids.return_value = []
+        storage.get_analyzed_news_ids.return_value = set()
+        storage.get_all_rss_ids.return_value = self._rss_rows()
+
+        pending = self._pipeline_with_authoritative_ids(
+            storage
+        )._collect_pending_news("ai_interests.txt")
+
+        self.assertEqual([item["id"] for item in pending[1]], [7])
+
+    def test_authoritative_scope_filters_active_results(self):
+        storage = MagicMock()
+        storage.get_latest_prompt_hash.return_value = "stable"
+        storage.get_active_ai_filter_tags.return_value = [
+            {"id": 1, "tag": "育种"}
+        ]
+        storage.get_all_news_ids.return_value = []
+        storage.get_all_rss_ids.return_value = self._rss_rows()
+        storage.get_analyzed_news_ids.return_value = {7, 8}
+        storage.get_active_ai_filter_results.return_value = self._rss_rows()
+        pipeline = self._pipeline_with_authoritative_ids(storage)
+
+        with patch("trendradar.ai.filter_pipeline.AIFilter") as ai_filter_class:
+            ai_filter = ai_filter_class.return_value
+            ai_filter.load_interests_content.return_value = "育种"
+            ai_filter.compute_interests_hash.return_value = "stable"
+            result = pipeline.run()
+
+        self.assertEqual(
+            [item["news_item_id"] for item in result.tags[0]["items"]],
+            [7],
+        )
+
+    def test_authoritative_scope_filters_report_conversion(self):
+        storage = MagicMock()
+        pipeline = self._pipeline_with_authoritative_ids(storage)
+        result = AIFilterResult(success=True, tags=[{
+            "tag": "育种",
+            "count": 2,
+            "items": [
+                {
+                    **row,
+                    "news_item_id": row["id"],
+                    "url": f"https://example.org/{row['id']}",
+                }
+                for row in self._rss_rows()
+            ],
+        }])
+
+        _, rss_stats, _ = pipeline.convert_to_report_data(result)
+
+        self.assertEqual(
+            [item["title"] for item in rss_stats[0]["titles"]],
+            ["Approved old article"],
+        )
 
     def test_authoritative_scope_rejects_partial_classification_results(self):
         storage = MagicMock()
