@@ -481,6 +481,15 @@ class StorageBackend(ABC):
         """
         return False
 
+    def get_latest_period_execution(
+        self,
+        period_key: str,
+        action: str,
+        through_date: str,
+    ) -> Optional[str]:
+        """返回截止日期内最近一次成功执行的本地时区时间。"""
+        return None
+
     # === AI 智能筛选（默认实现，子类通过 mixin 覆盖） ===
 
     def begin_batch(self) -> None:

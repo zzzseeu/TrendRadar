@@ -289,6 +289,14 @@ class StorageManager:
         """记录时间段的 action 执行"""
         return self.get_backend().record_period_execution(date_str, period_key, action)
 
+    def latest_execution(
+        self, period_key: str, action: str, through_date: str
+    ) -> Optional[str]:
+        """返回截止日期内最近一次成功执行的本地时区时间。"""
+        return self.get_backend().get_latest_period_execution(
+            period_key, action, through_date
+        )
+
     # === AI 智能筛选存储操作 ===
 
     def begin_batch(self):

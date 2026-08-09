@@ -825,6 +825,32 @@ class SQLiteStorageMixin:
             print(f"[存储] 检查时间段执行记录失败: {e}")
             return False
 
+    def _get_period_execution_at_impl(
+        self, date_str: str, period_key: str, action: str
+    ) -> Optional[str]:
+        """返回指定数据库中周期执行记录的最近成功时间。"""
+        try:
+            conn = self._get_connection(date_str)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='period_executions'"
+            )
+            if not cursor.fetchone():
+                return None
+            cursor.execute(
+                "SELECT executed_at FROM period_executions "
+                "WHERE execution_date = ? AND period_key = ? AND action = ? "
+                "ORDER BY executed_at DESC LIMIT 1",
+                (date_str, period_key, action),
+            )
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as exc:
+            raise RuntimeError(
+                f"读取周期执行时间失败: {date_str}/{period_key}/{action}: {exc}"
+            ) from exc
+
     def _record_period_execution_impl(self, date_str: str, period_key: str, action: str) -> bool:
         """
         记录时间段的 action 执行

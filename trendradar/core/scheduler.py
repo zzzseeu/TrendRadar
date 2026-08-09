@@ -306,6 +306,14 @@ class Scheduler:
         """
         return self.storage.record_period_execution(date_str, period_key, action)
 
+    def latest_execution(
+        self, period_key: str, action: str, through_date: str
+    ) -> Optional[str]:
+        """返回截止日期内最近一次成功执行的本地时区时间。"""
+        return self.storage.get_latest_period_execution(
+            period_key, action, through_date
+        )
+
     # ========================================
     # 校验
     # ========================================

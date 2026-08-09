@@ -195,6 +195,35 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
             print(f"[本地存储] 时间段执行记录已保存: {period_key}/{action} at {now_str}")
         return success
 
+    def get_latest_period_execution(
+        self, period_key: str, action: str, through_date: str
+    ) -> Optional[str]:
+        """跨每日数据库读取截止日期内最近一次成功执行时间。"""
+        news_dir = self.data_dir / "news"
+        if not news_dir.exists():
+            return None
+
+        dates = []
+        for db_path in news_dir.glob("*.db"):
+            match = re.fullmatch(r"(\d{4}-\d{2}-\d{2})\.db", db_path.name)
+            if not match:
+                continue
+            date_str = match.group(1)
+            try:
+                datetime.strptime(date_str, "%Y-%m-%d")
+            except ValueError:
+                continue
+            if date_str <= through_date:
+                dates.append(date_str)
+
+        for date_str in sorted(dates, reverse=True):
+            executed_at = self._get_period_execution_at_impl(
+                date_str, period_key, action
+            )
+            if executed_at is not None:
+                return executed_at
+        return None
+
     # ========================================
     # RSS 数据存储方法
     # ========================================

@@ -441,6 +441,33 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         return False
 
+    def get_latest_period_execution(
+        self, period_key: str, action: str, through_date: str
+    ) -> Optional[str]:
+        """跨远程每日数据库读取截止日期内最近一次成功执行时间。"""
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        dates = set()
+        for page in paginator.paginate(Bucket=self.bucket_name, Prefix="news/"):
+            for obj in page.get("Contents", []):
+                match = re.fullmatch(r"news/(\d{4}-\d{2}-\d{2})\.db", obj["Key"])
+                if not match:
+                    continue
+                date_str = match.group(1)
+                try:
+                    datetime.strptime(date_str, "%Y-%m-%d")
+                except ValueError:
+                    continue
+                if date_str <= through_date:
+                    dates.add(date_str)
+
+        for date_str in sorted(dates, reverse=True):
+            executed_at = self._get_period_execution_at_impl(
+                date_str, period_key, action
+            )
+            if executed_at is not None:
+                return executed_at
+        return None
+
     # ========================================
     # RSS 数据存储方法
     # ========================================
