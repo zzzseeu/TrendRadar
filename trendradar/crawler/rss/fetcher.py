@@ -8,7 +8,8 @@ RSS 抓取器
 import time
 import random
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple
+from datetime import datetime
+from typing import Callable, List, Dict, Optional, Tuple
 
 import requests
 
@@ -44,6 +45,7 @@ class RSSFetcher:
         timezone: str = DEFAULT_TIMEZONE,
         freshness_enabled: bool = True,
         default_max_age_days: int = 3,
+        get_time_func: Optional[Callable[[], datetime]] = None,
     ):
         """
         初始化抓取器
@@ -66,6 +68,9 @@ class RSSFetcher:
         self.timezone = timezone
         self.freshness_enabled = freshness_enabled
         self.default_max_age_days = default_max_age_days
+        self.get_time = get_time_func or (
+            lambda: get_configured_time(self.timezone)
+        )
 
         self.parser = RSSParser()
         self.session = self._create_session()
@@ -86,6 +91,7 @@ class RSSFetcher:
         self,
         feed: RSSFeedConfig,
         published_at: Optional[str],
+        run_at: Optional[datetime] = None,
     ) -> bool:
         """判断条目是否满足当前来源的新鲜度要求。"""
         max_days = (
@@ -95,9 +101,18 @@ class RSSFetcher:
         )
         if not self.freshness_enabled or max_days <= 0:
             return True
-        return is_within_days(published_at or "", max_days, self.timezone)
+        return is_within_days(
+            published_at or "",
+            max_days,
+            self.timezone,
+            reference_time=run_at,
+        )
 
-    def fetch_feed(self, feed: RSSFeedConfig) -> Tuple[List[RSSItem], Optional[str]]:
+    def fetch_feed(
+        self,
+        feed: RSSFeedConfig,
+        run_at: Optional[datetime] = None,
+    ) -> Tuple[List[RSSItem], Optional[str]]:
         """
         抓取单个 RSS 源
 
@@ -108,7 +123,7 @@ class RSSFetcher:
             (条目列表, 错误信息) 元组
         """
         try:
-            now = get_configured_time(self.timezone)
+            now = run_at or self.get_time()
             request_url = (feed.fetch_url or feed.url).format(year=now.year)
             response = self.session.get(request_url, timeout=self.timeout)
             response.raise_for_status()
@@ -135,7 +150,7 @@ class RSSFetcher:
             parsed_items = [
                 parsed
                 for parsed in parsed_items
-                if self._is_item_fresh(feed, parsed.published_at)
+                if self._is_item_fresh(feed, parsed.published_at, now)
             ]
             freshness_filtered_count = before_freshness_count - len(parsed_items)
             if freshness_filtered_count:
@@ -221,7 +236,7 @@ class RSSFetcher:
         failed_ids: List[str] = []
 
         # 使用配置的时区
-        now = get_configured_time(self.timezone)
+        now = self.get_time()
         crawl_time = now.strftime("%Y-%m-%d %H:%M:%S")
         crawl_date = now.strftime("%Y-%m-%d")
 
@@ -234,7 +249,7 @@ class RSSFetcher:
                 jitter = random.uniform(-0.2, 0.2) * interval
                 time.sleep(interval + jitter)
 
-            items, error = self.fetch_feed(feed)
+            items, error = self.fetch_feed(feed, run_at=now)
 
             id_to_name[feed.id] = feed.name
 

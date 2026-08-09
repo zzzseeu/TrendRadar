@@ -224,6 +224,7 @@ def is_within_days(
     iso_time: str,
     max_days: int,
     timezone: str = DEFAULT_TIMEZONE,
+    reference_time: Optional[datetime] = None,
 ) -> bool:
     """
     检查 ISO 格式时间是否在指定天数内
@@ -248,8 +249,8 @@ def is_within_days(
         if dt is None:
             return False
 
-        # 获取当前时间（配置的时区，带时区信息）
-        now = get_configured_time(timezone)
+        # 调用方可绑定一次操作时钟，避免批处理中逐项读取 wall clock。
+        now = reference_time or get_configured_time(timezone)
 
         # 计算时间差（两个带时区的 datetime 相减会自动处理时区差异）
         diff = now - dt

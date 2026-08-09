@@ -636,3 +636,135 @@ GREEN：跨午夜 2 项与真实 fetcher 保存断言均通过；`ctx.get_time` 
 - 未改变 10:00、`(last_success, now]`、首次 24h、合法空推进、同日成功跳过交付、freshness、所有通知目标或密钥持久化；未合并 main、未部署、未真实推送。
 
 第五次最终测试计数：聚焦 163、兼容 93、全量 441；三套最终命令合计执行 697 个测试（聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审没有发现新的生产缺陷或未解决架构冲突。
+
+## 第六次最终复审修复（frozen fetch/output / strict mutation recovery）
+
+### 1. 真实 RSSFetcher 跨午夜统一时钟
+
+根因：`NewsAnalyzer.run()` 已冻结 `run_at/run_date`，但 `RSSFetcher.fetch_all()` 和每个
+`fetch_feed()` 仍分别读取 wall clock；item 新鲜度又逐条读取时间。因此慢抓取跨午夜时，
+批次属于 N 日而 item 的 first/crawl/last 属于 N+1 日，边界文章甚至在保存前被过滤；
+主流程原有“只修空值或等于批次 crawl_time”的防御无法覆盖真实 feed 时钟。
+
+RED：在 `tests.test_daily_delivery_review6.RSSFetcherFrozenRunClockTests` 增加两个真实双 feed
+用例，一个直接覆盖 freshness、URL 年份和 item 三个发现时间，一个经过
+`NewsAnalyzer._crawl_rss_data`、真实 Local SQLite、first-seen ledger 与
+`DailyDeliveryAggregator`。首跑 `Ran 2`，2 failures，exit 1：边界条目全部被过滤，且主链
+把 N+1 first_time 写入 N 日库而排除本轮交付。
+
+修复：`RSSFetcher` 接受兼容的可选 clock；`fetch_all` 只捕获一次 run_at 并传给所有
+`fetch_feed`，年份替换、freshness reference time、item crawl/first/last 与 RSSData
+date/crawl_time 全部使用同一对象。主流程构造 fetcher 时注入入口 frozen run_at；直接调用
+fetch_feed/fetch_all 未注入时仍保留 live fallback。GREEN：`Ran 2 in 6.524s, OK`，exit 0。
+
+### 2. Remote AI mutation 失败恢复
+
+根因：Remote strict tag/result 的 non-batch CAS/上传失败会留下 local-authoritative dirty
+状态；batch 只保存最后一次局部镜像，无法恢复第一次 mutation 前状态；普通 wrapper 还会
+忽略远端上传 False。只读 diff 自审进一步发现 baseline HEAD/下载异常发生在统一 try 外，
+普通 API 会意外上抛；strict 批次第二 mutation 返回 False 时仍会上传第一项，而普通批次
+合法的 0 no-op 又不能被误判为整批失败。
+
+RED 分组：
+
+- 初始 4 项覆盖 non-batch 412、batch 上传失败、classification 上传失败、普通上传 False，
+  首跑 2 FAIL + 2 ERROR，exit 1；
+- baseline AccessDenied 的普通 wrapper 首跑 1 ERROR，exit 1；
+- 两 mutation strict batch 的底层 False 首跑 1 FAIL（`end_batch_strict` 未失败而上传第一项）；
+- 普通 batch 的 0 no-op 兼容首跑 1 FAIL（错误回滚前一成功修改）。
+
+修复：统一 `_run_news_mutation` 在修改前严格刷新/bind baseline，保存 before-image，首次
+dirty 即标 local-authoritative；False、异常、CAS/上传失败均关闭连接、原子恢复并清 dirty。
+batch 保存每个对象第一次 mutation 的镜像，strict 底层 False 标记整批失败并由 end 恢复
+首镜像；普通 0 no-op 只撤销本次空操作，不撤销同批先前成功修改。baseline 或上传异常在
+strict 时继续上抛，普通 wrapper 返回约定 failure value。
+
+GREEN：初始 4 项 `Ran 4 in 29.077s, OK`；普通 baseline/upload 两项 `Ran 2 in 14.883s,
+OK`；strict False 与普通 no-op 两项 `Ran 2 in 11.978s, OK`，均 exit 0。
+
+### 3. strict period mutation 与 strict latest 读取
+
+根因：SQLite period commit 异常未 rollback；Remote strict wrapper 对底层 False 未恢复，
+且拍镜像后底层再次取连接形成刷新窗口。另一方面 Base 的 latest-period 弱默认返回 None，
+使第三方后端在 daily/weekly 被解释为“无历史执行”而 fail-open。
+
+RED：period mutation 3 项覆盖 commit failure、Remote False 和单次 bound connection，首跑
+3 failures、exit 1。latest capability 4 项覆盖第三方缺能力、Local 正常/坏表、Remote
+正常/AccessDenied，首跑 2 failures + 2 errors、exit 1。
+
+修复：period mixin 复用显式 bound connection 并在异常时 rollback；Remote ordinary/strict
+record 都走统一 mutation 恢复。Base 新增默认抛 `NotImplementedError` 的
+`get_latest_period_execution_strict`，Local/Remote/Manager 显式实现，Scheduler 根据最终
+report mode 对 latest/has/record 成对 strict 路由。GREEN：mutation `Ran 3 in 13.610s,
+OK`；latest `Ran 4 in 13.863s, OK`，均 exit 0。
+
+### 4. daily_delivery 摘要保持权威 RSS-only
+
+根因：公开 `AI_ANALYSIS.MODE=daily/current/incremental` 会在 daily_delivery 内启用独立历史
+热榜读取，重新准备 hotlist 数据并注入摘要，绕过权威 RSS 快照范围。
+
+RED：真实 `_run_ai_analysis` 三个配置 mode 用例均读入独立热榜路径并失败，`Ran 3`、3
+failures、exit 1。修复后 daily_delivery 无条件使用传入的权威 RSS stats/current snapshot，
+强制 analyzer 的 mode/report_mode 为 daily_delivery，不调用历史热榜准备函数；普通模式仍
+尊重原配置。GREEN：`Ran 3, OK`，exit 0。
+
+### 5. 冻结 HTML 与通知输出
+
+根因：HTML factory 会重新读取日期/时间并把 live clock 传给 renderer；通知 dispatcher
+虽然持有 clock，但所有 webhook sender 经 bound `AppContext.split_content` 再次使用 live
+clock，邮件主题/正文也从 live factory 取时。跨午夜会出现 N 日数据库配 N+1 文件名、页面
+生成时间和通知时间。
+
+RED：4 项覆盖主流程参数传播、HTML 路径/renderer clock、真实飞书+钉钉 split/send payload
+及真实邮件 MIME Subject/body，首跑 4 ERROR（缺少 operation_at），exit 1。
+
+修复：`AppContext.generate_html` 与 `create_notification_dispatcher` 增加可选 operation_at；
+HTML 路径和 renderer、dispatcher clock 与 wrapped split_content 全部绑定同一 frozen
+datetime。NewsAnalyzer 完整 run 传 `_run_at`；旧 direct helper 没有 run state 时传 None 并
+保留 live fallback。SMTP RFC Date/Message-ID 继续表示物理发送时间。GREEN：`Ran 4,
+OK`，exit 0；weekly direct-call 兼容的 2 个旧测试定向复验也 `OK`。
+
+### 6. 文档与兼容收敛
+
+- design spec 与 implementation plan 已同步真实 fetcher frozen clock、权威 RSS-only 摘要、
+  Remote before-image/batch 失败恢复、strict latest capability 和冻结展示输出。
+- 聚焦首跑唯一失败是旧测试用 daily_delivery 验证弱 latest 转发；该断言与本轮批准的默认
+  strict 路由冲突。测试显式传 `strict=False` 后继续验证弱 API 兼容，而默认 strict 行为由
+  第三方 fail-closed 测试覆盖。
+- 普通 AI batch 的 0 rowcount 保持合法 no-op；普通/weekly direct presentation 调用保留 live
+  fallback。没有改动跨进程通知 exactly-once/分布式租约边界。
+
+## 第六次复审最终验证
+
+所有 Python 测试均使用 `docker run --network none` 和镜像内
+`/app/.venv/bin/python`，并取得明确 exit code。
+
+- 第六次模块最终：`tests.test_daily_delivery_review6`（因复用调度基类共发现 59 项），
+  `Ran 59 in 107.492s, OK`，exit 0。
+- 前轮 Remote 相关：review4 + review5，`Ran 61 in 112.462s, OK`，exit 0。
+- 报告/邮件/freshness/weekly 相关：`Ran 31 in 0.068s, OK`，exit 0。
+- 聚焦：`tests.test_daily_delivery tests.test_daily_delivery_schedule tests.test_daily_delivery_report
+  tests.test_news_search_pipeline`，`Ran 163 in 327.609s, OK`，exit 0。
+- 固定兼容：weekly digest/schedule/report、Elsevier、proxy、email，`Ran 93 in 210.637s,
+  OK`，exit 0。
+- 最终全量：`python -m unittest discover -s /workspace/tests -q`，`Ran 500 in 800.135s,
+  OK`，exit 0，无 FAIL/ERROR。
+- `bash -n docker/entrypoint.sh`、`bash -n config/daily.crontab`、
+  `bash tests/test_portable_deployment.sh`、`git diff --check` 均 exit 0；portable 输出
+  `PASS: 本地部署路径可移植性检查通过`。
+
+## 第六次复审 Diff 自审
+
+- 一次 fetch_all 的批次、feed、freshness、item 时间与 `{year}` 共享一个 run_at，跨午夜不再
+  在保存前丢条目，也不会让 checkpoint 越过错误的 future first_seen。
+- Remote AI/period mutation 的 before-image、dirty、连接与 CAS 结果同成败；strict batch
+  False 恢复首镜像，普通 zero no-op 不回滚先前成功修改。
+- daily_delivery 的三种公开 AI analysis mode 都无法读入热榜；普通模式配置语义未改。
+- strict latest 默认不允许第三方弱实现，Local/Remote 异常不能伪装成“未执行”。
+- HTML/通知逻辑展示时间冻结，period_label 保留；没有冻结物理发送时间和 retry clock。
+- 独立只读 diff 审计在补充两个 Remote 边界后未发现剩余 Critical/Important/Minor。
+- 未改变 10:00、`(last_success, now]`、首次 24h、合法空推进、同日成功跳过交付、所有通知
+  目标、freshness=2d 或密钥持久化；未合并 main、未部署、未真实推送。
+
+第六次最终测试计数：聚焦 163、兼容 93、全量 500；三套最终命令合计执行 756 个测试
+（聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审无遗留架构冲突。

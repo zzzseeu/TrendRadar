@@ -502,6 +502,15 @@ class StorageBackend(ABC):
         """返回截止日期内最近一次成功执行的本地时区时间。"""
         return None
 
+    def get_latest_period_execution_strict(
+        self,
+        period_key: str,
+        action: str,
+        through_date: str,
+    ) -> Optional[str]:
+        """严格读取最近执行时间；不支持错误区分的后端必须抛错。"""
+        raise NotImplementedError("存储后端不支持严格最近周期执行读取")
+
     # === AI 智能筛选（默认实现，子类通过 mixin 覆盖） ===
 
     def begin_batch(self) -> None:

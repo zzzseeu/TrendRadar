@@ -496,7 +496,18 @@ class NewsAnalyzer:
 
             # 确定 AI 分析使用的模式
             ai_mode_config = analysis_config.get("MODE", "follow_report")
-            if ai_mode_config == "follow_report":
+            if mode == "daily_delivery":
+                # 每日交付的公开 AI_ANALYSIS.MODE 不能绕过权威 RSS
+                # 快照去读取 daily/current/incremental 热榜历史。
+                if ai_mode_config not in ("follow_report", "daily_delivery"):
+                    print(
+                        f"[AI] 每日交付忽略独立分析模式 {ai_mode_config}，"
+                        "强制使用权威 RSS 快照"
+                    )
+                ai_mode = mode
+                ai_stats = stats
+                ai_id_to_name = {}
+            elif ai_mode_config == "follow_report":
                 # 跟随推送报告模式
                 ai_mode = mode
                 ai_stats = stats
@@ -949,7 +960,9 @@ class NewsAnalyzer:
         trans_config = self.ctx.config.get("AI_TRANSLATION", {})
         translate_report_func = None  # 供 HTML 翻译热榜 report_data（在过滤之后翻译）
         if trans_config.get("ENABLED", False):
-            dispatcher = self.ctx.create_notification_dispatcher()
+            dispatcher = self.ctx.create_notification_dispatcher(
+                operation_at=getattr(self, "_run_at", None)
+            )
             display_regions = self.ctx.config.get("DISPLAY", {}).get("REGIONS", {})
             _, rss_items, rss_new_items, standalone_data = \
                 dispatcher.translate_content(
@@ -1003,6 +1016,7 @@ class NewsAnalyzer:
                     "period_label": self._report_period_label,
                 },
                 translate_report_func=translate_report_func,
+                operation_at=getattr(self, "_run_at", None),
             )
             if not html_file and self._is_strict_delivery_mode(mode):
                 if mode == "daily_delivery":
@@ -1109,7 +1123,9 @@ class NewsAnalyzer:
 
             # 使用 NotificationDispatcher 发送到所有渠道
             # RSS/独立展示区数据已在分析流水线中翻译过，跳过重复翻译（仅翻译热榜 report_data）
-            dispatcher = self.ctx.create_notification_dispatcher()
+            dispatcher = self.ctx.create_notification_dispatcher(
+                operation_at=getattr(self, "_run_at", None)
+            )
             results = dispatcher.dispatch_all(
                 report_data=report_data,
                 report_type=report_type,
@@ -1313,6 +1329,7 @@ class NewsAnalyzer:
                 timezone=timezone,
                 freshness_enabled=freshness_enabled,
                 default_max_age_days=default_max_age_days,
+                get_time_func=lambda: self._operation_run_at(),
             )
 
             # 抓取数据

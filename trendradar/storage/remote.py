@@ -122,6 +122,8 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         # 批量模式：延迟上传，避免频繁上传同一文件
         self._batch_mode = False
         self._batch_dirty: set = set()  # 待上传的 (date, db_type) 集合
+        self._batch_snapshots: Dict[tuple, bytes] = {}
+        self._batch_failed = False
         self._remote_provenance: Dict[str, Optional[tuple]] = {}
         self._strict_local_authoritative: set[str] = set()
         self._first_seen_needs_upload = False
@@ -381,12 +383,106 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     ) -> None:
         """CAS 失败时恢复 mutation 前本地镜像并清除 dirty。"""
         self._close_cached_connection(local_path)
+        for suffix in ("-wal", "-shm"):
+            auxiliary = Path(f"{local_path}{suffix}")
+            if auxiliary.exists():
+                auxiliary.unlink()
         temporary_path = local_path.with_name(
             f".{local_path.name}.rollback"
         )
         temporary_path.write_bytes(content)
         temporary_path.replace(local_path)
         self._strict_local_authoritative.discard(remote_key)
+
+    def _begin_news_mutation(self, date: Optional[str]) -> Dict[str, object]:
+        """绑定共享 news baseline，并保存本次 mutation 前镜像。"""
+        date_str = self._format_date_folder(date)
+        token = (date_str, "news")
+        local_path = self._get_local_db_path(date_str, "news")
+        remote_key = self._get_remote_db_key(date_str, "news")
+        conn = self._get_ai_connection(date_str, strict=True)
+        conn.commit()
+        before = local_path.read_bytes()
+        had_pending = token in self._batch_dirty
+        if self._batch_mode:
+            if not hasattr(self, "_batch_snapshots"):
+                self._batch_snapshots = {}
+            self._batch_snapshots.setdefault(token, before)
+        # 在任何底层 helper 再次请求连接前标记 authoritative，防止
+        # snapshot 与实际 mutation 之间被远端 refresh 覆盖。
+        self._mark_strict_local_dirty(remote_key)
+        return {
+            "date": date_str,
+            "token": token,
+            "path": local_path,
+            "remote_key": remote_key,
+            "before": before,
+            "had_pending": had_pending,
+            "conn": conn,
+        }
+
+    def _rollback_news_mutation(
+        self, state: Dict[str, object], mark_batch_failed: bool = False
+    ) -> None:
+        """恢复单次 mutation；保留同批次更早的有效本地变更。"""
+        token = state["token"]
+        self._restore_local_sqlite_snapshot(
+            state["path"], state["remote_key"], state["before"]
+        )
+        if self._batch_mode and state["had_pending"]:
+            self._batch_dirty.add(token)
+            self._mark_strict_local_dirty(state["remote_key"])
+        else:
+            self._batch_dirty.discard(token)
+            if hasattr(self, "_batch_snapshots"):
+                self._batch_snapshots.pop(token, None)
+        if self._batch_mode and mark_batch_failed:
+            self._batch_failed = True
+
+    def _run_news_mutation(
+        self,
+        date: Optional[str],
+        mutation,
+        *,
+        strict_upload: bool,
+        failure_value,
+    ):
+        """执行共享 news mutation，并使本地状态与远端提交同成败。"""
+        try:
+            state = self._begin_news_mutation(date)
+        except Exception:
+            if strict_upload:
+                raise
+            return failure_value
+        try:
+            result = mutation(state["conn"])
+        except Exception:
+            self._rollback_news_mutation(state, mark_batch_failed=True)
+            if strict_upload:
+                raise
+            return failure_value
+
+        if not result:
+            self._rollback_news_mutation(
+                state, mark_batch_failed=strict_upload
+            )
+            return failure_value
+
+        try:
+            uploaded = self._upload_sqlite(
+                state["date"], "news", strict_version=strict_upload
+            )
+        except Exception:
+            self._rollback_news_mutation(state, mark_batch_failed=True)
+            if strict_upload:
+                raise
+            return failure_value
+        if not uploaded:
+            self._rollback_news_mutation(state, mark_batch_failed=True)
+            if strict_upload:
+                raise RuntimeError("共享 news 数据库严格上传失败")
+            return failure_value
+        return result
 
     def _conditional_put_strict(
         self, remote_key: str, content: bytes, content_type: str
@@ -455,25 +551,61 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         """开启批量模式：延迟上传，避免频繁上传同一文件"""
         self._batch_mode = True
         self._batch_dirty.clear()
+        self._batch_snapshots = {}
+        self._batch_failed = False
 
     def end_batch(self):
         """结束批量模式：统一上传所有脏数据库"""
-        self._batch_mode = False
-        for date, db_type in self._batch_dirty:
-            self._upload_sqlite(date, db_type)
-        self._batch_dirty.clear()
+        return self._finish_batch(strict=False)
 
-    def end_batch_strict(self):
-        """结束严格批次；任一远程上传或验证失败即上抛。"""
+    def _finish_batch(self, strict: bool) -> bool:
+        """提交批次；失败对象恢复该批次第一次 mutation 前镜像。"""
         self._batch_mode = False
         dirty = list(self._batch_dirty)
         self._batch_dirty.clear()
-        failed = []
+        snapshots = getattr(self, "_batch_snapshots", {})
+        failures = []
+
+        if getattr(self, "_batch_failed", False):
+            failures.append("批次内本地 mutation 失败")
+            dirty = []
+
         for date, db_type in dirty:
-            if not self._upload_sqlite(date, db_type, strict_version=True):
-                failed.append((date, db_type))
-        if failed:
-            raise RuntimeError(f"远程数据库上传失败: {failed}")
+            try:
+                uploaded = self._upload_sqlite(
+                    date, db_type, strict_version=strict
+                )
+            except Exception as exc:
+                uploaded = False
+                failures.append(exc)
+            if uploaded:
+                snapshots.pop((date, db_type), None)
+            else:
+                failures.append((date, db_type))
+                before = snapshots.pop((date, db_type), None)
+                if before is not None:
+                    local_path = self._get_local_db_path(date, db_type)
+                    remote_key = self._get_remote_db_key(date, db_type)
+                    self._restore_local_sqlite_snapshot(
+                        local_path, remote_key, before
+                    )
+
+        # 本地 mutation 已失败时没有上传，恢复本批次所有首镜像。
+        for (date, db_type), before in list(snapshots.items()):
+            local_path = self._get_local_db_path(date, db_type)
+            remote_key = self._get_remote_db_key(date, db_type)
+            self._restore_local_sqlite_snapshot(
+                local_path, remote_key, before
+            )
+        self._batch_snapshots = {}
+        self._batch_failed = False
+        if failures and strict:
+            raise RuntimeError(f"远程数据库批次上传失败: {failures}")
+        return not failures
+
+    def end_batch_strict(self):
+        """结束严格批次；任一远程上传或验证失败即上抛。"""
+        return self._finish_batch(strict=True)
 
     def _upload_sqlite(
         self,
@@ -776,49 +908,39 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def record_period_execution(self, date_str: str, period_key: str, action: str) -> bool:
         """记录时间段的 action 执行"""
-        success = self._record_period_execution_impl(date_str, period_key, action)
-
+        success = self._run_news_mutation(
+            date_str,
+            lambda conn: self._record_period_execution_impl(
+                date_str, period_key, action, conn=conn
+            ),
+            strict_upload=False,
+            failure_value=False,
+        )
         if success:
-            now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[远程存储] 时间段执行记录已保存: {period_key}/{action} at {now_str}")
-
-            # 上传到远程存储确保记录持久化
-            if self._upload_sqlite(date_str):
-                print(f"[远程存储] 时间段执行记录已同步到远程存储")
-                return True
-            else:
-                print(f"[远程存储] 时间段执行记录同步到远程存储失败")
-                return False
-
-        return False
+            now_str = self._get_configured_time().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            print(
+                f"[远程存储] 时间段执行记录已同步: "
+                f"{period_key}/{action} at {now_str}"
+            )
+        return bool(success)
 
     def record_period_execution_strict(
         self, date_str: str, period_key: str, action: str
     ) -> bool:
         """事务写入本地后以 conditional PUT 提交；冲突时恢复本地前镜像。"""
-        local_path = self._get_local_db_path(date_str, "news")
-        remote_key = self._get_remote_db_key(date_str, "news")
         try:
-            self._get_ai_connection(date_str, strict=True)
-            before = local_path.read_bytes()
-            if not self._record_period_execution_impl(
-                date_str, period_key, action
-            ):
-                return False
-            self._mark_strict_local_dirty(remote_key)
-            if not self._upload_sqlite(
-                date_str, "news", strict_version=True
-            ):
-                raise RuntimeError("严格时间段执行记录上传失败")
-            return True
+            return bool(self._run_news_mutation(
+                date_str,
+                lambda conn: self._record_period_execution_impl(
+                    date_str, period_key, action, conn=conn
+                ),
+                strict_upload=True,
+                failure_value=False,
+            ))
         except Exception as exc:
             print(f"[远程存储] 严格时间段执行记录失败: {exc}")
-            if "before" in locals():
-                self._restore_local_sqlite_snapshot(
-                    local_path, remote_key, before
-                )
-            else:
-                self._strict_local_authoritative.discard(remote_key)
             return False
 
     def get_latest_period_execution(
@@ -847,6 +969,14 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             if executed_at is not None:
                 return executed_at
         return None
+
+    def get_latest_period_execution_strict(
+        self, period_key: str, action: str, through_date: str
+    ) -> Optional[str]:
+        """按远端 provenance 严格读取最近成功执行时间。"""
+        return self.get_latest_period_execution(
+            period_key, action, through_date
+        )
 
     # ========================================
     # RSS 数据存储方法
@@ -959,12 +1089,19 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         date=None,
         interests_file="ai_interests.txt",
     ):
-        snapshot = self._replace_ai_filter_tags_strict_impl(
-            date, tags, version, prompt_hash, interests_file
+        return self._run_news_mutation(
+            date,
+            lambda conn: self._replace_ai_filter_tags_strict_impl(
+                date,
+                tags,
+                version,
+                prompt_hash,
+                interests_file,
+                conn=conn,
+            ),
+            strict_upload=True,
+            failure_value=None,
         )
-        if not self._upload_sqlite(date, strict_version=True):
-            raise RuntimeError("严格 AI 标签快照上传失败")
-        return snapshot
 
     def get_latest_prompt_hash(self, date=None, interests_file="ai_interests.txt"):
         return self._get_latest_prompt_hash_impl(date, interests_file)
@@ -973,22 +1110,32 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         return self._get_latest_tag_version_impl(date)
 
     def deprecate_all_ai_filter_tags(self, date=None, interests_file="ai_interests.txt"):
-        count = self._deprecate_all_tags_impl(date, interests_file)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._deprecate_all_tags_impl(
+                date, interests_file
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def save_ai_filter_tags(self, tags, version, prompt_hash, date=None, interests_file="ai_interests.txt"):
-        count = self._save_tags_impl(date, tags, version, prompt_hash, interests_file)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._save_tags_impl(
+                date, tags, version, prompt_hash, interests_file
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def save_ai_filter_results(self, results, date=None):
-        count = self._save_filter_results_impl(date, results)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._save_filter_results_impl(date, results),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def get_active_ai_filter_results(self, date=None, interests_file="ai_interests.txt"):
         return self._get_active_filter_results_impl(date, interests_file)
@@ -999,34 +1146,57 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         )
 
     def deprecate_specific_ai_filter_tags(self, tag_ids, date=None):
-        count = self._deprecate_specific_tags_impl(date, tag_ids)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._deprecate_specific_tags_impl(date, tag_ids),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def update_ai_filter_tags_hash(self, interests_file, new_hash, date=None):
-        count = self._update_tags_hash_impl(date, interests_file, new_hash)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._update_tags_hash_impl(
+                date, interests_file, new_hash
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def update_ai_filter_tag_descriptions(self, tag_updates, date=None, interests_file="ai_interests.txt"):
-        count = self._update_tag_descriptions_impl(date, tag_updates, interests_file)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._update_tag_descriptions_impl(
+                date, tag_updates, interests_file
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def update_ai_filter_tag_priorities(self, tag_priorities, date=None, interests_file="ai_interests.txt"):
-        count = self._update_tag_priorities_impl(date, tag_priorities, interests_file)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._update_tag_priorities_impl(
+                date, tag_priorities, interests_file
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def save_analyzed_news(self, news_ids, source_type, interests_file, prompt_hash, matched_ids, date=None):
-        count = self._save_analyzed_news_impl(date, news_ids, source_type, interests_file, prompt_hash, matched_ids)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._save_analyzed_news_impl(
+                date,
+                news_ids,
+                source_type,
+                interests_file,
+                prompt_hash,
+                matched_ids,
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def get_analyzed_news_ids(self, source_type="hotlist", date=None, interests_file="ai_interests.txt"):
         return self._get_analyzed_news_ids_impl(date, source_type, interests_file)
@@ -1045,29 +1215,40 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         prompt_hash,
         date=None,
     ):
-        status = self._replace_ai_filter_batch_strict_impl(
+        return self._run_news_mutation(
             date,
-            results,
-            succeeded_news_ids,
-            succeeded_rss_ids,
-            interests_file,
-            prompt_hash,
+            lambda conn: self._replace_ai_filter_batch_strict_impl(
+                date,
+                results,
+                succeeded_news_ids,
+                succeeded_rss_ids,
+                interests_file,
+                prompt_hash,
+                conn=conn,
+            ),
+            strict_upload=True,
+            failure_value=None,
         )
-        if not self._upload_sqlite(date, strict_version=True):
-            raise RuntimeError("严格 AI 分类结果上传失败")
-        return status
 
     def clear_analyzed_news(self, date=None, interests_file="ai_interests.txt"):
-        count = self._clear_analyzed_news_impl(date, interests_file)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._clear_analyzed_news_impl(
+                date, interests_file
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def clear_unmatched_analyzed_news(self, date=None, interests_file="ai_interests.txt"):
-        count = self._clear_unmatched_analyzed_news_impl(date, interests_file)
-        if count > 0:
-            self._upload_sqlite(date)
-        return count
+        return self._run_news_mutation(
+            date,
+            lambda _conn: self._clear_unmatched_analyzed_news_impl(
+                date, interests_file
+            ),
+            strict_upload=False,
+            failure_value=0,
+        )
 
     def get_all_news_ids(self, date=None):
         return self._get_all_news_ids_impl(date)

@@ -1892,7 +1892,9 @@ class DailyDeliveryCheckpointTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            scheduler.latest_execution("daily_delivery", "push", "2026-08-09"),
+            scheduler.latest_execution(
+                "daily_delivery", "push", "2026-08-09", strict=False
+            ),
             "2026-08-08 10:02:00",
         )
         storage.get_latest_period_execution.assert_called_once_with(

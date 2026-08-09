@@ -265,6 +265,25 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
         self, period_key: str, action: str, through_date: str
     ) -> Optional[str]:
         """跨每日数据库读取截止日期内最近一次成功执行时间。"""
+        return self._get_latest_period_execution(
+            period_key, action, through_date, strict=False
+        )
+
+    def get_latest_period_execution_strict(
+        self, period_key: str, action: str, through_date: str
+    ) -> Optional[str]:
+        """严格跨日读取，任一 SQLite 异常向上抛出。"""
+        return self._get_latest_period_execution(
+            period_key, action, through_date, strict=True
+        )
+
+    def _get_latest_period_execution(
+        self,
+        period_key: str,
+        action: str,
+        through_date: str,
+        strict: bool,
+    ) -> Optional[str]:
         news_dir = self.data_dir / "news"
         if not news_dir.exists():
             return None
@@ -284,7 +303,7 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         for date_str in sorted(dates, reverse=True):
             executed_at = self._get_period_execution_at_impl(
-                date_str, period_key, action
+                date_str, period_key, action, strict_read=strict
             )
             if executed_at is not None:
                 return executed_at

@@ -1174,7 +1174,7 @@ class SQLiteStorageMixin:
         """返回指定数据库中周期执行记录的最近成功时间。"""
         try:
             if strict_read:
-                conn = self._get_connection(date_str, strict_exists=True)
+                conn = self._get_ai_connection(date_str, strict=True)
             else:
                 conn = self._get_connection(date_str)
             cursor = conn.cursor()
@@ -1197,7 +1197,13 @@ class SQLiteStorageMixin:
                 f"读取周期执行时间失败: {date_str}/{period_key}/{action}: {exc}"
             ) from exc
 
-    def _record_period_execution_impl(self, date_str: str, period_key: str, action: str) -> bool:
+    def _record_period_execution_impl(
+        self,
+        date_str: str,
+        period_key: str,
+        action: str,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
         """
         记录时间段的 action 执行
 
@@ -1210,7 +1216,7 @@ class SQLiteStorageMixin:
             是否记录成功
         """
         try:
-            conn = self._get_connection(date_str)
+            conn = conn or self._get_connection(date_str)
             cursor = conn.cursor()
 
             # 确保表存在
@@ -1236,6 +1242,11 @@ class SQLiteStorageMixin:
             return True
 
         except Exception as e:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             print(f"[存储] 记录时间段执行失败: {e}")
             return False
 
@@ -1818,6 +1829,7 @@ class SQLiteStorageMixin:
         version: int,
         prompt_hash: str,
         interests_file: str = "ai_interests.txt",
+        conn: Optional[sqlite3.Connection] = None,
     ) -> Dict[str, Any]:
         if not tags:
             raise RuntimeError("严格 AI 标签替换不得保存空标签集")
@@ -1840,7 +1852,7 @@ class SQLiteStorageMixin:
         if len({item["priority"] for item in normalized}) != len(normalized):
             raise RuntimeError("严格 AI 标签替换包含重复 priority")
 
-        conn = self._get_ai_connection(date, strict=True)
+        conn = conn or self._get_ai_connection(date, strict=True)
         now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -2309,6 +2321,7 @@ class SQLiteStorageMixin:
         succeeded_rss_ids: List[int],
         interests_file: str,
         prompt_hash: str,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> Dict[str, int]:
         """在单一事务中替换本轮结果和 analyzed 状态，并读回核验。"""
         news_ids = list(dict.fromkeys(succeeded_news_ids))
@@ -2334,7 +2347,7 @@ class SQLiteStorageMixin:
             result_keys.add(key)
             matched_by_type[source_type].add(news_item_id)
 
-        conn = self._get_ai_connection(date, strict=True)
+        conn = conn or self._get_ai_connection(date, strict=True)
         cursor = conn.cursor()
         now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
         try:

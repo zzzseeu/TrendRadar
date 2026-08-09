@@ -331,6 +331,14 @@ class StorageManager:
             period_key, action, through_date
         )
 
+    def get_latest_period_execution_strict(
+        self, period_key: str, action: str, through_date: str
+    ) -> Optional[str]:
+        """严格返回截止日期内最近一次成功执行时间。"""
+        return self.get_backend().get_latest_period_execution_strict(
+            period_key, action, through_date
+        )
+
     def latest_execution(
         self, period_key: str, action: str, through_date: str
     ) -> Optional[str]:

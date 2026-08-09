@@ -7,7 +7,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from trendradar.utils.time import (
     DEFAULT_TIMEZONE,
@@ -322,8 +322,12 @@ class AppContext:
         frequency_file: Optional[str] = None,
         report_metadata: Optional[Dict] = None,
         translate_report_func: Optional[Any] = None,
+        operation_at: Optional[datetime] = None,
     ) -> str:
         """生成HTML报告"""
+        render_clock = (
+            (lambda: operation_at) if operation_at is not None else self.get_time
+        )
         return generate_html_report(
             stats=stats,
             total_titles=total_titles,
@@ -334,9 +338,25 @@ class AppContext:
             update_info=update_info,
             rank_threshold=self.rank_threshold,
             output_dir="output",
-            date_folder=self.format_date(),
-            time_filename=self.format_time(),
-            render_html_func=lambda *args, **kwargs: self.render_html(*args, rss_items=rss_items, rss_new_items=rss_new_items, ai_analysis=ai_analysis, standalone_data=standalone_data, **kwargs),
+            date_folder=(
+                operation_at.strftime("%Y-%m-%d")
+                if operation_at is not None
+                else self.format_date()
+            ),
+            time_filename=(
+                operation_at.strftime("%H-%M")
+                if operation_at is not None
+                else self.format_time()
+            ),
+            render_html_func=lambda *args, **kwargs: self.render_html(
+                *args,
+                rss_items=rss_items,
+                rss_new_items=rss_new_items,
+                ai_analysis=ai_analysis,
+                standalone_data=standalone_data,
+                get_time_func=render_clock,
+                **kwargs,
+            ),
             report_metadata=report_metadata,
             translate_report_func=translate_report_func,
         )
@@ -351,6 +371,7 @@ class AppContext:
         rss_new_items: Optional[List[Dict]] = None,
         ai_analysis: Optional[Any] = None,
         standalone_data: Optional[Dict] = None,
+        get_time_func: Optional[Callable[[], datetime]] = None,
     ) -> str:
         """渲染HTML内容"""
         return render_html_content(
@@ -359,7 +380,7 @@ class AppContext:
             mode=mode,
             update_info=update_info,
             region_order=self.region_order,
-            get_time_func=self.get_time,
+            get_time_func=get_time_func or self.get_time,
             rss_items=rss_items,
             rss_new_items=rss_new_items,
             display_mode=self.display_mode,
@@ -416,6 +437,7 @@ class AppContext:
         standalone_data: Optional[Dict] = None,
         ai_stats: Optional[Dict] = None,
         report_type: str = "热点分析报告",
+        get_time_func: Optional[Callable[[], datetime]] = None,
     ) -> List[str]:
         """分批处理消息内容（支持热榜+RSS合并+AI分析+独立展示区）
 
@@ -448,7 +470,7 @@ class AppContext:
             },
             feishu_separator=self.config.get("FEISHU_MESSAGE_SEPARATOR", "---"),
             region_order=self.region_order,
-            get_time_func=self.get_time,
+            get_time_func=get_time_func or self.get_time,
             rss_items=rss_items,
             rss_new_items=rss_new_items,
             timezone=self.config.get("TIMEZONE", DEFAULT_TIMEZONE),
@@ -463,7 +485,10 @@ class AppContext:
 
     # === 通知发送 ===
 
-    def create_notification_dispatcher(self) -> NotificationDispatcher:
+    def create_notification_dispatcher(
+        self,
+        operation_at: Optional[datetime] = None,
+    ) -> NotificationDispatcher:
         """创建通知调度器"""
         # 创建翻译器（如果启用）
         translator = None
@@ -472,10 +497,18 @@ class AppContext:
             ai_config = self.config.get("AI", {})
             translator = AITranslator(trans_config, ai_config)
 
+        dispatch_clock = (
+            (lambda: operation_at) if operation_at is not None else self.get_time
+        )
+
         return NotificationDispatcher(
             config=self.config,
-            get_time_func=self.get_time,
-            split_content_func=self.split_content,
+            get_time_func=dispatch_clock,
+            split_content_func=lambda *args, **kwargs: self.split_content(
+                *args,
+                get_time_func=dispatch_clock,
+                **kwargs,
+            ),
             translator=translator,
         )
 

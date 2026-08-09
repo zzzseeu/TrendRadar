@@ -14,6 +14,10 @@ TrendRadar 每天北京时间 10:00 执行一次采集、分析和推送。推�
 - 时间线每天使用同一个 `daily_delivery` 周期，采集、分析和推送均启用。
 - 单次运行在入口按配置时区只读取一次 `run_at`，并冻结对应 `run_date`；即使执行跨过
   午夜，调度解析、RSS 原始快照、AI 严格数据、通知与检查点仍全部归属该运行日期。
+- `RSSFetcher.fetch_all` 将同一个冻结 `run_at` 传给每个 feed；URL 年份、新鲜度边界、
+  item 的 crawl/first/last 时间和批次元数据不得在源之间重新读取 wall clock。HTML
+  文件路径、页面生成时间、通知更新时间和邮件逻辑主题/正文也复用该时钟；SMTP 的物理
+  传输头仍使用实际发送时间。
 - 每个日期只成功记录一次；同日人工补跑只在前一次未完整成功时继续执行。
 - 首次没有历史成功检查点时，窗口起点为当前运行时间前 24 小时。
 - 后续窗口为 `(last_success_at, current_run_at]`。
@@ -84,6 +88,9 @@ ETag/VersionId 与最终 HEAD 一致；不支持条件写的远端后端明确�
 `daily_delivery` 与保留的 `weekly` 的 analyze/push 状态读取和记录都使用 explicit strict
 period API；任何权限、网络、坏库或陈旧缓存错误必须在发送前 fail-closed。
 Remote 与 raw RSS、first-seen、strict AI 标签/结果共用同一 conditional-CAS 提交协议。
+strict API 同时包含 has、latest 和 record；基类默认抛 `NotImplementedError`，不能用
+返回 `None` 的弱默认把“不支持/读取失败”解释为未执行。period 本地 commit 异常必须
+rollback；Remote 的 False、异常或 CAS 失败必须恢复 mutation 前镜像并清理 dirty 状态。
 
 无内容周期跳过第 4、5 步，但仍记录成功检查点。任何失败都返回非零退出码。
 
@@ -99,6 +106,9 @@ Remote 与 raw RSS、first-seen、strict AI 标签/结果共用同一 conditiona
 - `daily_delivery` 的 AI 分类协议、最终 grounding 摘要和标签生命周期全部 fail-closed。
   分类响应中的未知/重复 ID、未知标签、缺字段、非法元素或空摘要仅允许修复一次；只有
   精确 `[]` 表示合法无匹配。grounding 和显示配置裁剪后，最终对象仍须有可交付叙事。
+- `daily_delivery` 始终把本轮权威 RSS 快照作为 AI 摘要唯一输入；公开配置中的
+  `AI_ANALYSIS.MODE=daily/current/incremental` 不得触发历史热榜读取或把热榜摘要注入
+  交付。普通报告模式继续尊重这些配置。
 - strict flat schema 的 news/tag ID 必须是非布尔整数，score/importance 必须是有限的
   JSON 数值且位于 `[0,1]`，summary 必须是非空字符串；数值字符串、NaN/Infinity 和
   null/object/list/bool 均进入同一次 repair，repair 后仍非法则整批失败。
@@ -133,6 +143,10 @@ Remote 与 raw RSS、first-seen、strict AI 标签/结果共用同一 conditiona
   checkpoint 与 first-seen 账本均不得使用陈旧连接。
 - 远程 strict 写覆盖 existing/create 条件 PUT、pre-PUT/PUT 后/创建竞争、dirty read 冲突
   和 strict period CAS 失败本地回滚；不承诺跨进程通知 exactly-once，端点仍可能重复。
+- Remote AI 标签/分类的 batch 与 non-batch mutation 覆盖 412、上传失败和 strict 底层
+  False：严格批次恢复首次 mutation 前镜像、关闭旧连接并清除 dirty；普通 wrapper 也
+  必须向调用方反映远端提交失败，但普通批次返回 0 的合法 no-op 不回滚先前成功修改。
+  后续 strict 读取只能看到权威远端状态。
 - first-seen 消费覆盖 Remote 读取 v2 期间变为 v3、Local DB/WAL 读取期间变化，以及同一
   日库多 generation 的真正增量 watermark；失败不得推进水位，下一轮仍须处理新 outbox。
 - Remote 共享 news DB 覆盖旧热榜写者不能覆盖新 checkpoint/AI 状态；热榜保存失败必须
@@ -140,7 +154,10 @@ Remote 与 raw RSS、first-seen、strict AI 标签/结果共用同一 conditiona
 - strict period 读取覆盖 404、权限/网络/坏库和远端版本刷新；调度器必须按 report mode
   对 has/record 成对路由严格接口。
 - 跨午夜主链覆盖冻结 N 日的 RSS 保存、快照、AI 标签/结果/ID、通知和检查点；N+1 日的
-  同 ID 数据不得被误读。
+  同 ID 数据不得被误读；两个真实 feed 必须共用 N 日 freshness/发现时钟，HTML 路径、
+  飞书/钉钉 payload 与邮件主题/正文也保持 N 日。
+- strict latest-period 覆盖第三方缺能力、Local 坏表及 Remote 404/版本变化/AccessDenied；
+  daily_delivery 与 weekly 在读取 latest/has 和记录 record 时必须成对严格路由。
 - strict 分类覆盖未知 ID/tag、缺字段、非法元素、重复 ID、修复成功/失败；标签替换覆盖
   SQLite 中途失败回滚、保存 0、读失败、旧 active 残留和远端上传版本验证。
 - 现有 weekly、Elsevier、代理、邮件多收件人和普通报告模式回归测试继续通过。
