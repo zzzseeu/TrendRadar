@@ -179,7 +179,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         db_dir.mkdir(parents=True, exist_ok=True)
         return db_dir / f"{date_folder}.db"
 
-    def _check_object_exists(self, r2_key: str) -> bool:
+    def _check_object_exists(self, r2_key: str, strict: bool = False) -> bool:
         """
         检查远程存储中对象是否存在
 
@@ -197,14 +197,23 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             # S3 兼容存储可能返回 404, NoSuchKey, 或其他变体
             if error_code in ("404", "NoSuchKey", "Not Found"):
                 return False
-            # 其他错误（如权限问题）也视为不存在，但打印警告
+            # 普通存储路径保持既有宽松语义；严格读取路径必须上抛错误。
             print(f"[远程存储] 检查对象存在性失败 ({r2_key}): {e}")
+            if strict:
+                raise
             return False
         except Exception as e:
             print(f"[远程存储] 检查对象存在性异常 ({r2_key}): {e}")
+            if strict:
+                raise
             return False
 
-    def _download_sqlite(self, date: Optional[str] = None, db_type: str = "news") -> Optional[Path]:
+    def _download_sqlite(
+        self,
+        date: Optional[str] = None,
+        db_type: str = "news",
+        strict_exists: bool = False,
+    ) -> Optional[Path]:
         """
         从远程存储下载当天的 SQLite 文件到本地临时目录
 
@@ -225,7 +234,11 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
         # 先检查文件是否存在
-        if not self._check_object_exists(r2_key):
+        if strict_exists:
+            object_exists = self._check_object_exists(r2_key, strict=True)
+        else:
+            object_exists = self._check_object_exists(r2_key)
+        if not object_exists:
             print(f"[远程存储] 文件不存在，将创建新数据库: {r2_key}")
             return None
 
@@ -320,7 +333,12 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             print(f"[远程存储] 上传失败: {e}")
             return False
 
-    def _get_connection(self, date: Optional[str] = None, db_type: str = "news") -> sqlite3.Connection:
+    def _get_connection(
+        self,
+        date: Optional[str] = None,
+        db_type: str = "news",
+        strict_exists: bool = False,
+    ) -> sqlite3.Connection:
         """
         获取数据库连接
 
@@ -340,7 +358,9 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
             # 如果本地不存在，尝试从远程存储下载
             if not local_path.exists():
-                self._download_sqlite(date, db_type)
+                self._download_sqlite(
+                    date, db_type, strict_exists=strict_exists
+                )
 
             conn = sqlite3.connect(db_path)
             conn.row_factory = sqlite3.Row
@@ -462,7 +482,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         for date_str in sorted(dates, reverse=True):
             executed_at = self._get_period_execution_at_impl(
-                date_str, period_key, action
+                date_str, period_key, action, strict_read=True
             )
             if executed_at is not None:
                 return executed_at

@@ -826,11 +826,14 @@ class SQLiteStorageMixin:
             return False
 
     def _get_period_execution_at_impl(
-        self, date_str: str, period_key: str, action: str
+        self, date_str: str, period_key: str, action: str, strict_read: bool = False
     ) -> Optional[str]:
         """返回指定数据库中周期执行记录的最近成功时间。"""
         try:
-            conn = self._get_connection(date_str)
+            if strict_read:
+                conn = self._get_connection(date_str, strict_exists=True)
+            else:
+                conn = self._get_connection(date_str)
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT name FROM sqlite_master "

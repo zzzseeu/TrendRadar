@@ -1,9 +1,11 @@
 import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytz
+from botocore.exceptions import ClientError
 
 from trendradar.core.scheduler import Scheduler
 from trendradar.storage.local import LocalStorageBackend
@@ -85,10 +87,37 @@ class DailyDeliveryCheckpointTests(unittest.TestCase):
         self.assertEqual(
             backend._get_period_execution_at_impl.call_args_list,
             [
-                call("2026-08-09", "daily_delivery", "push"),
-                call("2026-08-08", "daily_delivery", "push"),
+                call("2026-08-09", "daily_delivery", "push", strict_read=True),
+                call("2026-08-08", "daily_delivery", "push", strict_read=True),
             ],
         )
+
+    def test_remote_checkpoint_propagates_access_denied_during_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = RemoteStorageBackend.__new__(RemoteStorageBackend)
+            backend.bucket_name = "test-bucket"
+            backend.temp_dir = Path(tmp)
+            backend.timezone = "Asia/Shanghai"
+            backend._db_connections = {}
+            backend._downloaded_files = []
+            backend.s3_client = MagicMock()
+            backend.s3_client.get_paginator.return_value.paginate.return_value = [
+                {"Contents": [{"Key": "news/2026-08-09.db"}]}
+            ]
+            access_denied = ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                "HeadObject",
+            )
+            backend.s3_client.head_object.side_effect = access_denied
+
+            with self.assertRaisesRegex(
+                RuntimeError, "读取周期执行时间失败"
+            ) as raised:
+                backend.get_latest_period_execution(
+                    "daily_delivery", "push", "2026-08-09"
+                )
+
+            self.assertIs(raised.exception.__cause__, access_denied)
 
     def test_scheduler_latest_execution_forwards_all_arguments(self):
         storage = MagicMock()
