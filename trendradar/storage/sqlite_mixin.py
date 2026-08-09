@@ -1923,7 +1923,7 @@ class SQLiteStorageMixin:
                 SELECT i.id, i.title, i.feed_id, f.name as feed_name,
                        i.published_at, i.url, i.summary, i.author,
                        i.source_count, i.pre_hot_score, i.search_topic,
-                       i.search_providers
+                       i.search_providers, i.guid
                 FROM rss_items i
                 LEFT JOIN rss_feeds f ON i.feed_id = f.id
                 ORDER BY i.id
@@ -1940,6 +1940,7 @@ class SQLiteStorageMixin:
                     "pre_hot_score": row[9] if row[9] is not None else 0.0,
                     "search_topic": row[10] or "",
                     "search_providers": row[11] or "",
+                    "guid": row[12] or "",
                 }
                 for row in cursor.fetchall()
             ]

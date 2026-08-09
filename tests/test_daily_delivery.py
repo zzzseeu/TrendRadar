@@ -1,7 +1,7 @@
 import hashlib
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
@@ -105,6 +105,22 @@ class DailyDeliveryWindowTests(unittest.TestCase):
             "2026-08-08T01:45:00Z", "2026-08-09", "Asia/Shanghai"
         )
         self.assertEqual(parsed, shanghai(2026, 8, 8, 9, 45))
+
+    def test_first_window_normalizes_dst_and_uses_local_calendar_dates(self):
+        timezone = "America/New_York"
+        now = pytz.timezone(timezone).localize(datetime(2026, 3, 9, 0, 30))
+
+        window = daily_delivery_window(now, None, timezone)
+
+        self.assertEqual(
+            window.start.isoformat(),
+            "2026-03-07T23:30:00-05:00",
+        )
+        self.assertEqual(window.end - window.start, timedelta(hours=24))
+        self.assertEqual(
+            window.storage_dates,
+            ["2026-03-07", "2026-03-08", "2026-03-09"],
+        )
 
 
 class DailyDeliveryAggregatorTests(unittest.TestCase):
@@ -217,12 +233,68 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].title, "Richer title")
-        self.assertEqual(items[0].url, "https://example.org/story")
+        self.assertEqual(
+            items[0].url,
+            "https://example.org/story?utm_medium=rss",
+        )
         self.assertEqual(items[0].summary, "a much richer summary")
         self.assertEqual(items[0].source_count, 4)
         self.assertEqual(items[0].pre_hot_score, 0.9)
         self.assertEqual(items[0].search_providers, "gdelt,google_news")
         self.assertEqual(snapshot.duplicate_count, 1)
+
+    def test_existing_tracking_url_is_reused_as_the_exact_snapshot_row(self):
+        tracking_url = "https://example.org/exact?utm_source=current"
+        save_rss_day(self.backend, "2026-08-09", "09-00", [RSSItem(
+            title="Reuse tracking row", feed_id="journal", url=tracking_url,
+        )])
+        before = self.backend.get_all_rss_ids("2026-08-09")
+        original_id = before[0]["id"]
+
+        snapshot = self.build()
+        after = self.backend.get_all_rss_ids("2026-08-09")
+
+        self.assertEqual(len(after), 1)
+        self.assertEqual(snapshot.allowed_rss_ids, {original_id})
+        self.assertEqual(
+            [item.url for item in snapshot.iter_items()],
+            [tracking_url],
+        )
+
+    def test_same_title_and_canonical_url_resolves_only_actual_guid_row(self):
+        first_url = "https://example.org/guid-story?utm_source=first"
+        richer_url = "https://example.org/guid-story?utm_source=richer"
+        save_rss_day(self.backend, "2026-08-09", "09-00", [
+            RSSItem(
+                title="Same normalized title", feed_id="journal",
+                url=first_url, guid="guid-first", summary="short",
+            ),
+            RSSItem(
+                title="Same normalized title", feed_id="journal",
+                url=richer_url, guid="guid-richer",
+                summary="a much richer summary",
+            ),
+        ])
+        before = self.backend.get_all_rss_ids("2026-08-09")
+        richer_id = next(
+            row["id"] for row in before if row["url"] == richer_url
+        )
+
+        snapshot = self.build()
+
+        self.assertEqual(snapshot.allowed_rss_ids, {richer_id})
+
+    def test_get_all_rss_ids_exposes_guid_without_changing_existing_fields(self):
+        save_rss_day(self.backend, "2026-08-09", "09-00", [RSSItem(
+            title="GUID contract", feed_id="journal",
+            url="https://example.org/guid-contract", guid="stable-guid",
+        )])
+
+        row = self.backend.get_all_rss_ids("2026-08-09")[0]
+
+        self.assertEqual(row.get("guid"), "stable-guid")
+        self.assertEqual(row["source_id"], "journal")
+        self.assertEqual(row["url"], "https://example.org/guid-contract")
 
     def test_title_fallback_snapshot_ids_are_stable_and_idempotent(self):
         date_str = "2026-08-08"
@@ -347,6 +419,30 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
         )])
 
         with patch.object(self.backend, "get_all_rss_ids", return_value=[]):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "每日交付快照 ID 解析失败：存在未持久化条目",
+            ):
+                self.build()
+
+    def test_snapshot_id_resolution_rejects_multiple_exact_rows(self):
+        url = "https://example.org/ambiguous-id"
+        save_rss_day(self.backend, "2026-08-08", "11-00", [RSSItem(
+            title="Ambiguous ID", feed_id="journal", url=url,
+        )])
+        duplicate_rows = [
+            {
+                "id": row_id, "source_id": "journal", "source_name": "Journal",
+                "url": url, "guid": "",
+            }
+            for row_id in (101, 102)
+        ]
+
+        with patch.object(
+            self.backend,
+            "get_all_rss_ids",
+            side_effect=[[], duplicate_rows],
+        ):
             with self.assertRaisesRegex(
                 RuntimeError,
                 "每日交付快照 ID 解析失败：存在未持久化条目",

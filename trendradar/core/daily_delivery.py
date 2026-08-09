@@ -12,7 +12,7 @@ from trendradar.core.rss_snapshot import (
     search_providers,
     stable_title_guid,
 )
-from trendradar.crawler.news_search import canonicalize_url, normalize_title
+from trendradar.crawler.news_search import canonicalize_url
 from trendradar.storage.base import RSSData, RSSItem
 
 
@@ -60,7 +60,7 @@ class DailyDeliveryWindow:
     def storage_dates(self) -> list[str]:
         day_count = (self.end.date() - self.start.date()).days
         return [
-            (self.start + timedelta(days=offset)).strftime("%Y-%m-%d")
+            (self.start.date() + timedelta(days=offset)).strftime("%Y-%m-%d")
             for offset in range(day_count + 1)
         ]
 
@@ -77,7 +77,7 @@ def daily_delivery_window(
     start = (
         parse_discovered_at(checkpoint, end.strftime("%Y-%m-%d"), timezone)
         if checkpoint
-        else end - timedelta(hours=24)
+        else pytz.timezone(timezone).normalize(end - timedelta(hours=24))
     )
     if start is None or start >= end:
         raise RuntimeError("每日交付检查点无效")
@@ -164,7 +164,6 @@ class DailyDeliveryAggregator:
                     candidate = replace(item)
                     canonical_url = canonicalize_url(candidate.url)
                     if canonical_url:
-                        candidate.url = canonical_url
                         anchor = (candidate.feed_id, candidate.feed_name)
                         current_anchor = canonical_anchors.get(canonical_url)
                         if current_anchor is None or anchor[0] < current_anchor[0]:
@@ -215,25 +214,50 @@ class DailyDeliveryAggregator:
         grouped_items: dict[str, list[RSSItem]] = {}
         id_to_name: dict[str, str] = {}
         snapshot_date = window.end.strftime("%Y-%m-%d")
-        existing_anchors: dict[str, tuple[str, str]] = {}
+        existing_by_canonical: dict[str, list[dict]] = {}
         for row in self.storage.get_all_rss_ids(snapshot_date):
             canonical_url = canonicalize_url(row.get("url", ""))
             if not canonical_url:
                 continue
-            anchor = (row.get("source_id", ""), row.get("source_name", ""))
-            current_anchor = existing_anchors.get(canonical_url)
-            if current_anchor is None or anchor[0] < current_anchor[0]:
-                existing_anchors[canonical_url] = anchor
+            existing_by_canonical.setdefault(canonical_url, []).append(row)
 
         for item in ordered_items:
             canonical_url = canonicalize_url(item.url)
             if not canonical_url and not item.guid:
                 item.guid = stable_title_guid(item, namespace="daily-delivery")
-            anchor = existing_anchors.get(canonical_url) or canonical_anchors.get(
-                canonical_url
-            )
-            if anchor:
-                item.feed_id, item.feed_name = anchor
+            existing_rows = existing_by_canonical.get(canonical_url, [])
+            exact_rows = []
+            if item.guid:
+                exact_rows = [
+                    row for row in existing_rows
+                    if row.get("source_id", "") == item.feed_id
+                    and row.get("guid", "") == item.guid
+                ]
+            if not exact_rows:
+                exact_rows = [
+                    row for row in existing_rows
+                    if row.get("source_id", "") == item.feed_id
+                    and row.get("url", "") == item.url
+                ]
+            existing_row = None
+            if len(exact_rows) == 1:
+                existing_row = exact_rows[0]
+            elif existing_rows:
+                existing_row = min(
+                    existing_rows,
+                    key=lambda row: (row.get("source_id", ""), row["id"]),
+                )
+            if existing_row:
+                item.feed_id = existing_row.get("source_id", "")
+                item.feed_name = existing_row.get("source_name", "")
+                item.url = existing_row.get("url", "")
+                item.guid = existing_row.get("guid", "")
+            else:
+                if canonical_url:
+                    item.url = canonical_url
+                anchor = canonical_anchors.get(canonical_url)
+                if anchor:
+                    item.feed_id, item.feed_name = anchor
             grouped_items.setdefault(item.feed_id, []).append(item)
             id_to_name[item.feed_id] = item.feed_name or feed_names.get(
                 item.feed_id, item.feed_id
@@ -253,23 +277,32 @@ class DailyDeliveryAggregator:
         return snapshot
 
     def _resolve_allowed_ids(self, data: RSSData) -> set[int]:
-        identities = {
-            (item.feed_id, canonicalize_url(item.url), normalize_title(item.title))
+        snapshot_items = [
+            item
             for items in data.items.values()
             for item in items
-        }
+        ]
+        rows = self.storage.get_all_rss_ids(data.date)
         resolved_ids: set[int] = set()
-        resolved_identities: set[tuple[str, str, str]] = set()
-        for row in self.storage.get_all_rss_ids(data.date):
-            identity = (
-                row.get("source_id", ""),
-                canonicalize_url(row.get("url", "")),
-                normalize_title(row.get("title", "")),
-            )
-            if identity in identities:
-                resolved_ids.add(row["id"])
-                resolved_identities.add(identity)
+        for item in snapshot_items:
+            if item.guid:
+                matches = [
+                    row for row in rows
+                    if row.get("source_id", "") == item.feed_id
+                    and row.get("guid", "") == item.guid
+                ]
+            else:
+                matches = [
+                    row for row in rows
+                    if row.get("source_id", "") == item.feed_id
+                    and row.get("url", "") == item.url
+                ]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "每日交付快照 ID 解析失败：存在未持久化条目"
+                )
+            resolved_ids.add(matches[0]["id"])
 
-        if resolved_identities != identities:
+        if len(resolved_ids) != len(snapshot_items):
             raise RuntimeError("每日交付快照 ID 解析失败：存在未持久化条目")
         return resolved_ids
