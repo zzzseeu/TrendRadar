@@ -9,6 +9,7 @@ AI 智能筛选模块
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -656,6 +657,10 @@ class AIFilter:
                         f"严格模式分类缺少字段: {sorted(missing)}"
                     )
                 news_id = item["id"]
+                if type(news_id) is not int:
+                    raise _InvalidClassificationResponse(
+                        "严格模式分类 news id 必须为整数"
+                    )
                 if news_id not in title_ids:
                     raise _InvalidClassificationResponse(
                         f"严格模式分类包含未知 news id: {news_id!r}"
@@ -665,22 +670,41 @@ class AIFilter:
                         f"严格模式分类包含重复 news id: {news_id!r}"
                     )
                 seen_news_ids.add(news_id)
-                if item["tag_id"] not in tag_id_set:
+                tag_id = item["tag_id"]
+                if type(tag_id) is not int:
+                    raise _InvalidClassificationResponse(
+                        "严格模式分类 tag id 必须为整数"
+                    )
+                if tag_id not in tag_id_set:
                     raise _InvalidClassificationResponse(
                         f"严格模式分类包含未知 tag id: {item['tag_id']!r}"
                     )
-                try:
-                    score = float(item["score"])
-                    importance = float(item["importance_score"])
-                except (TypeError, ValueError) as exc:
+                raw_score = item["score"]
+                raw_importance = item["importance_score"]
+                if (
+                    isinstance(raw_score, bool)
+                    or not isinstance(raw_score, (int, float))
+                    or isinstance(raw_importance, bool)
+                    or not isinstance(raw_importance, (int, float))
+                ):
                     raise _InvalidClassificationResponse(
                         "严格模式分类分数不是数值"
-                    ) from exc
-                if not 0 <= score <= 1 or not 0 <= importance <= 1:
+                    )
+                score = float(raw_score)
+                importance = float(raw_importance)
+                if (
+                    not math.isfinite(score)
+                    or not math.isfinite(importance)
+                    or not 0 <= score <= 1
+                    or not 0 <= importance <= 1
+                ):
                     raise _InvalidClassificationResponse(
                         "严格模式分类分数不在 [0, 1]"
                     )
-                if not " ".join(str(item["summary"]).split()):
+                summary = item["summary"]
+                if not isinstance(summary, str) or not " ".join(
+                    summary.split()
+                ):
                     raise _InvalidClassificationResponse(
                         f"严格模式分类摘要为空: {news_id!r}"
                     )

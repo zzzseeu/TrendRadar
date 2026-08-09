@@ -548,7 +548,7 @@ class WeeklyScheduleTests(unittest.TestCase):
 
     def test_scheduler_record_execution_returns_storage_result(self):
         storage = MagicMock()
-        storage.record_period_execution.return_value = False
+        storage.record_period_execution_strict.return_value = False
         scheduler = Scheduler(
             {"enabled": True, "preset": "custom"},
             TIMELINE,

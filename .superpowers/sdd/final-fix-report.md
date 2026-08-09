@@ -492,3 +492,74 @@ RED：假第三方仅实现普通 RSS 读取时，daily aggregator 未明确失�
 - strict 最终摘要在 grounding 与配置裁剪后检查，合法 JSON 空对象不能推进 once/checkpoint。
 - 第三方 strict capability 不再隐式降级；Local、Remote、Manager 均显式实现。
 - 未合并 main、未部署、未真实发送或推送，未发现遗留架构冲突。
+
+## 第四次最终复审修复（outbox recovery / conditional CAS）
+
+### 1. raw RSS 与 first-seen ledger 的崩溃恢复
+
+根因：第三次实现仍在 raw 保存后从内存 payload 更新账本。raw 日库已经提交而 ledger 上传失败时，新进程无法从 durable 状态知道哪些 identity 尚未入账；同时无 URL/GUID 的 title-only 条目没有可持久化身份，单条 SQLite 错误会被吞掉而形成部分批次。
+
+RED 先以 4 项真实 Local SQLite 测试覆盖 raw 已提交后关闭进程并以空 payload 恢复、title-only 持久化、单条错误整批 rollback、稳定二次查询不打开历史日库；首跑 3 项失败。随后补充同 feed 多个 title-only 条目，旧的空 URL 唯一索引再次产生 1 项有效 RED。
+
+修复：
+
+- `rss_first_seen_outbox` 与 raw 条目、crawl record、单调 generation 在同一 `BEGIN IMMEDIATE` 事务提交；outbox 只读取已经持久化的行，不遍历输入 payload。
+- title-only 使用 `feed_id + normalize_title(title)` 的稳定 SHA-256 GUID，与账本 title fallback identity 保持一致；空 URL 唯一索引迁移为 partial index。
+- 任一条目失败回滚整批 raw、crawl record、generation 与 outbox；既有条目更新仍保留不可变 `first_crawl_time`。
+- ledger 新增每源 provenance、watermark 与 processed write 表；save 前后和候选查询前幂等消费未处理 outbox。Local 以 DB/WAL 文件 provenance 判断变化，稳定查询不再打开历史库；旧库没有 outbox 时仅在首次或 provenance 变化时兼容回填。
+
+原 4 项复跑 `Ran 4 in 22.540s, OK`，同 feed title-only 定向测试也转为 GREEN。新 backend、空 payload 的恢复路径证明不依赖 feed 重返旧条目。
+
+### 2. Remote conditional CAS、dirty 状态与 strict period
+
+根因：旧 strict 上传只是 `HEAD -> PUT -> HEAD`，竞争可发生在任意间隙；dirty 本地 SQLite 可能被 strict read 刷新覆盖；analyze/push period execution 仍走普通上传，CAS 失败也可能让本地看似成功。
+
+RED 分两组建立：raw 已 CAS 成功而 ledger 上传失败后由全新 Remote backend 从远端 outbox 恢复，以及 precheck→PUT、PUT→postcheck、创建竞争；首组 `Ran 3` 为 exit 1。dirty strict read、strict period CAS/rollback 的 3 项首跑为 1 FAIL、2 ERROR。自审又新增“同 baseline 连续 strict read 必须继续读本地 dirty”用例，首跑 1 FAIL。
+
+修复：
+
+- 统一 `_conditional_put_strict`：更新对象传 `IfMatch=<baseline ETag>`，创建传 `IfNoneMatch=*`；服务端不支持条件参数、412/竞争、PUT 不返回 ETag/VersionId、最终 HEAD 与 PUT provenance 不一致均显式失败。
+- strict 首次修改立即标记 remote key 为 local-authoritative；同 baseline 的 strict read 保留本地 dirty，provenance 改变或 404 则报冲突。仅 CAS 成功或显式 rollback 清除 dirty。
+- raw RSS 先提交带 outbox 的日库 CAS，再消费并 CAS ledger；因此 ledger 失败后新进程可从远端 raw/outbox 恢复。
+- Base/Local/Remote/Manager/Scheduler 增加 strict period API；daily_delivery 与 weekly 严格交付自动使用。Remote CAS 失败关闭、恢复修改前本地镜像，不记录本地成功。
+- strict tag snapshot 与 strict classification result 也复用同一 conditional CAS，批次末统一以 strict CAS 上传。
+
+两组原 RED 及自审用例全部 GREEN；`tests.test_daily_delivery_review4` 最终 `Ran 13 in 50.066s, OK`。跨进程外部通知 exactly-once/分布式推送租约仍明确不在本次范围，失败重试可能重复端点发送的既有说明保持不变。
+
+### 3. strict 分类 flat schema 类型
+
+根因：strict parser 验证了字段和集合，却仍用 `float()` 接受数值字符串，也会把 bool 当整数/数值；NaN/Infinity、null、对象和 list 未形成统一非法响应。
+
+参数化 RED 的 7 个子用例覆盖 news/tag ID 的 bool/非整数、score 与 importance 的 bool/字符串/非有限值及 summary 非字符串。修复后 ID 必须为精确非 bool `int`，分数必须为非 bool、有限 JSON `int|float` 且在 `[0,1]`，summary 必须是非空字符串；所有非法项共用一次 repair，repair 后仍非法整批 `None`。类型与 repair 测试合跑 `Ran 3, OK`，普通 fail-soft parser 未改变。
+
+### 4. 回归中发现并修复的兼容问题
+
+- 既有 legacy 行 `first_crawl_time` 为空时，outbox 必须继续回退 `last_crawl_time` 和本轮 crawl time；否则 canonical 跨检查点测试会把合法历史误判为存储错误。
+- 跨自然日运行测试暴露 Local/Remote 的 `date=None` 仍取宿主机 wall clock；改为统一使用已注入的配置时钟，避免采集日库与后续读取日库不一致。
+- Scheduler 测试中的未知稳定 period key 不能直接索引 timeline；strict 自动判断对 `weekly`/`daily_delivery` 保留严格语义，其余回退既有 report mode。
+- weekly 与第三方普通模式仍保留原 fail-soft 接口；仅 weekly/daily_delivery 的执行记录走 strict API。
+
+## 第四次复审最终验证
+
+所有 Python 命令均使用 `docker run --network none ... /app/.venv/bin/python`，并取得明确 exit code。
+
+- 新增第四次复审：`tests.test_daily_delivery_review4`，`Ran 13 in 50.066s`，`OK`，exit 0。
+- Remote/第三次复审：`tests.test_daily_delivery_review3`，`Ran 20 in 75.393s`，`OK`，exit 0。
+- 调度相关：DailyDeliverySchedule `Ran 36`、StorageContract `Ran 10 in 62.479s`、WeeklySchedule `Ran 20`，均 `OK`、exit 0。
+- 聚焦回归：`tests.test_daily_delivery tests.test_daily_delivery_schedule tests.test_daily_delivery_report tests.test_news_search_pipeline`，`Ran 163 in 351.137s`，`OK`，exit 0。
+- 固定兼容：weekly digest/schedule/report、Elsevier、proxy、email 共 `Ran 93 in 216.378s`，`OK`，exit 0。
+- 最终全量：`python -m unittest discover -s /workspace/tests -q`，`Ran 393 in 627.768s`，`OK`，exit 0。
+- 当前镜像 botocore `PutObject` service model 实测同时包含 `IfMatch` 与 `IfNoneMatch`，断网 Docker 检查输出 `True True ['IfMatch', 'IfNoneMatch']`，exit 0；strict CAS 不依赖假设中的客户端参数。
+- `bash -n docker/entrypoint.sh`、`bash -n config/daily.crontab`、`bash tests/test_portable_deployment.sh`、`git diff --check` 均 exit 0；portable 输出 `PASS: 本地部署路径可移植性检查通过`。
+
+## 第四次复审 Diff 自审
+
+- raw/outbox/crawl record/generation 同一事务；ledger 不会产生 raw 中不存在的 identity，失败进程无需相同 payload 即可恢复。
+- source provenance 与 watermark 只打开新增/变化日库，既有无 outbox 日库仍可一次性严格升级；稳定查询满足不再打开历史连接的性能契约。
+- Remote strict mutation 只使用真实服务端 conditional PUT，创建、更新与 post-PUT 竞争全部失败关闭；无可靠条件写能力时没有普通 PUT 降级。
+- dirty 生命周期覆盖 strict tag/result、raw、ledger 与 period execution；CAS 失败不会把本地 period 标成成功。
+- strict scalar schema 拒绝 Python/JSON 容易混淆的 bool、字符串数值与非有限数，repair 预算仍严格为一次。
+- 设计规格与实现计划已同步 outbox、source watermark/provenance、conditional CAS、dirty、strict period 和通知 exactly-once 边界。
+- 未改变 10:00、`(last_success, now]`、首次 24h、合法空推进、同日成功跳过交付、freshness、通知目标或密钥持久化；未合并 main、未部署、未真实推送。
+
+第四次最终测试计数：聚焦 163、兼容 93、全量 393；三套最终命令合计执行 649 个测试（聚焦与兼容也包含于全量发现），全部明确 exit 0。未发现需要继续扩大范围的架构冲突。

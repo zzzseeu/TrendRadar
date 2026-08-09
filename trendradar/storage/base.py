@@ -481,6 +481,12 @@ class StorageBackend(ABC):
         """
         return False
 
+    def record_period_execution_strict(
+        self, date_str: str, period_key: str, action: str
+    ) -> bool:
+        """严格记录时间段执行；不支持原子持久化的后端必须明确失败。"""
+        raise NotImplementedError("存储后端不支持严格时间段执行记录")
+
     def get_latest_period_execution(
         self,
         period_key: str,

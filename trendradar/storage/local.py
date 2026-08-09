@@ -73,6 +73,8 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def _format_date_folder(self, date: Optional[str] = None) -> str:
         """格式化日期文件夹名 (ISO 格式: YYYY-MM-DD)"""
+        if date is None:
+            return self._get_configured_time().strftime("%Y-%m-%d")
         return format_date_folder(date, self.timezone)
 
     def _format_time_filename(self) -> str:
@@ -134,17 +136,34 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
             self._db_connections[db_path] = conn
         return self._db_connections[db_path]
 
-    def _list_rss_history_dates_strict(self, through_date: str) -> List[str]:
+    def _rss_source_file_version(self, date: str) -> str:
+        db_path = self.data_dir / "rss" / f"{date}.db"
+        parts = []
+        for path in (db_path, Path(f"{db_path}-wal")):
+            if path.exists():
+                stat = path.stat()
+                parts.append((path.name, stat.st_size, stat.st_mtime_ns))
+        if not parts:
+            raise RuntimeError(f"RSS 日库不存在: {date}")
+        return repr(parts)
+
+    def _get_rss_source_version_strict(self, date: str) -> str:
+        return self._rss_source_file_version(date)
+
+    def _list_rss_history_sources_strict(
+        self, through_date: str
+    ) -> Dict[str, str]:
         rss_dir = self.data_dir / "rss"
-        dates = []
+        sources = {}
         if rss_dir.exists():
             for db_path in rss_dir.glob("*.db"):
                 match = re.fullmatch(
                     r"(\d{4}-\d{2}-\d{2})\.db", db_path.name
                 )
                 if match and match.group(1) <= through_date:
-                    dates.append(match.group(1))
-        return sorted(dates)
+                    date = match.group(1)
+                    sources[date] = self._rss_source_file_version(date)
+        return sources
 
     def _persist_first_seen_ledger_strict(self) -> None:
         self._first_seen_needs_upload = False
@@ -224,6 +243,12 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
             print(f"[本地存储] 时间段执行记录已保存: {period_key}/{action} at {now_str}")
         return success
 
+    def record_period_execution_strict(
+        self, date_str: str, period_key: str, action: str
+    ) -> bool:
+        """本地 SQLite 事务提交即为严格持久化。"""
+        return self.record_period_execution(date_str, period_key, action)
+
     def get_latest_period_execution(
         self, period_key: str, action: str, through_date: str
     ) -> Optional[str]:
@@ -259,6 +284,11 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def save_rss_data(self, data: RSSData) -> bool:
         """保存 RSS 数据到 SQLite"""
+        try:
+            self._consume_first_seen_outboxes_strict(data.date)
+        except Exception as exc:
+            print(f"[本地存储] RSS first-seen 保存前恢复失败: {exc}")
+            return False
         success, new_count, updated_count = self._save_rss_data_impl(data, "[本地存储]")
 
         if success:

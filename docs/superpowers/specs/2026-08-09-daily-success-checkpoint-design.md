@@ -34,14 +34,23 @@ TrendRadar 每天北京时间 10:00 执行一次采集、分析和推送。推�
 
 系统级首次发现不通过每次请求重新扫描历史日库计算。存储层维护固定的版本化
 `rss/first-seen-v1.db` 账本，以相同 canonical URL/标题 fallback identity 为主键，
-只允许用更早时间更新。保存原始 RSS 日库时必须同步提交账本；账本持久化失败等同于
-RSS 保存失败，重试可从已写日库补齐，且账本不承担 delivered 标记。
+只允许用更早时间更新。每个 RSS 日库在保存原始条目的同一 SQLite 事务中写入
+`rss_first_seen_outbox`；条目、crawl record 与 outbox 要么全部提交，要么全部回滚。
+无 URL/GUID 的条目使用与账本 identity 一致的稳定标题 GUID，不能被静默跳过。
+
+账本记录各源日库的 durable generation/远端对象版本与已消费 write ID。每次保存前后和
+每次 strict 查询前幂等消费尚未处理的 outbox；因此 raw 日库已提交而账本同步失败时，
+新进程即使本轮没有再次抓到旧 payload，也可从 durable outbox 恢复。账本持久化失败仍
+等同于 RSS 保存失败，且账本不承担 delivered 标记。
 
 升级时，账本仅在缺失或版本不兼容时严格枚举并回填截止当前窗口的全部既有 RSS 日库，
-写入 `backfill_complete` 元数据；完成后每轮只按本轮候选 identity 查询索引，不再逐日扫描。
-远程账本、RSS 日库和成功检查点的 strict 读取以 VersionId、ETag 或 LastModified 绑定对象
-来源；远端对象新增或版本变化时关闭旧连接、临时下载并原子替换。strict 上传前后校验
-版本，发现并发覆盖或上传后版本未变化即使本轮失败。
+写入 `backfill_complete` 和各 source version/watermark；以后只打开 generation 或远端
+provenance 新增/变化的日库，稳定查询不再打开或下载历史库，并只按本轮候选 identity
+查询索引。远程账本、RSS 日库、strict AI 数据库和成功检查点的 strict 读取以
+VersionId/ETag 绑定对象来源；远端对象新增或版本变化时关闭旧连接、临时下载并原子替换。
+本地 strict mutation 从首次 dirty 起即为 authoritative，版本变化或 404 不得刷新覆盖。
+strict 上传必须使用服务端 `If-Match` 或 `If-None-Match: *` 条件 PUT，并校验 PUT 返回的
+ETag/VersionId 与最终 HEAD 一致；不支持条件写的远端后端明确失败关闭。
 
 首次运行只读取最近 24 小时；已有成功检查点后不设置静默丢弃上限，积压内容保留到
 完整成功为止，并交给现有通知分批机制处理。
@@ -61,6 +70,9 @@ RSS 保存失败，重试可从已写日库补齐，且账本不承担 delivered
 5. 向所有已配置端点发送；
 6. 全部成功后记录 push，并以其 `executed_at` 作为下一次窗口起点。
 
+`daily_delivery` 与保留的 `weekly` 的 analyze/push 记录使用 explicit strict period API；
+Remote 与 raw RSS、first-seen、strict AI 标签/结果共用同一 conditional-CAS 提交协议。
+
 无内容周期跳过第 4、5 步，但仍记录成功检查点。任何失败都返回非零退出码。
 
 ## 重试和兼容性
@@ -75,6 +87,9 @@ RSS 保存失败，重试可从已写日库补齐，且账本不承担 delivered
 - `daily_delivery` 的 AI 分类协议、最终 grounding 摘要和标签生命周期全部 fail-closed。
   分类响应中的未知/重复 ID、未知标签、缺字段、非法元素或空摘要仅允许修复一次；只有
   精确 `[]` 表示合法无匹配。grounding 和显示配置裁剪后，最终对象仍须有可交付叙事。
+- strict flat schema 的 news/tag ID 必须是非布尔整数，score/importance 必须是有限的
+  JSON 数值且位于 `[0,1]`，summary 必须是非空字符串；数值字符串、NaN/Infinity 和
+  null/object/list/bool 均进入同一次 repair，repair 后仍非法则整批失败。
 - strict 标签使用同一事务快照读取 active 集合、顺序、描述、priority、version 和
   prompt hash；hash 变化时全量提取并原子替换、读回校验。普通模式继续使用现有增量、
   fail-soft 标签更新和缓存语义。
@@ -100,9 +115,12 @@ RSS 保存失败，重试可从已写日库补齐，且账本不承担 delivered
 - 延迟发现但发布日期较旧的内容仍可推送。
 - SQLite 快照混合 URL/标题身份时保持幂等且 ID 完整。
 - 多历史库只回填 first-seen 账本一次，后续候选查询不再打开历史日库；保存失败重试
-  能补齐账本，跨 feed canonical 重现仍以系统最早时间裁决。
+  能由新进程从 durable outbox 补齐账本，跨 feed canonical 重现仍以系统最早时间裁决。
+- title-only 原始 RSS 持久化与 outbox 原子提交；批次任一 SQLite 错误整批回滚。
 - 远程 strict 读取覆盖缓存 404 后对象出现、旧版本更新、坏库/权限/网络错误和并发上传；
   checkpoint 与 first-seen 账本均不得使用陈旧连接。
+- 远程 strict 写覆盖 existing/create 条件 PUT、pre-PUT/PUT 后/创建竞争、dirty read 冲突
+  和 strict period CAS 失败本地回滚；不承诺跨进程通知 exactly-once，端点仍可能重复。
 - strict 分类覆盖未知 ID/tag、缺字段、非法元素、重复 ID、修复成功/失败；标签替换覆盖
   SQLite 中途失败回滚、保存 0、读失败、旧 active 残留和远端上传版本验证。
 - 现有 weekly、Elsevier、代理、邮件多收件人和普通报告模式回归测试继续通过。

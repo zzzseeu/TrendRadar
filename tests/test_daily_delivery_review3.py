@@ -52,6 +52,7 @@ class _Body:
 class _VersionedS3:
     def __init__(self):
         self.objects = {}
+        self.sequence = 0
 
     def set(self, key, payload, version):
         self.objects[key] = {
@@ -76,8 +77,22 @@ class _VersionedS3:
         return {"Body": _Body(self.objects[Key]["payload"])}
 
     def put_object(self, Bucket, Key, Body, **kwargs):
-        del Bucket, kwargs
-        version = f"put-{len(self.objects) + 1}"
+        del Bucket
+        current = self.objects.get(Key)
+        if (
+            kwargs.get("IfMatch") is not None
+            and (
+                current is None
+                or current["ETag"] != kwargs["IfMatch"]
+            )
+        ) or (
+            kwargs.get("IfNoneMatch") == "*" and current is not None
+        ):
+            raise ClientError(
+                {"Error": {"Code": "PreconditionFailed"}}, "PutObject"
+            )
+        self.sequence += 1
+        version = f"put-{self.sequence}"
         self.set(Key, Body, version)
         return {"VersionId": version, "ETag": f'"{version}"'}
 
@@ -99,8 +114,12 @@ class _VersionedS3:
 
 class _NoVersionAdvanceS3(_VersionedS3):
     def put_object(self, Bucket, Key, Body, **kwargs):
-        del Bucket, kwargs
+        del Bucket
         current = self.objects[Key]
+        if kwargs.get("IfMatch") not in (None, current["ETag"]):
+            raise ClientError(
+                {"Error": {"Code": "PreconditionFailed"}}, "PutObject"
+            )
         current["payload"] = Body
         return {
             "VersionId": current["VersionId"],
@@ -452,16 +471,20 @@ class DailyDeliveryRemoteVersionTests(unittest.TestCase):
                 "ledger-v1",
             )
             backend = remote_backend(tmp, s3)
-            original_sync = backend._sync_first_seen_ledger_strict
+            original_put = backend._conditional_put_strict
+            changed = False
 
-            def concurrent_change(data):
-                original_sync(data)
-                s3.set("rss/2026-08-09.db", original, "other-writer")
+            def concurrent_change(key, content, content_type):
+                nonlocal changed
+                if key == "rss/2026-08-09.db" and not changed:
+                    changed = True
+                    s3.set(key, original, "other-writer")
+                return original_put(key, content, content_type)
 
             try:
                 with patch.object(
                     backend,
-                    "_sync_first_seen_ledger_strict",
+                    "_conditional_put_strict",
                     side_effect=concurrent_change,
                 ):
                     self.assertFalse(backend.save_rss_data(rss_data(

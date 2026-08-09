@@ -295,7 +295,13 @@ class Scheduler:
         """
         return self.storage.has_period_executed(date_str, period_key, action)
 
-    def record_execution(self, period_key: str, action: str, date_str: str) -> bool:
+    def record_execution(
+        self,
+        period_key: str,
+        action: str,
+        date_str: str,
+        strict: Optional[bool] = None,
+    ) -> bool:
         """
         记录时间段的 action 执行
 
@@ -304,6 +310,23 @@ class Scheduler:
             action: 动作类型 (analyze / push)
             date_str: 日期 YYYY-MM-DD
         """
+        if strict is None:
+            if period_key in self.timeline.get("periods", {}):
+                report_mode = self._merge_with_default(period_key).get(
+                    "report_mode", self.fallback_report_mode
+                )
+            else:
+                # 兼容调用方以 report mode 作为稳定 period key 的路径。
+                report_mode = (
+                    period_key
+                    if period_key in {"weekly", "daily_delivery"}
+                    else self.fallback_report_mode
+                )
+            strict = report_mode in {"weekly", "daily_delivery"}
+        if strict:
+            return self.storage.record_period_execution_strict(
+                date_str, period_key, action
+            )
         return self.storage.record_period_execution(date_str, period_key, action)
 
     def latest_execution(

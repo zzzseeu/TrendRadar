@@ -307,6 +307,14 @@ class StorageManager:
         """记录时间段的 action 执行"""
         return self.get_backend().record_period_execution(date_str, period_key, action)
 
+    def record_period_execution_strict(
+        self, date_str: str, period_key: str, action: str
+    ) -> bool:
+        """严格记录时间段执行。"""
+        return self.get_backend().record_period_execution_strict(
+            date_str, period_key, action
+        )
+
     def get_latest_period_execution(
         self, period_key: str, action: str, through_date: str
     ) -> Optional[str]:

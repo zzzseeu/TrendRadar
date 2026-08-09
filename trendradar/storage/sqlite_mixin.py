@@ -5,6 +5,7 @@ SQLite 存储 Mixin
 提供共用的 SQLite 数据库操作逻辑，供 LocalStorageBackend 和 RemoteStorageBackend 复用。
 """
 
+import hashlib
 import json
 import sqlite3
 from abc import abstractmethod
@@ -71,9 +72,15 @@ class SQLiteStorageMixin:
         """获取 first-seen 账本连接；具体路径和远端刷新由后端提供。"""
         raise NotImplementedError("存储后端不支持 RSS first-seen 账本")
 
-    def _list_rss_history_dates_strict(self, through_date: str) -> List[str]:
-        """严格列举升级回填所需的既有 RSS 日库。"""
+    def _list_rss_history_sources_strict(
+        self, through_date: str
+    ) -> Dict[str, str]:
+        """严格列举 RSS 日库及无需打开数据库即可比较的 provenance。"""
         raise NotImplementedError("存储后端不支持 RSS first-seen 回填")
+
+    def _get_rss_source_version_strict(self, date: str) -> str:
+        """返回 RSS 日库当前可靠 provenance。"""
+        raise NotImplementedError("存储后端不支持 RSS 日库 provenance")
 
     def _persist_first_seen_ledger_strict(self) -> None:
         """持久化账本；本地后端无需额外动作。"""
@@ -107,6 +114,16 @@ class SQLiteStorageMixin:
         if not normalized_title:
             return ()
         return ("title", feed_id, normalized_title)
+
+    @staticmethod
+    def _stable_rss_title_guid(title: str, feed_id: str) -> str:
+        normalized = normalize_title(title or "")
+        if not normalized:
+            return ""
+        digest = hashlib.sha256(
+            f"{feed_id}\0{normalized}".encode("utf-8")
+        ).hexdigest()
+        return f"rss-title:{digest}"
 
     def _upsert_first_seen_rows(
         self,
@@ -143,9 +160,21 @@ class SQLiteStorageMixin:
                 ),
             )
 
-    def _read_rss_day_for_first_seen_backfill(self, date: str):
+    def _read_rss_day_for_first_seen_sync(self, date: str) -> Dict[str, Any]:
         conn = self._get_rss_connection(date, strict=True)
         cursor = conn.cursor()
+        cursor.execute("""
+            SELECT write_id, identity_key, first_seen, storage_date,
+                   crawl_record_id, source_generation
+            FROM rss_first_seen_outbox
+            ORDER BY source_generation, write_id
+        """)
+        outbox = [dict(row) for row in cursor.fetchall()]
+        row = cursor.execute(
+            """SELECT value FROM rss_storage_metadata
+               WHERE key = 'generation'"""
+        ).fetchone()
+        generation = int(row[0]) if row else 0
         cursor.execute("""
             SELECT title, feed_id, url, first_crawl_time, last_crawl_time
             FROM rss_items
@@ -154,36 +183,85 @@ class SQLiteStorageMixin:
         for title, feed_id, url, first_time, last_time in cursor.fetchall():
             identity = self._rss_identity_for_ledger(title, feed_id, url)
             rows.append((identity, first_time or last_time or "", date))
-        return rows
+        return {
+            "outbox": outbox,
+            "fallback_rows": rows,
+            "generation": generation,
+        }
 
-    def _ensure_first_seen_ledger_strict(self, through_date: str) -> None:
-        """首次升级严格回填全部既有日库；完成后永远只查固定索引。"""
+    def _consume_first_seen_outboxes_strict(self, through_date: str) -> None:
+        """仅打开 provenance 新增/变化的日库，幂等消费 durable outbox。"""
+        sources = self._list_rss_history_sources_strict(through_date)
         conn = self._get_first_seen_ledger_connection(strict=True)
         self._init_first_seen_ledger(conn)
-        row = conn.execute(
-            "SELECT value FROM ledger_metadata WHERE key = 'schema_version'"
-        ).fetchone()
-        version = row[0] if row else None
-        row = conn.execute(
-            "SELECT value FROM ledger_metadata WHERE key = 'backfill_complete'"
-        ).fetchone()
-        complete = row is not None and row[0] == "1"
-        if version == "1" and complete:
+        stored_sources = {
+            row[0]: row[1]
+            for row in conn.execute(
+                "SELECT source_key, source_version FROM rss_first_seen_sources"
+            ).fetchall()
+        }
+        changed = [
+            (date, source_version)
+            for date, source_version in sorted(sources.items())
+            if stored_sources.get(date) != source_version
+        ]
+        if not changed:
             if getattr(self, "_first_seen_needs_upload", False):
                 self._persist_first_seen_ledger_strict()
             return
 
+        pending = []
+        for date, listed_version in changed:
+            payload = self._read_rss_day_for_first_seen_sync(date)
+            actual_version = self._get_rss_source_version_strict(date)
+            payload["source_version"] = actual_version or listed_version
+            pending.append((date, payload))
+
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM rss_identity_first_seen")
-            for date in self._list_rss_history_dates_strict(through_date):
+            now_str = self._get_configured_time().isoformat()
+            for date, payload in pending:
+                # 兼容升级前无 outbox 的日库；changed source 才做全表回填。
                 self._upsert_first_seen_rows(
-                    conn, self._read_rss_day_for_first_seen_backfill(date)
+                    conn, payload["fallback_rows"]
+                )
+                for entry in payload["outbox"]:
+                    identity = self._rss_identity_from_key(
+                        entry["identity_key"]
+                    )
+                    self._upsert_first_seen_rows(conn, [(
+                        identity,
+                        entry["first_seen"],
+                        entry["storage_date"],
+                    )])
+                    conn.execute(
+                        """INSERT OR IGNORE INTO rss_first_seen_processed_writes
+                               (source_key, write_id, processed_at)
+                           VALUES (?, ?, ?)""",
+                        (date, entry["write_id"], now_str),
+                    )
+                conn.execute(
+                    """INSERT INTO rss_first_seen_sources
+                           (source_key, source_version, watermark, updated_at)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(source_key) DO UPDATE SET
+                           source_version = excluded.source_version,
+                           watermark = MAX(
+                               rss_first_seen_sources.watermark,
+                               excluded.watermark
+                           ),
+                           updated_at = excluded.updated_at""",
+                    (
+                        date,
+                        payload["source_version"],
+                        payload["generation"],
+                        now_str,
+                    ),
                 )
             conn.executemany(
                 """INSERT INTO ledger_metadata(key, value) VALUES (?, ?)
                    ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
-                [("schema_version", "1"), ("backfill_complete", "1")],
+                [("schema_version", "2"), ("backfill_complete", "1")],
             )
             conn.commit()
         except Exception:
@@ -192,37 +270,20 @@ class SQLiteStorageMixin:
         self._first_seen_needs_upload = True
         self._persist_first_seen_ledger_strict()
 
+    def _ensure_first_seen_ledger_strict(self, through_date: str) -> None:
+        """兼容入口：同步变更 source 的 durable outbox。"""
+        self._consume_first_seen_outboxes_strict(through_date)
+
     def _sync_first_seen_ledger_strict(self, data: RSSData) -> None:
-        """原始 RSS 成功写入后同步不可变 first-seen 账本。"""
-        rows = []
-        for feed_id, items in data.items.items():
-            for item in items:
-                identity = self._rss_identity_for_ledger(
-                    item.title, feed_id, item.url
-                )
-                discovered = (
-                    item.first_time or item.crawl_time or data.crawl_time
-                )
-                rows.append((identity, discovered, data.date))
-        if not any(identity for identity, _, _ in rows):
-            return
-        self._ensure_first_seen_ledger_strict(data.date)
-        conn = self._get_first_seen_ledger_connection(strict=True)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            self._upsert_first_seen_rows(conn, rows)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        self._first_seen_needs_upload = True
+        """兼容入口：禁止从 payload 生成 ledger-only identity。"""
+        self._consume_first_seen_outboxes_strict(data.date)
 
     def _query_first_seen_ledger_strict(
         self, candidate_identities: set[tuple], through_date: str
     ) -> Dict[tuple, tuple[str, str]]:
         if not candidate_identities:
             return {}
-        self._ensure_first_seen_ledger_strict(through_date)
+        self._consume_first_seen_outboxes_strict(through_date)
         conn = self._get_first_seen_ledger_connection(strict=True)
         keys = [self._rss_identity_key(item) for item in candidate_identities]
         result: Dict[tuple, tuple[str, str]] = {}
@@ -320,6 +381,16 @@ class SQLiteStorageMixin:
         if "search_providers" not in columns:
             conn.execute(
                 "ALTER TABLE rss_items ADD COLUMN search_providers TEXT DEFAULT ''"
+            )
+        url_index = conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'idx_rss_url_feed'"
+        ).fetchone()
+        if url_index and " WHERE " not in (url_index[0] or "").upper():
+            conn.execute("DROP INDEX idx_rss_url_feed")
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_rss_url_feed "
+                "ON rss_items(url, feed_id) WHERE url != ''"
             )
 
     def _migrate_ai_filter_schema(self, conn: sqlite3.Connection) -> None:
@@ -1104,11 +1175,40 @@ class SQLiteStorageMixin:
         Returns:
             (success, new_count, updated_count)
         """
+        conn = None
         try:
             conn = self._get_connection(data.date, db_type="rss")
+            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.cursor()
 
             now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
+
+            row = cursor.execute(
+                """SELECT value FROM rss_storage_metadata
+                   WHERE key = 'generation'"""
+            ).fetchone()
+            generation = (int(row[0]) if row else 0) + 1
+            cursor.execute(
+                """INSERT INTO rss_storage_metadata(key, value)
+                   VALUES ('generation', ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+                (str(generation),),
+            )
+
+            cursor.execute(
+                """INSERT INTO rss_crawl_records
+                       (crawl_time, total_items, created_at)
+                   VALUES (?, 0, ?)
+                   ON CONFLICT(crawl_time) DO UPDATE SET
+                       total_items = 0,
+                       created_at = excluded.created_at""",
+                (data.crawl_time, now_str),
+            )
+            crawl_record_id = cursor.execute(
+                "SELECT id FROM rss_crawl_records WHERE crawl_time = ?",
+                (data.crawl_time,),
+            ).fetchone()[0]
 
             # 同步 RSS 源信息到 rss_feeds 表
             for feed_id, feed_name in data.id_to_name.items():
@@ -1126,125 +1226,146 @@ class SQLiteStorageMixin:
 
             for feed_id, rss_list in data.items.items():
                 for item in rss_list:
-                    try:
-                        item_guid = getattr(item, "guid", "") or ""
-                        existing = None
+                    item_guid = getattr(item, "guid", "") or ""
+                    if not item.url and not item_guid:
+                        item_guid = self._stable_rss_title_guid(
+                            item.title, feed_id
+                        )
+                    if not item.url and not item_guid:
+                        raise ValueError(
+                            f"RSS 条目缺少稳定身份: {item.title!r}"
+                        )
+                    existing = None
 
-                        # 去重优先级：guid > url
-                        if item_guid:
-                            cursor.execute("""
-                                SELECT id, title FROM rss_items
-                                WHERE guid = ? AND feed_id = ?
-                            """, (item_guid, feed_id))
-                            existing = cursor.fetchone()
+                    if item_guid:
+                        existing = cursor.execute(
+                            """SELECT id, title FROM rss_items
+                               WHERE guid = ? AND feed_id = ?""",
+                            (item_guid, feed_id),
+                        ).fetchone()
+                    if not existing and item.url:
+                        existing = cursor.execute(
+                            """SELECT id, title FROM rss_items
+                               WHERE url = ? AND feed_id = ?""",
+                            (item.url, feed_id),
+                        ).fetchone()
 
-                        if not existing and item.url:
-                            cursor.execute("""
-                                SELECT id, title FROM rss_items
-                                WHERE url = ? AND feed_id = ?
-                            """, (item.url, feed_id))
-                            existing = cursor.fetchone()
+                    if existing:
+                        item_id, existing_title = existing
+                        update_title = item.title
+                        if (
+                            update_title
+                            and update_title.strip().startswith(
+                                ("http://", "https://", "//")
+                            )
+                            and existing_title
+                            and not existing_title.strip().startswith(
+                                ("http://", "https://", "//")
+                            )
+                        ):
+                            update_title = existing_title
+                        cursor.execute("""
+                            UPDATE rss_items SET
+                                title = ?,
+                                url = CASE WHEN ? != '' THEN ? ELSE url END,
+                                guid = CASE WHEN ? != '' THEN ? ELSE guid END,
+                                published_at = ?, summary = ?, author = ?,
+                                source_count = ?, pre_hot_score = ?,
+                                search_topic = ?, search_providers = ?,
+                                last_crawl_time = ?,
+                                crawl_count = crawl_count + 1,
+                                updated_at = ?
+                            WHERE id = ?
+                        """, (
+                            update_title, item.url, item.url,
+                            item_guid, item_guid, item.published_at,
+                            item.summary, item.author, item.source_count,
+                            item.pre_hot_score, item.search_topic,
+                            item.search_providers, data.crawl_time,
+                            now_str, item_id,
+                        ))
+                        updated_count += 1
+                    else:
+                        cursor.execute("""
+                            INSERT INTO rss_items
+                                (title, feed_id, url, guid, published_at,
+                                 summary, author, first_crawl_time,
+                                 last_crawl_time, crawl_count, source_count,
+                                 pre_hot_score, search_topic, search_providers,
+                                 created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1,
+                                    ?, ?, ?, ?, ?, ?)
+                        """, (
+                            item.title, feed_id, item.url, item_guid,
+                            item.published_at, item.summary, item.author,
+                            item.first_time or item.crawl_time or data.crawl_time,
+                            data.crawl_time, item.source_count,
+                            item.pre_hot_score, item.search_topic,
+                            item.search_providers, now_str, now_str,
+                        ))
+                        item_id = cursor.lastrowid
+                        new_count += 1
 
-                        if existing:
-                            existing_id = existing[0]
-                            existing_title = existing[1]
-                            update_title = item.title
-                            if (update_title and update_title.strip().startswith(("http://", "https://", "//"))
-                                    and existing_title and not existing_title.strip().startswith(("http://", "https://", "//"))):
-                                update_title = existing_title
-                            cursor.execute("""
-                                UPDATE rss_items SET
-                                    title = ?,
-                                    url = CASE WHEN ? != '' THEN ? ELSE url END,
-                                    guid = CASE WHEN ? != '' THEN ? ELSE guid END,
-                                    published_at = ?,
-                                    summary = ?,
-                                    author = ?,
-                                    source_count = ?,
-                                    pre_hot_score = ?,
-                                    search_topic = ?,
-                                    search_providers = ?,
-                                    last_crawl_time = ?,
-                                    crawl_count = crawl_count + 1,
-                                    updated_at = ?
-                                WHERE id = ?
-                            """, (update_title,
-                                  item.url, item.url,
-                                  item_guid, item_guid,
-                                  item.published_at, item.summary,
-                                  item.author, item.source_count,
-                                  item.pre_hot_score, item.search_topic,
-                                  item.search_providers, data.crawl_time,
-                                  now_str, existing_id))
-                            updated_count += 1
-                        elif item.url or item_guid:
-                            try:
-                                cursor.execute("""
-                                    INSERT INTO rss_items
-                                    (title, feed_id, url, guid, published_at, summary, author,
-                                     first_crawl_time, last_crawl_time, crawl_count,
-                                     source_count, pre_hot_score, search_topic, search_providers,
-                                     created_at, updated_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-                                """, (item.title, feed_id, item.url, item_guid,
-                                      item.published_at, item.summary, item.author,
-                                      item.first_time
-                                      or item.crawl_time
-                                      or data.crawl_time,
-                                      data.crawl_time,
-                                      item.source_count, item.pre_hot_score,
-                                      item.search_topic, item.search_providers,
-                                      now_str, now_str))
-                                new_count += 1
-                            except sqlite3.IntegrityError:
-                                pass
-
-                    except sqlite3.Error as e:
-                        print(f"{log_prefix} 保存 RSS 条目失败 [{item.title[:30]}...]: {e}")
+                    stored = cursor.execute(
+                        """SELECT title, feed_id, url, first_crawl_time,
+                                  last_crawl_time
+                           FROM rss_items WHERE id = ?""",
+                        (item_id,),
+                    ).fetchone()
+                    identity = self._rss_identity_for_ledger(
+                        stored[0], stored[1], stored[2]
+                    )
+                    if not identity:
+                        raise ValueError(
+                            f"持久化 RSS 条目缺少 canonical identity: {item_id}"
+                        )
+                    cursor.execute(
+                        """INSERT OR REPLACE INTO rss_first_seen_outbox
+                               (write_id, identity_key, first_seen,
+                                storage_date, crawl_record_id,
+                                source_generation, created_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            f"{data.date}:{generation}:{item_id}",
+                            self._rss_identity_key(identity),
+                            stored[3] or stored[4] or data.crawl_time,
+                            data.date, crawl_record_id, generation, now_str,
+                        ),
+                    )
 
             total_items = new_count + updated_count
 
-            # 记录抓取信息
-            cursor.execute("""
-                INSERT OR REPLACE INTO rss_crawl_records
-                (crawl_time, total_items, created_at)
-                VALUES (?, ?, ?)
-            """, (data.crawl_time, total_items, now_str))
+            cursor.execute(
+                """UPDATE rss_crawl_records SET total_items = ?
+                   WHERE id = ?""",
+                (total_items, crawl_record_id),
+            )
 
-            # 记录抓取状态
-            cursor.execute("""
-                SELECT id FROM rss_crawl_records WHERE crawl_time = ?
-            """, (data.crawl_time,))
-            record_row = cursor.fetchone()
-            if record_row:
-                crawl_record_id = record_row[0]
-
-                # 记录成功的源
-                for feed_id in data.items.keys():
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO rss_crawl_status
+            for feed_id in data.items.keys():
+                cursor.execute("""
+                    INSERT OR REPLACE INTO rss_crawl_status
                         (crawl_record_id, feed_id, status)
-                        VALUES (?, ?, 'success')
-                    """, (crawl_record_id, feed_id))
+                    VALUES (?, ?, 'success')
+                """, (crawl_record_id, feed_id))
 
-                # 记录失败的源
-                for failed_id in data.failed_ids:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO rss_feeds (id, name, updated_at)
-                        VALUES (?, ?, ?)
-                    """, (failed_id, failed_id, now_str))
-
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO rss_crawl_status
+            for failed_id in data.failed_ids:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO rss_feeds (id, name, updated_at)
+                    VALUES (?, ?, ?)
+                """, (failed_id, failed_id, now_str))
+                cursor.execute("""
+                    INSERT OR REPLACE INTO rss_crawl_status
                         (crawl_record_id, feed_id, status)
-                        VALUES (?, ?, 'failed')
-                    """, (crawl_record_id, failed_id))
+                    VALUES (?, ?, 'failed')
+                """, (crawl_record_id, failed_id))
 
             conn.commit()
 
             return True, new_count, updated_count
 
         except Exception as e:
+            if conn is not None:
+                conn.rollback()
             print(f"{log_prefix} 保存 RSS 数据失败: {e}")
             return False, 0, 0
 

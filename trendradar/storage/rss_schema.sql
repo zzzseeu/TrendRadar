@@ -53,6 +53,24 @@ CREATE TABLE IF NOT EXISTS rss_crawl_records (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 每个日库的单调保存代次；与 raw 条目/outbox 在同一事务更新。
+CREATE TABLE IF NOT EXISTS rss_storage_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- raw RSS -> first-seen ledger 的 durable transaction outbox。
+CREATE TABLE IF NOT EXISTS rss_first_seen_outbox (
+    write_id TEXT PRIMARY KEY,
+    identity_key TEXT NOT NULL,
+    first_seen TEXT NOT NULL,
+    storage_date TEXT NOT NULL,
+    crawl_record_id INTEGER NOT NULL,
+    source_generation INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (crawl_record_id) REFERENCES rss_crawl_records(id)
+);
+
 -- ============================================
 -- 抓取来源状态表
 -- 记录每次抓取各 RSS 源的成功/失败状态
@@ -101,7 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_rss_title ON rss_items(title);
 
 -- URL + feed_id 唯一索引（实现去重）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_url_feed
-    ON rss_items(url, feed_id);
+    ON rss_items(url, feed_id) WHERE url != '';
 
 -- GUID + feed_id 部分唯一索引（guid 非空时优先用 guid 去重）
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_guid_feed
@@ -109,3 +127,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rss_guid_feed
 
 -- 抓取状态索引
 CREATE INDEX IF NOT EXISTS idx_rss_crawl_status_record ON rss_crawl_status(crawl_record_id);
+
+CREATE INDEX IF NOT EXISTS idx_rss_first_seen_outbox_generation
+    ON rss_first_seen_outbox(source_generation, write_id);
