@@ -210,7 +210,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
 
         self.assertEqual(
             item_identity(item),
-            ("title", "feed-a", "rice breeding"),
+            ("title", "feed-a", "ricebreeding"),
         )
 
     def test_shared_title_guid_is_stable_and_namespaced(self):
@@ -226,6 +226,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
     def test_shared_snapshot_richness_preserves_weekly_ranking_tuple(self):
         item = RSSItem(
             title="Rice breeding update",
+            feed_id="feed-a",
             summary="summary",
             source_count=3,
             pre_hot_score=0.8,
@@ -237,6 +238,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
     def test_shared_search_providers_normalizes_and_deduplicates(self):
         item = RSSItem(
             title="Rice breeding update",
+            feed_id="feed-a",
             search_providers=" google_news, ,gdelt, google_news, ",
         )
 
