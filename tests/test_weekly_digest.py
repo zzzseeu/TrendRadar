@@ -6,7 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytz
 
 from trendradar.core.weekly import WeeklyRSSAggregator, previous_natural_week
-from trendradar.core.rss_snapshot import item_identity, stable_title_guid
+from trendradar.core.rss_snapshot import (
+    item_identity,
+    item_richness,
+    search_providers,
+    stable_title_guid,
+)
 from trendradar.crawler.news_search import normalize_title
 from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
@@ -200,6 +205,14 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             ("url", "https://example.org/paper"),
         )
 
+    def test_shared_snapshot_identity_uses_feed_and_normalized_title(self):
+        item = RSSItem(title=" Rice   Breeding ", feed_id="feed-a")
+
+        self.assertEqual(
+            item_identity(item),
+            ("title", "feed-a", "rice breeding"),
+        )
+
     def test_shared_title_guid_is_stable_and_namespaced(self):
         item = RSSItem(title=" Rice   Breeding ", feed_id="feed-a")
 
@@ -209,6 +222,25 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(first.startswith("weekly-title:"))
         self.assertNotIn("Rice", first)
+
+    def test_shared_snapshot_richness_preserves_weekly_ranking_tuple(self):
+        item = RSSItem(
+            title="Rice breeding update",
+            summary="summary",
+            source_count=3,
+            pre_hot_score=0.8,
+            author="Researcher",
+        )
+
+        self.assertEqual(item_richness(item), (7, 3, 0.8, True))
+
+    def test_shared_search_providers_normalizes_and_deduplicates(self):
+        item = RSSItem(
+            title="Rice breeding update",
+            search_providers=" google_news, ,gdelt, google_news, ",
+        )
+
+        self.assertEqual(search_providers(item), {"gdelt", "google_news"})
 
     def test_rss_item_dict_round_trip_preserves_guid(self):
         item = RSSItem(title="GUID item", feed_id="journal", guid="stable-guid")
