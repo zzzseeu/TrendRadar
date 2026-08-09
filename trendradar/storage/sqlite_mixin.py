@@ -1947,10 +1947,12 @@ class SQLiteStorageMixin:
             print(f"[AI筛选] 获取新闻列表失败: {e}")
             return []
 
-    def _get_all_rss_ids_impl(self, date: Optional[str] = None) -> List[Dict]:
+    def _get_all_rss_ids_impl(
+        self, date: Optional[str] = None, strict: bool = False
+    ) -> List[Dict]:
         """获取当日 RSS 条目、链接和摘要（用于 AI 筛选分类与正文提取）"""
         try:
-            conn = self._get_connection(date, db_type="rss")
+            conn = self._get_rss_connection(date, strict=strict)
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -1979,5 +1981,7 @@ class SQLiteStorageMixin:
                 for row in cursor.fetchall()
             ]
         except Exception as e:
+            if strict:
+                raise
             print(f"[AI筛选] 获取 RSS 列表失败: {e}")
             return []

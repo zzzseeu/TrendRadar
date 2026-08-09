@@ -534,6 +534,7 @@ class NewsAnalyzer:
                 platforms=platforms,
                 keywords=keywords,
                 standalone_data=ai_standalone,
+                strict=mode == "daily_delivery",
             )
 
             # 设置 AI 分析使用的模式
@@ -817,6 +818,7 @@ class NewsAnalyzer:
                 rss_ids_authoritative=getattr(
                     self, "_rss_ids_authoritative", False
                 ),
+                strict=mode == "daily_delivery",
             )
 
             if ai_filter_result and ai_filter_result.success:
@@ -831,7 +833,11 @@ class NewsAnalyzer:
                         self, "_rss_ids_authoritative", False
                     ),
                 )
-                total_titles = sum(len(titles) for titles in data_source.values())
+                total_titles = (
+                    0
+                    if getattr(self, "_rss_ids_authoritative", False)
+                    else sum(len(titles) for titles in data_source.values())
+                )
 
                 # AI 筛选成功：无条件用 AI 结果替换 RSS 主区与新增区（与热榜 stats 一致，
                 # 不因 AI 命中为空而回退到关键词结果）
@@ -916,6 +922,7 @@ class NewsAnalyzer:
                     rss_new_items=rss_new_items,
                     standalone_data=standalone_data,
                     display_regions=display_regions,
+                    require_all=mode == "daily_delivery",
                 )
 
             # 热榜 report_data 翻译回调：HTML 在 prepare_report_data 过滤之后调用，
@@ -924,6 +931,7 @@ class NewsAnalyzer:
                 translated_rd, _, _, _ = _d.translate_content(
                     report_data=rd, display_regions=_r,
                     skip_rss=True, skip_standalone=True,
+                    require_all=mode == "daily_delivery",
                 )
                 return translated_rd
 

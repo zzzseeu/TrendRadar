@@ -79,6 +79,7 @@ class NotificationDispatcher:
         display_regions: Optional[Dict] = None,
         skip_rss: bool = False,
         skip_standalone: bool = False,
+        require_all: bool = False,
     ) -> tuple:
         """
         翻译推送内容
@@ -220,7 +221,18 @@ class NotificationDispatcher:
 
         if result.success_count == 0:
             print(f"[翻译] 翻译失败: {result.results[0].error if result.results else '未知错误'}")
+            if require_all:
+                raise RuntimeError("必要内容翻译全部失败")
             return report_data, rss_items, rss_new_items, standalone_data
+
+        all_translated = (
+            len(result.results) == result.total_count
+            and all(item.success for item in result.results)
+        )
+        if require_all and not all_translated:
+            raise RuntimeError(
+                f"必要内容翻译部分失败: {result.success_count}/{result.total_count}"
+            )
 
         print(f"[翻译] 翻译完成: {result.success_count}/{result.total_count} 成功")
 
@@ -289,13 +301,15 @@ class NotificationDispatcher:
         # skip_translation=True 时，RSS 已在上游翻译过，跳过 RSS 重复翻译
         if not skip_translation:
             report_data, rss_items, rss_new_items, standalone_data = self.translate_content(
-                report_data, rss_items, rss_new_items, standalone_data, display_regions
+                report_data, rss_items, rss_new_items, standalone_data,
+                display_regions, require_all=require_all_targets,
             )
         else:
             # RSS 和独立展示区均已在上游翻译过，仅翻译热榜 report_data
             report_data, _, _, standalone_data = self.translate_content(
                 report_data, standalone_data=standalone_data, display_regions=display_regions,
                 skip_rss=True, skip_standalone=True,
+                require_all=require_all_targets,
             )
 
         # 飞书
@@ -424,7 +438,13 @@ class NotificationDispatcher:
         """根据 display_regions 过滤各区域数据，返回 (report_data, rss_items, rss_new_items, ai_analysis, standalone_data)"""
         display_regions = display_regions or {}
         if not display_regions.get("HOTLIST", True):
-            report_data = {"stats": [], "failed_ids": [], "new_titles": [], "id_to_name": {}}
+            report_data = dict(report_data)
+            report_data.update({
+                "stats": [],
+                "failed_ids": [],
+                "new_titles": [],
+                "id_to_name": {},
+            })
         show_rss = display_regions.get("RSS", True)
         return (
             report_data,
@@ -690,6 +710,7 @@ class NotificationDispatcher:
                     ai_analysis=ai_analysis,
                     display_regions=display_regions,
                     standalone_data=standalone_data,
+                    require_all_batches=require_all_targets,
                 )
                 results.append(result)
 
@@ -734,6 +755,7 @@ class NotificationDispatcher:
                 ai_analysis=ai,
                 display_regions=display_regions or {},
                 standalone_data=sd,
+                require_all_batches=require_all_targets,
             ),
         )
 

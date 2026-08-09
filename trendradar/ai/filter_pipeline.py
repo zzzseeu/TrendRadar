@@ -50,6 +50,7 @@ class AIFilterPipeline:
         rss_window: Optional[NaturalWeekWindow] = None,
         allowed_rss_ids: Optional[set[int]] = None,
         rss_ids_authoritative: bool = False,
+        strict: bool = False,
     ):
         self.config = config
         self.storage = storage_manager
@@ -86,6 +87,7 @@ class AIFilterPipeline:
             frozenset(allowed_rss_ids) if allowed_rss_ids is not None else None
         )
         self._rss_ids_authoritative = rss_ids_authoritative
+        self._strict = strict
 
         self._priority_sort_enabled = config.get("FILTER", {}).get("PRIORITY_SORT_ENABLED", False)
         self._rank_threshold = config.get("RANK_THRESHOLD", 50)
@@ -243,11 +245,17 @@ class AIFilterPipeline:
         all_results = [
             result
             for result in all_results
-            if result.get("source_type") != "rss"
-            or self._is_rss_item_in_scope(
-                result.get("source_id", ""),
-                result.get("first_time", ""),
-                result.get("news_item_id"),
+            if (
+                not self._rss_ids_authoritative
+                or result.get("source_type") == "rss"
+            )
+            and (
+                result.get("source_type") != "rss"
+                or self._is_rss_item_in_scope(
+                    result.get("source_id", ""),
+                    result.get("first_time", ""),
+                    result.get("news_item_id"),
+                )
             )
         ]
 
@@ -372,9 +380,18 @@ class AIFilterPipeline:
             )
 
     def _collect_pending_news(self, effective_interests_file: str):
-        all_news = self.storage.get_all_news_ids()
-        analyzed_hotlist = self.storage.get_analyzed_news_ids("hotlist", interests_file=effective_interests_file)
-        pending_news = [n for n in all_news if n["id"] not in analyzed_hotlist]
+        if self._rss_ids_authoritative:
+            all_news = []
+            analyzed_hotlist = set()
+            pending_news = []
+        else:
+            all_news = self.storage.get_all_news_ids()
+            analyzed_hotlist = self.storage.get_analyzed_news_ids(
+                "hotlist", interests_file=effective_interests_file
+            )
+            pending_news = [
+                n for n in all_news if n["id"] not in analyzed_hotlist
+            ]
 
         pending_rss = []
         freshness_filtered_rss = 0
@@ -382,7 +399,10 @@ class AIFilterPipeline:
         analyzed_rss = set()
 
         if self._rss_enabled:
-            all_rss = self.storage.get_all_rss_ids()
+            if self._rss_ids_authoritative:
+                all_rss = self.storage.get_all_rss_ids_strict()
+            else:
+                all_rss = self.storage.get_all_rss_ids()
 
             fresh_rss = []
             for n in all_rss:
@@ -440,7 +460,12 @@ class AIFilterPipeline:
                 }
                 for n in batch
             ]
-            batch_results = ai_filter.classify_batch(titles_for_ai, active_tags, interests_content)
+            batch_results = ai_filter.classify_batch(
+                titles_for_ai,
+                active_tags,
+                interests_content,
+                strict=getattr(self, "_strict", False),
+            )
             batch_count += 1
             if batch_results is None:
                 print(f"[AI筛选] 热榜批次 {i // batch_size + 1}: {len(batch)} 条 → 分类失败，将在下次运行重试")
@@ -470,7 +495,12 @@ class AIFilterPipeline:
                 }
                 for n in batch
             ]
-            batch_results = ai_filter.classify_batch(titles_for_ai, active_tags, interests_content)
+            batch_results = ai_filter.classify_batch(
+                titles_for_ai,
+                active_tags,
+                interests_content,
+                strict=getattr(self, "_strict", False),
+            )
             batch_count += 1
             if batch_results is None:
                 print(f"[AI筛选] RSS 批次 {i // batch_size + 1}: {len(batch)} 条 → 分类失败，将在下次运行重试")
@@ -886,6 +916,9 @@ class AIFilterPipeline:
 
             for item in items:
                 source_type = item.get("source_type", "hotlist")
+
+                if self._rss_ids_authoritative and source_type != "rss":
+                    continue
 
                 if mode == "current" and latest_time and source_type == "hotlist":
                     if item.get("last_time", "") != latest_time:

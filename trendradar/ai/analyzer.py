@@ -134,6 +134,7 @@ class AIAnalyzer:
         platforms: Optional[List[str]] = None,
         keywords: Optional[List[str]] = None,
         standalone_data: Optional[Dict] = None,
+        strict: bool = False,
     ) -> AIAnalysisResult:
         """
         执行 AI 分析
@@ -243,6 +244,10 @@ class AIAnalyzer:
                 else:
                     print("[AI] JSON 修复失败，使用原始文本兜底")
 
+            if strict and result.error:
+                result.success = False
+                result.error = f"严格分析拒绝降级结果: {result.error}"
+
             # 第二遍仅做证据校审：删除或泛化原始输入无法直接支持的细节。
             # 这一步不负责重新分析，避免模型用领域常识补齐病害、实验方法等事实。
             if (
@@ -258,6 +263,9 @@ class AIAnalyzer:
                 )
                 if reviewed_result is not None:
                     result = reviewed_result
+                elif strict:
+                    result.success = False
+                    result.error = "严格分析的摘要证据校审失败"
 
             # 如果配置未启用 RSS 分析，强制清空 AI 返回的 RSS 洞察
             if not self.include_rss:

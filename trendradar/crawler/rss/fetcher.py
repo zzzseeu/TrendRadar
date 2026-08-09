@@ -166,7 +166,7 @@ class RSSFetcher:
                     print(f"[RSS] {feed.name}: 补全 {enriched_count} 个长标题")
 
             # 转换为 RSSItem（使用配置的时区）
-            crawl_time = now.strftime("%H:%M")
+            crawl_time = now.strftime("%Y-%m-%d %H:%M:%S")
             items = []
 
             for parsed in parsed_items:
@@ -222,7 +222,7 @@ class RSSFetcher:
 
         # 使用配置的时区
         now = get_configured_time(self.timezone)
-        crawl_time = now.strftime("%H:%M")
+        crawl_time = now.strftime("%Y-%m-%d %H:%M:%S")
         crawl_date = now.strftime("%Y-%m-%d")
 
         print(f"[RSS] 开始抓取 {len(self.feeds)} 个 RSS 源...")

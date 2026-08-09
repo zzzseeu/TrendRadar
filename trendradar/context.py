@@ -505,6 +505,7 @@ class AppContext:
         rss_window: Optional[NaturalWeekWindow] = None,
         allowed_rss_ids: Optional[set[int]] = None,
         rss_ids_authoritative: bool = False,
+        strict: bool = False,
     ) -> "AIFilterPipeline":
         return AIFilterPipeline(
             config=self.config,
@@ -513,6 +514,7 @@ class AppContext:
             rss_window=rss_window,
             allowed_rss_ids=allowed_rss_ids,
             rss_ids_authoritative=rss_ids_authoritative,
+            strict=strict,
         )
 
     def run_ai_filter(
@@ -521,13 +523,14 @@ class AppContext:
         rss_window: Optional[NaturalWeekWindow] = None,
         allowed_rss_ids: Optional[set[int]] = None,
         rss_ids_authoritative: bool = False,
+        strict: bool = False,
     ) -> Optional[AIFilterResult]:
         """执行 AI 智能筛选完整流程"""
         if not self.ai_filter_enabled:
             return None
         try:
             return self._get_ai_filter_pipeline(
-                rss_window, allowed_rss_ids, rss_ids_authoritative
+                rss_window, allowed_rss_ids, rss_ids_authoritative, strict
             ).run(interests_file)
         except _TagExtractionError:
             return AIFilterResult(success=False, error="标签提取失败")

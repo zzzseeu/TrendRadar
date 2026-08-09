@@ -1,6 +1,9 @@
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+import pytz
 import yaml
 
 from trendradar.crawler.news_search import GDELTClient, GoogleNewsRSSClient
@@ -9,6 +12,7 @@ from trendradar.notification.renderer import (
     render_feishu_content,
 )
 from trendradar.notification.splitter import split_content_into_batches
+from trendradar.notification.dispatcher import NotificationDispatcher
 from trendradar.report.html import render_html_content
 
 
@@ -77,3 +81,75 @@ class DailyDeliveryReportTests(unittest.TestCase):
         expected = "每日新增模式下暂无匹配内容"
         self.assertIn(expected, render_feishu_content(report_data, mode="daily_delivery"))
         self.assertIn(expected, render_dingtalk_content(report_data, mode="daily_delivery"))
+
+    def test_hotlist_disabled_keeps_period_in_real_feishu_and_dingtalk_payloads(self):
+        period = "2026-08-08 10:00—2026-08-09 10:00"
+        report_data = dict(REPORT_DATA)
+        report_data.update({
+            "period_label": period,
+            "stats": [{
+                "word": "热榜",
+                "count": 1,
+                "titles": [{"title": "Must be hidden"}],
+            }],
+        })
+        dispatcher = NotificationDispatcher(
+            config={
+                "FEISHU_WEBHOOK_URL": "https://open.feishu.cn/webhook/test",
+                "DINGTALK_WEBHOOK_URL": "https://oapi.dingtalk.com/robot/send",
+                "MAX_ACCOUNTS_PER_CHANNEL": 3,
+                "FEISHU_BATCH_SIZE": 29000,
+                "DINGTALK_BATCH_SIZE": 20000,
+                "BATCH_SEND_INTERVAL": 0,
+                "DISPLAY": {"REGIONS": {
+                    "HOTLIST": False,
+                    "RSS": True,
+                    "NEW_ITEMS": True,
+                    "AI_ANALYSIS": True,
+                    "STANDALONE": False,
+                }},
+                "AI_TRANSLATION": {"ENABLED": False},
+            },
+            get_time_func=lambda: pytz.timezone("Asia/Shanghai").localize(
+                datetime(2026, 8, 9, 10, 0)
+            ),
+            split_content_func=split_content_into_batches,
+        )
+        feishu_response = MagicMock(status_code=200)
+        feishu_response.json.return_value = {"code": 0}
+        dingtalk_response = MagicMock(status_code=200)
+        dingtalk_response.json.return_value = {"errcode": 0}
+
+        with patch(
+            "trendradar.notification.senders.requests.post",
+            side_effect=[feishu_response, dingtalk_response],
+        ) as post:
+            results = dispatcher.dispatch_all(
+                report_data=report_data,
+                report_type="每日新增",
+                mode="daily_delivery",
+                rss_items=[{
+                    "word": "育种",
+                    "count": 1,
+                    "titles": [{
+                        "title": "Rice breeding",
+                        "source_name": "Journal",
+                        "url": "https://example.org/rice",
+                        "mobile_url": "",
+                        "reader_url": "",
+                        "ranks": [],
+                        "rank_threshold": 5,
+                        "time_display": "2026-08-09 09:30",
+                        "count": 1,
+                    }],
+                }],
+                require_all_targets=True,
+            )
+
+        payload_texts = [str(call.kwargs["json"]) for call in post.call_args_list]
+        self.assertEqual(results, {"feishu": True, "dingtalk": True})
+        self.assertEqual(len(payload_texts), 2)
+        for payload in payload_texts:
+            self.assertIn("每日新增", payload)
+            self.assertIn(period, payload)
+            self.assertNotIn("Must be hidden", payload)

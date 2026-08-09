@@ -1,4 +1,6 @@
 import hashlib
+import json
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -8,8 +10,10 @@ from unittest.mock import MagicMock, call, patch
 import pytz
 from botocore.exceptions import ClientError
 
-from trendradar.ai.filter import AIFilterResult
+from trendradar.ai.analyzer import AIAnalyzer
+from trendradar.ai.filter import AIFilter, AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
+from trendradar.ai.translator import BatchTranslationResult, TranslationResult
 from trendradar.context import AppContext
 from trendradar.core.daily_delivery import (
     DailyDeliveryAggregator,
@@ -19,14 +23,18 @@ from trendradar.core.daily_delivery import (
 from trendradar.core.rss_snapshot import item_identity
 from trendradar.core.scheduler import Scheduler
 from trendradar.crawler.news_search import normalize_title
+from trendradar.crawler.rss.fetcher import RSSFeedConfig, RSSFetcher
+from trendradar.crawler.rss.parser import ParsedRSSItem
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.storage.local import LocalStorageBackend
+from trendradar.storage.manager import StorageManager
 from trendradar.storage.remote import RemoteStorageBackend
+from trendradar.notification.dispatcher import NotificationDispatcher
 
 
-def shanghai(year, month, day, hour, minute):
+def shanghai(year, month, day, hour, minute, second=0):
     return pytz.timezone("Asia/Shanghai").localize(
-        datetime(year, month, day, hour, minute)
+        datetime(year, month, day, hour, minute, second)
     )
 
 
@@ -125,6 +133,41 @@ class DailyDeliveryWindowTests(unittest.TestCase):
             ["2026-03-07", "2026-03-08", "2026-03-09"],
         )
 
+    def test_new_rss_fetch_writes_full_local_datetime_with_seconds(self):
+        feed = RSSFeedConfig(
+            id="journal",
+            name="Journal",
+            url="https://example.org/feed.xml",
+        )
+        fetcher = RSSFetcher(
+            [feed], request_interval=0, freshness_enabled=False,
+            timezone="Asia/Shanghai",
+        )
+        response = MagicMock(text="<rss/>")
+        response.raise_for_status.return_value = None
+        fetcher.session.get = MagicMock(return_value=response)
+        fetcher.parser.parse = MagicMock(return_value=[ParsedRSSItem(
+            title="Second precision",
+            url="https://example.org/second-precision",
+            published_at="2026-08-09T01:00:00Z",
+        )])
+
+        with patch(
+            "trendradar.crawler.rss.fetcher.get_configured_time",
+            return_value=shanghai(2026, 8, 9, 10, 0, 37),
+        ):
+            items, error = fetcher.fetch_feed(feed)
+            data = fetcher.fetch_all()
+
+        self.assertIsNone(error)
+        self.assertEqual(items[0].crawl_time, "2026-08-09 10:00:37")
+        self.assertEqual(items[0].first_time, "2026-08-09 10:00:37")
+        self.assertEqual(data.crawl_time, "2026-08-09 10:00:37")
+        self.assertEqual(
+            data.items["journal"][0].first_time,
+            "2026-08-09 10:00:37",
+        )
+
 
 class DailyDeliveryAggregatorTests(unittest.TestCase):
     def setUp(self):
@@ -149,16 +192,26 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
         )
 
     def test_window_filter_is_left_open_right_closed_across_dates(self):
-        save_rss_day(self.backend, "2026-08-08", "10-00", [RSSItem(
-            title="At checkpoint", feed_id="journal",
-            url="https://example.org/at-checkpoint",
-            published_at="2026-08-08T10:00:00+08:00",
-        )])
-        save_rss_day(self.backend, "2026-08-09", "10-00", [RSSItem(
-            title="At current run", feed_id="journal",
-            url="https://example.org/at-current-run",
-            published_at="2026-01-01T00:00:00Z",
-        )])
+        save_rss_day(
+            self.backend,
+            "2026-08-08",
+            "2026-08-08 10:00:00",
+            [RSSItem(
+                title="At checkpoint", feed_id="journal",
+                url="https://example.org/at-checkpoint",
+                published_at="2026-08-08T10:00:00+08:00",
+            )],
+        )
+        save_rss_day(
+            self.backend,
+            "2026-08-09",
+            "2026-08-09 10:00:00",
+            [RSSItem(
+                title="At current run", feed_id="journal",
+                url="https://example.org/at-current-run",
+                published_at="2026-01-01T00:00:00Z",
+            )],
+        )
 
         snapshot = self.build()
 
@@ -358,6 +411,48 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
         )
         self.assertEqual(list(second.iter_items()), [])
 
+    def test_legacy_minute_bucket_overlapping_checkpoint_is_conservatively_kept(self):
+        save_rss_day(self.backend, "2026-08-09", "10:01", [
+            RSSItem(
+                title="Legacy minute precision",
+                feed_id="journal",
+                feed_name="Journal",
+                url="https://example.org/legacy-minute",
+                first_time="10:00",
+                crawl_time="10:00",
+            ),
+            RSSItem(
+                title="Exact second before checkpoint",
+                feed_id="journal",
+                feed_name="Journal",
+                url="https://example.org/exact-second",
+                first_time="2026-08-09 10:00:00",
+                crawl_time="2026-08-09 10:00:00",
+            ),
+        ])
+        conn = self.backend._get_connection("2026-08-09", db_type="rss")
+        conn.execute(
+            "UPDATE rss_items SET first_crawl_time = ? WHERE title = ?",
+            ("10:00", "Legacy minute precision"),
+        )
+        conn.execute(
+            "UPDATE rss_items SET first_crawl_time = ? WHERE title = ?",
+            ("2026-08-09 10:00:00", "Exact second before checkpoint"),
+        )
+        conn.commit()
+
+        snapshot = DailyDeliveryAggregator(
+            self.backend, "Asia/Shanghai"
+        ).build(
+            now=shanghai(2026, 8, 9, 10, 2),
+            checkpoint="2026-08-09 10:00:30",
+        )
+
+        self.assertEqual(
+            [item.title for item in snapshot.iter_items()],
+            ["Legacy minute precision"],
+        )
+
     def test_backlog_older_than_two_days_reads_the_full_date_range(self):
         save_rss_day(self.backend, "2026-08-05", "09-00", [RSSItem(
             title="Long backlog item", feed_id="journal",
@@ -421,7 +516,9 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
             url="https://example.org/missing-id",
         )])
 
-        with patch.object(self.backend, "get_all_rss_ids", return_value=[]):
+        with patch.object(
+            self.backend, "get_all_rss_ids_strict", return_value=[]
+        ):
             with self.assertRaisesRegex(
                 RuntimeError,
                 "每日交付快照 ID 解析失败：存在未持久化条目",
@@ -443,7 +540,7 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
 
         with patch.object(
             self.backend,
-            "get_all_rss_ids",
+            "get_all_rss_ids_strict",
             side_effect=[[], duplicate_rows],
         ):
             with self.assertRaisesRegex(
@@ -561,13 +658,72 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
         storage = MagicMock()
         storage.get_all_news_ids.return_value = []
         storage.get_analyzed_news_ids.return_value = set()
-        storage.get_all_rss_ids.return_value = self._rss_rows()
+        storage.get_all_rss_ids_strict.return_value = self._rss_rows()
 
         pending = self._pipeline_with_authoritative_ids(
             storage
         )._collect_pending_news("ai_interests.txt")
 
         self.assertEqual([item["id"] for item in pending[1]], [7])
+
+    def test_authoritative_pipeline_never_classifies_or_returns_hotlist(self):
+        storage = MagicMock()
+        storage.get_latest_prompt_hash.return_value = "stable"
+        storage.get_active_ai_filter_tags.return_value = [
+            {"id": 1, "tag": "育种", "priority": 1}
+        ]
+        storage.get_all_news_ids.return_value = [{
+            "id": 101,
+            "title": "Hotlist outside the delivery snapshot",
+            "source_id": "hot",
+            "source_name": "Hotlist",
+            "url": "https://example.org/hot",
+        }]
+        storage.get_all_rss_ids_strict.return_value = self._rss_rows()
+        storage.get_analyzed_news_ids.return_value = set()
+        storage.get_active_ai_filter_results.return_value = [
+            {
+                "news_item_id": 101,
+                "tag": "育种",
+                "title": "Hotlist outside the delivery snapshot",
+                "source_type": "hotlist",
+                "source_id": "hot",
+                "source_name": "Hotlist",
+                "relevance_score": 0.9,
+            },
+            self._rss_rows()[0],
+        ]
+        pipeline = self._pipeline_with_authoritative_ids(storage)
+
+        with patch("trendradar.ai.filter_pipeline.AIFilter") as filter_class:
+            ai_filter = filter_class.return_value
+            ai_filter.load_interests_content.return_value = "育种"
+            ai_filter.compute_interests_hash.return_value = "stable"
+            ai_filter.classify_batch.return_value = []
+            with patch.object(
+                pipeline,
+                "_enrich_pending_items",
+                side_effect=lambda items, _label: items,
+            ):
+                result = pipeline.run()
+
+        classified_titles = [
+            item["title"]
+            for call_args in ai_filter.classify_batch.call_args_list
+            for item in call_args.args[0]
+        ]
+        hotlist_stats, rss_stats, _ = pipeline.convert_to_report_data(result)
+
+        self.assertEqual(classified_titles, ["Approved old article"])
+        self.assertEqual(hotlist_stats, [])
+        self.assertEqual(
+            [item["title"] for item in rss_stats[0]["titles"]],
+            ["Approved old article"],
+        )
+        self.assertEqual(
+            [item["source_type"] for item in result.tags[0]["items"]],
+            ["rss"],
+        )
 
     def test_authoritative_scope_filters_active_results(self):
         storage = MagicMock()
@@ -576,7 +732,7 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
             {"id": 1, "tag": "育种"}
         ]
         storage.get_all_news_ids.return_value = []
-        storage.get_all_rss_ids.return_value = self._rss_rows()
+        storage.get_all_rss_ids_strict.return_value = self._rss_rows()
         storage.get_analyzed_news_ids.return_value = {7, 8}
         storage.get_active_ai_filter_results.return_value = self._rss_rows()
         pipeline = self._pipeline_with_authoritative_ids(storage)
@@ -656,6 +812,276 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
         storage.get_active_ai_filter_results.assert_not_called()
 
 
+class DailyDeliveryStrictAIStageTests(unittest.TestCase):
+    @staticmethod
+    def _analyzer(grounding_review_enabled=False):
+        analyzer = AIAnalyzer.__new__(AIAnalyzer)
+        analyzer.ai_config = {"MODEL": "test", "TIMEOUT": 1, "MAX_TOKENS": 100}
+        analyzer.analysis_config = {}
+        analyzer.get_time_func = lambda: shanghai(2026, 8, 9, 10, 0)
+        analyzer.debug = False
+        analyzer.client = MagicMock(api_key="secret")
+        analyzer.max_news = 50
+        analyzer.include_rss = True
+        analyzer.include_rank_timeline = False
+        analyzer.include_standalone = False
+        analyzer.grounding_review_enabled = grounding_review_enabled
+        analyzer.language = "Chinese"
+        analyzer.system_prompt = "system"
+        analyzer.user_prompt_template = (
+            "{report_mode}{report_type}{current_time}{news_count}{rss_count}"
+            "{platforms}{keywords}{news_content}{rss_content}{language}"
+            "{standalone_content}"
+        )
+        return analyzer
+
+    @staticmethod
+    def _rss_stats():
+        return [{
+            "word": "育种",
+            "count": 1,
+            "titles": [{
+                "title": "Rice breeding",
+                "source_name": "Journal",
+                "time_display": "2026-08-09 09:30",
+            }],
+        }]
+
+    def test_strict_analysis_rejects_json_parse_and_repair_failure(self):
+        analyzer = self._analyzer()
+        analyzer._call_ai = MagicMock(return_value="definitely not json")
+        analyzer._retry_fix_json = MagicMock(return_value=None)
+
+        result = analyzer.analyze(
+            [], self._rss_stats(), report_mode="daily_delivery", strict=True
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("JSON", result.error)
+
+    def test_strict_analysis_rejects_grounding_review_failure(self):
+        analyzer = self._analyzer(grounding_review_enabled=True)
+        analyzer._call_ai = MagicMock(return_value=json.dumps({
+            "core_trends": "Rice breeding",
+        }))
+        analyzer._review_grounding = MagicMock(return_value=None)
+
+        result = analyzer.analyze(
+            [], self._rss_stats(), report_mode="daily_delivery", strict=True
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("校审", result.error)
+
+    @staticmethod
+    def _filter(summary_review_response):
+        ai_filter = AIFilter.__new__(AIFilter)
+        ai_filter.debug = False
+        ai_filter.classify_system = "只返回 JSON"
+        ai_filter.classify_user = (
+            "{interests_content}\n{tags_list}\n{news_count}\n{news_list}"
+        )
+        ai_filter.summary_grounding_review_enabled = True
+        ai_filter.client = MagicMock()
+        ai_filter.client.chat.side_effect = [
+            json.dumps([{
+                "id": 1,
+                "tag_id": 18,
+                "score": 0.82,
+                "importance_score": 0.78,
+                "summary": "仅标题显示：水稻育种",
+            }]),
+            summary_review_response,
+        ]
+        return ai_filter
+
+    def test_strict_classification_rejects_item_summary_review_failure(self):
+        ai_filter = self._filter("not-json")
+
+        result = ai_filter.classify_batch(
+            [{
+                "id": 1,
+                "title": "水稻育种",
+                "content": "水稻育种",
+                "content_level": "title_only",
+            }],
+            [{"id": 18, "tag": "作物育种", "description": "育种进展"}],
+            "育种",
+            strict=True,
+        )
+
+        self.assertIsNone(result)
+
+
+class DailyDeliveryStrictTranslationTests(unittest.TestCase):
+    @staticmethod
+    def _dispatcher(batch_results):
+        translator = MagicMock()
+        translator.enabled = True
+        translator.target_language = "English"
+        translator.scope = {"HOTLIST": True, "RSS": True, "STANDALONE": True}
+        translator.translate_batch.side_effect = batch_results
+        dispatcher = NotificationDispatcher(
+            config={
+                "AI_TRANSLATION": {"BATCH_SIZE": 2, "BATCH_INTERVAL": 0},
+                "DEBUG": False,
+            },
+            get_time_func=lambda: shanghai(2026, 8, 9, 10, 0),
+            split_content_func=MagicMock(),
+            translator=translator,
+        )
+        return dispatcher
+
+    @staticmethod
+    def _report_data():
+        return {"stats": [{
+            "word": "育种",
+            "titles": [
+                {"title": "one"}, {"title": "two"}, {"title": "three"},
+            ],
+        }], "new_titles": []}
+
+    def test_strict_translation_rejects_partial_batch_failure(self):
+        dispatcher = self._dispatcher([
+            BatchTranslationResult(
+                results=[
+                    TranslationResult("ONE", "one", True),
+                    TranslationResult("TWO", "two", True),
+                ],
+                success_count=2,
+                total_count=2,
+            ),
+            BatchTranslationResult(
+                results=[TranslationResult(original_text="three", error="failed")],
+                fail_count=1,
+                total_count=1,
+            ),
+        ])
+
+        with self.assertRaisesRegex(RuntimeError, "翻译.*失败"):
+            dispatcher.translate_content(
+                self._report_data(),
+                display_regions={"HOTLIST": True},
+                require_all=True,
+            )
+
+    def test_strict_translation_rejects_all_batches_failed(self):
+        dispatcher = self._dispatcher([
+            BatchTranslationResult(
+                results=[
+                    TranslationResult(original_text="one", error="failed"),
+                    TranslationResult(original_text="two", error="failed"),
+                ],
+                fail_count=2,
+                total_count=2,
+            ),
+            BatchTranslationResult(
+                results=[TranslationResult(original_text="three", error="failed")],
+                fail_count=1,
+                total_count=1,
+            ),
+        ])
+
+        with self.assertRaisesRegex(RuntimeError, "翻译.*失败"):
+            dispatcher.translate_content(
+                self._report_data(),
+                display_regions={"HOTLIST": True},
+                require_all=True,
+            )
+
+
+class DailyDeliveryStrictSenderBatchTests(unittest.TestCase):
+    @staticmethod
+    def _dispatcher(channel_config):
+        config = {
+            "MAX_ACCOUNTS_PER_CHANNEL": 3,
+            "AI_TRANSLATION": {"ENABLED": False},
+            "DISPLAY": {"REGIONS": {"HOTLIST": True}},
+            "BATCH_SEND_INTERVAL": 0,
+        }
+        config.update(channel_config)
+        return NotificationDispatcher(
+            config=config,
+            get_time_func=lambda: shanghai(2026, 8, 9, 10, 0),
+            split_content_func=lambda *args, **kwargs: ["batch one", "batch two"],
+        )
+
+    @staticmethod
+    def _response(status_code, body=None):
+        response = MagicMock(status_code=status_code)
+        response.json.return_value = body or {}
+        response.text = "failed"
+        return response
+
+    def test_ntfy_strict_delivery_requires_every_sender_batch(self):
+        dispatcher = self._dispatcher({
+            "NTFY_SERVER_URL": "https://ntfy.example",
+            "NTFY_TOPIC": "rice",
+        })
+
+        with patch(
+            "trendradar.notification.senders.requests.post",
+            side_effect=[self._response(200), self._response(500)],
+        ), patch("trendradar.notification.senders.time.sleep"):
+            strict = dispatcher.dispatch_all(
+                report_data={"stats": [], "new_titles": []},
+                report_type="每日新增",
+                mode="daily_delivery",
+                require_all_targets=True,
+            )
+
+        with patch(
+            "trendradar.notification.senders.requests.post",
+            side_effect=[self._response(200), self._response(500)],
+        ), patch("trendradar.notification.senders.time.sleep"):
+            ordinary = dispatcher.dispatch_all(
+                report_data={"stats": [], "new_titles": []},
+                report_type="当日汇总",
+                mode="daily",
+                require_all_targets=False,
+            )
+
+        self.assertFalse(strict["ntfy"])
+        self.assertTrue(ordinary["ntfy"])
+
+    def test_bark_strict_delivery_requires_every_sender_batch(self):
+        dispatcher = self._dispatcher({
+            "BARK_URL": "https://api.day.app/device-key",
+            "BARK_BATCH_SIZE": 3600,
+        })
+        responses = [
+            self._response(200, {"code": 200}),
+            self._response(500),
+        ]
+
+        with patch(
+            "trendradar.notification.senders.requests.post",
+            side_effect=responses,
+        ), patch("trendradar.notification.senders.time.sleep"):
+            strict = dispatcher.dispatch_all(
+                report_data={"stats": [], "new_titles": []},
+                report_type="每日新增",
+                mode="daily_delivery",
+                require_all_targets=True,
+            )
+
+        with patch(
+            "trendradar.notification.senders.requests.post",
+            side_effect=[
+                self._response(200, {"code": 200}),
+                self._response(500),
+            ],
+        ), patch("trendradar.notification.senders.time.sleep"):
+            ordinary = dispatcher.dispatch_all(
+                report_data={"stats": [], "new_titles": []},
+                report_type="当日汇总",
+                mode="daily",
+                require_all_targets=False,
+            )
+
+        self.assertFalse(strict["bark"])
+        self.assertTrue(ordinary["bark"])
+
 class DailyDeliveryRemoteStrictReadTests(unittest.TestCase):
     @staticmethod
     def _build_remote_with_readable_current_day(tmp):
@@ -734,6 +1160,115 @@ class DailyDeliveryRemoteStrictReadTests(unittest.TestCase):
                     ["Readable current day"],
                 )
                 self.assertEqual(snapshot.missing_dates, ["2026-08-08"])
+            finally:
+                backend.cleanup()
+
+
+class DailyDeliveryStrictRSSIDReadTests(unittest.TestCase):
+    def test_local_strict_ids_raise_for_corrupt_empty_snapshot_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            try:
+                save_rss_day(backend, "2026-08-09", "09:30", [])
+                conn = backend._get_connection("2026-08-09", db_type="rss")
+                conn.execute("DROP TABLE rss_items")
+                conn.commit()
+
+                self.assertEqual(backend.get_all_rss_ids("2026-08-09"), [])
+                with self.assertRaises(sqlite3.OperationalError):
+                    backend.get_all_rss_ids_strict("2026-08-09")
+            finally:
+                backend.cleanup()
+
+    def test_authoritative_pipeline_propagates_strict_id_read_failure(self):
+        storage = MagicMock()
+        storage.get_all_rss_ids_strict.side_effect = RuntimeError("broken ids")
+        storage.get_all_rss_ids.return_value = []
+        pipeline = AIFilterPipeline(
+            config={
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {"ENABLED": True, "FRESHNESS_FILTER": {}},
+                "AI": {},
+                "AI_FILTER": {},
+                "FILTER": {},
+            },
+            storage_manager=storage,
+            get_time_func=lambda: shanghai(2026, 8, 9, 10, 0),
+            allowed_rss_ids={7},
+            rss_ids_authoritative=True,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "broken ids"):
+            pipeline._collect_pending_news("ai_interests.txt")
+
+        storage.get_all_rss_ids.assert_not_called()
+
+    def test_storage_manager_forwards_strict_id_read(self):
+        manager = StorageManager.__new__(StorageManager)
+        backend = MagicMock()
+        backend.get_all_rss_ids_strict.return_value = [{"id": 7}]
+        manager.get_backend = MagicMock(return_value=backend)
+
+        rows = manager.get_all_rss_ids_strict("2026-08-09")
+
+        self.assertEqual(rows, [{"id": 7}])
+        backend.get_all_rss_ids_strict.assert_called_once_with("2026-08-09")
+
+    @staticmethod
+    def _remote(tmp):
+        backend = RemoteStorageBackend.__new__(RemoteStorageBackend)
+        backend.bucket_name = "test-bucket"
+        backend.temp_dir = Path(tmp) / "remote-cache"
+        backend.timezone = "Asia/Shanghai"
+        backend._db_connections = {}
+        backend._downloaded_files = []
+        backend.s3_client = MagicMock()
+        return backend
+
+    def test_remote_strict_ids_keep_real_404_as_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._remote(tmp)
+            backend.s3_client.head_object.side_effect = ClientError(
+                {"Error": {"Code": "404", "Message": "not found"}},
+                "HeadObject",
+            )
+            try:
+                self.assertEqual(
+                    backend.get_all_rss_ids_strict("2026-08-09"), []
+                )
+            finally:
+                backend.cleanup()
+
+    def test_remote_strict_ids_propagate_access_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._remote(tmp)
+            denied = ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                "HeadObject",
+            )
+            backend.s3_client.head_object.side_effect = denied
+            try:
+                with self.assertRaises(ClientError) as raised:
+                    backend.get_all_rss_ids_strict("2026-08-09")
+                self.assertIs(raised.exception, denied)
+            finally:
+                backend.cleanup()
+
+    def test_remote_strict_ids_propagate_corrupt_downloaded_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._remote(tmp)
+            backend.s3_client.head_object.return_value = {}
+            body = MagicMock()
+            body.iter_chunks.return_value = [b"not-a-sqlite-database"]
+            backend.s3_client.get_object.return_value = {"Body": body}
+            try:
+                with self.assertRaises(sqlite3.DatabaseError):
+                    backend.get_all_rss_ids_strict("2026-08-09")
             finally:
                 backend.cleanup()
 

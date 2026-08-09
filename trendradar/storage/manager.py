@@ -401,6 +401,10 @@ class StorageManager:
         """获取所有 RSS ID 和标题"""
         return self.get_backend().get_all_rss_ids(date)
 
+    def get_all_rss_ids_strict(self, date=None):
+        """严格获取所有 RSS ID 和标题，读取异常向上抛出。"""
+        return self.get_backend().get_all_rss_ids_strict(date)
+
 
 
 def get_storage_manager(

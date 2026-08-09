@@ -817,6 +817,7 @@ def send_to_ntfy(
     ai_analysis: Any = None,
     display_regions: Optional[Dict] = None,
     standalone_data: Optional[Dict] = None,
+    require_all_batches: bool = False,
 ) -> bool:
     """
     发送到 ntfy（支持分批发送，严格遵守4KB限制，支持热榜+RSS合并+独立展示区）
@@ -987,7 +988,7 @@ def send_to_ntfy(
         print(f"{log_prefix}发送完全失败 [{report_type}]")
         return False
 
-    return True
+    return success_count == total_batches if require_all_batches else True
 
 
 def send_to_bark(
@@ -1007,6 +1008,7 @@ def send_to_bark(
     ai_analysis: Any = None,
     display_regions: Optional[Dict] = None,
     standalone_data: Optional[Dict] = None,
+    require_all_batches: bool = False,
 ) -> bool:
     """
     发送到 Bark（支持分批发送，使用 markdown 格式，支持热榜+RSS合并+独立展示区）
@@ -1149,7 +1151,7 @@ def send_to_bark(
         print(f"{log_prefix}发送完全失败 [{report_type}]")
         return False
 
-    return True
+    return success_count == total_batches if require_all_batches else True
 
 
 def send_to_slack(

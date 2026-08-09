@@ -551,6 +551,12 @@ class StorageBackend(ABC):
     def get_all_rss_ids(self, date: Optional[str] = None) -> List[Dict]:
         return []
 
+    def get_all_rss_ids_strict(
+        self, date: Optional[str] = None
+    ) -> List[Dict]:
+        """严格读取 RSS ID；默认转发以兼容第三方存储后端。"""
+        return self.get_all_rss_ids(date)
+
     def get_rss_feed_statuses(
         self, date: Optional[str] = None
     ) -> Dict[str, str]:

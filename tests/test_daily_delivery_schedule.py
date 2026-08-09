@@ -622,6 +622,47 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         dispatcher.dispatch_all.assert_not_called()
         scheduler.record_execution.assert_not_called()
 
+    @patch("trendradar.__main__.AIAnalyzer")
+    def test_daily_delivery_passes_strict_contract_to_ai_analyzer(
+        self, analyzer_class
+    ):
+        analyzer, scheduler, _ = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+        )
+        analyzer.ctx.config["AI"] = {}
+        analyzer.ctx.config["AI_ANALYSIS"] = {
+            "ENABLED": True,
+            "MODE": "follow_report",
+        }
+        analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+            success=True
+        )
+
+        self.assertTrue(analyzer.run())
+
+        self.assertTrue(
+            analyzer_class.return_value.analyze.call_args.kwargs["strict"]
+        )
+
+    def test_strict_translation_failure_aborts_without_checkpoint(self):
+        analyzer, scheduler, dispatcher = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+        )
+        analyzer.ctx.config["AI_TRANSLATION"] = {"ENABLED": True}
+        dispatcher.translate_content.side_effect = RuntimeError(
+            "必要标题翻译部分失败"
+        )
+
+        self.assertFalse(analyzer.run())
+
+        self.assertTrue(
+            dispatcher.translate_content.call_args.kwargs["require_all"]
+        )
+        dispatcher.dispatch_all.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+
     def test_enabled_html_failure_aborts_before_notification(self):
         analyzer, scheduler, dispatcher = self.build_analyzer(
             rss_items=[RSS_STAT],
@@ -652,6 +693,23 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         analyzer.ctx.generate_html.assert_not_called()
         analyzer.ctx.prepare_report.assert_not_called()
         dispatcher.dispatch_all.assert_not_called()
+        scheduler.record_execution.assert_called_once_with(
+            "daily_delivery", "push", "2026-08-09"
+        )
+
+    def test_authoritative_no_rss_match_cannot_report_hotlist_payload(self):
+        analyzer, scheduler, dispatcher = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+            filter_method="ai",
+        )
+        analyzer.ctx.convert_ai_filter_to_report_data.return_value = ([], [], [])
+
+        self.assertTrue(analyzer.run())
+
+        analyzer.ctx.prepare_report.assert_not_called()
+        dispatcher.dispatch_all.assert_not_called()
+        self.assertEqual(analyzer._hotlist_total_count, 0)
         scheduler.record_execution.assert_called_once_with(
             "daily_delivery", "push", "2026-08-09"
         )

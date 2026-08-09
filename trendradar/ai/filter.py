@@ -374,6 +374,7 @@ class AIFilter:
         titles: List[Dict],
         tags: List[Dict],
         interests_content: str = "",
+        strict: bool = False,
     ) -> Optional[List[Dict]]:
         """
         阶段 B：对一批新闻标题做分类
@@ -473,7 +474,10 @@ class AIFilter:
                     print(f"[AI筛选] 分类响应修复失败，将在下次运行重试: {repair_error}")
                     return None
             if self.summary_grounding_review_enabled and results:
-                self._review_item_summaries(titles, results)
+                review_succeeded = self._review_item_summaries(titles, results)
+                if strict and not review_succeeded:
+                    print("[AI筛选] 严格模式逐条摘要证据校审失败，本批次拒绝使用")
+                    return None
             return results
         except Exception as e:
             print(f"[AI筛选] 分类请求失败: {type(e).__name__}: {e}")
@@ -483,7 +487,7 @@ class AIFilter:
         self,
         titles: List[Dict],
         results: List[Dict],
-    ) -> None:
+    ) -> bool:
         """批量对照原始证据校审逐条摘要；失败时保留首轮摘要。"""
         result_by_id = {r["news_item_id"]: r for r in results}
         evidence_blocks = []
@@ -509,7 +513,7 @@ class AIFilter:
             })
 
         if not evidence_blocks:
-            return
+            return True
 
         messages = [
             {
@@ -548,11 +552,13 @@ class AIFilter:
                         result["ai_summary"] = summary
                         updated += 1
             print(f"[AI筛选] 逐条摘要证据校审完成: {updated}/{len(results)} 条")
+            return updated == len(results)
         except Exception as exc:
             print(
                 f"[AI筛选] 逐条摘要证据校审失败，保留首轮摘要: "
                 f"{type(exc).__name__}: {str(exc)[:160]}"
             )
+            return False
 
     def _parse_classify_response(
         self,

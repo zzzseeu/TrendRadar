@@ -195,8 +195,8 @@ class AITranslator:
                     batch_result.success_count += 1
                 else:
                     batch_result.results[idx].translated_text = batch_result.results[idx].original_text
-                    batch_result.results[idx].success = True
-                    batch_result.success_count += 1
+                    batch_result.results[idx].error = "AI 未返回对应编号的翻译"
+                    batch_result.fail_count += 1
 
         except Exception as e:
             error_msg = f"批量翻译失败: {type(e).__name__}: {str(e)[:100]}"

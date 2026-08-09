@@ -67,6 +67,19 @@ class DailyDeliveryWindow:
     def contains(self, value: datetime) -> bool:
         return self.start < value <= self.end
 
+    def contains_discovered(self, value: str, storage_date: str) -> bool:
+        """按记录精度判断首次发现时间是否与窗口相交。"""
+        discovered_at = parse_discovered_at(
+            value, storage_date, self.timezone
+        )
+        if discovered_at is None:
+            return False
+        text = (value or "").strip()
+        if len(text) == 5 and text[2] in {":", "-"}:
+            minute_end = discovered_at + timedelta(minutes=1)
+            return discovered_at <= self.end and minute_end > self.start
+        return self.contains(discovered_at)
+
 
 def daily_delivery_window(
     now: datetime,
@@ -167,12 +180,10 @@ class DailyDeliveryAggregator:
             for items in daily_data.items.values():
                 for item in items:
                     total_read += 1
-                    discovered_at = parse_discovered_at(
-                        item.first_time or item.crawl_time,
-                        storage_date,
-                        self.timezone,
-                    )
-                    if discovered_at is None or not window.contains(discovered_at):
+                    discovered_value = item.first_time or item.crawl_time
+                    if not window.contains_discovered(
+                        discovered_value, storage_date
+                    ):
                         filtered_out += 1
                         continue
 
@@ -246,7 +257,7 @@ class DailyDeliveryAggregator:
         id_to_name: dict[str, str] = {}
         snapshot_date = window.end.strftime("%Y-%m-%d")
         existing_by_canonical: dict[str, list[dict]] = {}
-        for row in self.storage.get_all_rss_ids(snapshot_date):
+        for row in self.storage.get_all_rss_ids_strict(snapshot_date):
             canonical_url = canonicalize_url(row.get("url", ""))
             if not canonical_url:
                 continue
@@ -313,7 +324,7 @@ class DailyDeliveryAggregator:
             for items in data.items.values()
             for item in items
         ]
-        rows = self.storage.get_all_rss_ids(data.date)
+        rows = self.storage.get_all_rss_ids_strict(data.date)
         resolved_ids: set[int] = set()
         for item in snapshot_items:
             if item.guid:
