@@ -180,6 +180,7 @@ class AIFilterPipeline:
             print(f"[AI筛选][DEBUG] 兴趣描述内容 ({len(interests_content)} 字符):\n{interests_content}")
 
         # 2. 开启批量模式
+        self._batch_commit_attempted = False
         self.storage.begin_batch()
 
         # 3. 检查提示词是否变更。严格模式使用同一事务标签快照，
@@ -219,13 +220,17 @@ class AIFilterPipeline:
                         tag_snapshot, current_hash
                     )
             except Exception as exc:
-                self._end_batch_after_storage_error()
+                cleanup_exc = self._end_batch_after_storage_error()
+                error = (
+                    "严格 AI 标签生命周期失败: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                error = self._append_batch_cleanup_error(
+                    error, cleanup_exc
+                )
                 return AIFilterResult(
                     success=False,
-                    error=(
-                        "严格 AI 标签生命周期失败: "
-                        f"{type(exc).__name__}: {exc}"
-                    ),
+                    error=error,
                 )
         else:
             stored_hash = self.storage.get_latest_prompt_hash(
@@ -262,10 +267,14 @@ class AIFilterPipeline:
         try:
             pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, freshness_filtered_rss = self._collect_pending_news(effective_interests_file)
         except Exception as exc:
-            self._end_batch_after_storage_error()
+            cleanup_exc = self._end_batch_after_storage_error()
+            error = (
+                f"严格 AI 存储读取失败: {type(exc).__name__}: {exc}"
+            )
+            error = self._append_batch_cleanup_error(error, cleanup_exc)
             return AIFilterResult(
                 success=False,
-                error=f"严格 AI 存储读取失败: {type(exc).__name__}: {exc}",
+                error=error,
             )
 
         self._print_pending_stats(
@@ -295,7 +304,10 @@ class AIFilterPipeline:
             except Exception as exc:
                 return AIFilterResult(
                     success=False,
-                    error=f"严格 AI 存储持久化失败: {type(exc).__name__}: {exc}",
+                    error=(
+                        "范围内 AI 分类批次失败，且批次回滚失败: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
                 )
             return AIFilterResult(
                 success=False,
@@ -314,13 +326,15 @@ class AIFilterPipeline:
             if batch_result is False:
                 raise RuntimeError("AI 批次最终持久化失败")
         except Exception as exc:
-            self._end_batch_after_storage_error()
+            cleanup_exc = self._end_batch_after_storage_error()
+            error = (
+                f"{'严格 ' if self._strict else ''}AI 存储持久化失败: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            error = self._append_batch_cleanup_error(error, cleanup_exc)
             return AIFilterResult(
                 success=False,
-                error=(
-                    f"{'严格 ' if self._strict else ''}AI 存储持久化失败: "
-                    f"{type(exc).__name__}: {exc}"
-                ),
+                error=error,
             )
 
         # 8. 查询并组装返回结果
@@ -465,19 +479,32 @@ class AIFilterPipeline:
         return tags
 
     def _end_batch(self) -> Optional[bool]:
+        self._batch_commit_attempted = True
         if self._strict:
             return self.storage.end_batch_strict()
         return self.storage.end_batch()
 
-    def _end_batch_after_storage_error(self) -> None:
+    def _end_batch_after_storage_error(self) -> Optional[Exception]:
         """错误时严格回滚；普通模式保留既有 fail-soft 关闭语义。"""
         try:
             if self._strict:
                 self.storage.abort_batch()
-            else:
+            elif not getattr(self, "_batch_commit_attempted", False):
                 self._end_batch()
-        except Exception:
-            pass
+        except Exception as exc:
+            return exc
+        return None
+
+    @staticmethod
+    def _append_batch_cleanup_error(
+        error: str, cleanup_exc: Optional[Exception]
+    ) -> str:
+        if cleanup_exc is None:
+            return error
+        return (
+            f"{error}; 批次回滚/关闭失败: "
+            f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+        )
 
     def _handle_tag_update(
         self,

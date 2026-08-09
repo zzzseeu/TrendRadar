@@ -4,7 +4,7 @@
 
 **目标：** 每天北京时间 10:00 推送上次完整成功交付之后首次发现的农业新闻，失败时保留积压，成功或合法空周期才推进检查点。
 
-**架构：** 在现有 `period_executions` 上增加跨日期读取最近成功时间的能力，并新增按首次抓取时间聚合 RSS/新闻搜索结果的 `DailyDeliveryAggregator`。系统级首次发现由固定、版本化且不可变的 first-seen identity 账本提供：raw RSS 与 durable outbox 同事务提交，账本把 inventory 的 listed provenance 与单一 SQLite 只读快照绑定，只消费 `source_generation > watermark` 的 outbox；旧数据仅一次性严格回填，之后稳定查询不再打开历史库。`daily_delivery` 模式在入口冻结 run_at/run_date，真实 RSSFetcher 的所有 feed、新鲜度、item 时间以及 HTML/通知输出都复用该时钟，并只把该日期的权威 RSS 快照交给 AI（不受公开 AI analysis mode 覆盖）；strict AI 使用事务性标签快照、完整分类协议和最终叙事校验；全部配置端点成功后通过 strict has/latest/record period API 推进检查点。Remote 的共享 `news/{date}.db` 所有写者及其他 strict mutation 统一使用真实 If-Match/If-None-Match conditional PUT；strict caller/read/后续 mutation 失败走显式 batch abort 并恢复首次 mutation 前镜像，普通 batch end 向流水线传播最终提交结果，任何严格阶段失败都返回非零。
+**架构：** 在现有 `period_executions` 上增加跨日期读取最近成功时间的能力，并新增按首次抓取时间聚合 RSS/新闻搜索结果的 `DailyDeliveryAggregator`。系统级首次发现由固定、版本化且不可变的 first-seen identity 账本提供：raw RSS 与 durable outbox 同事务提交，账本把 inventory 的 listed provenance 与单一 SQLite 只读快照绑定，只消费 `source_generation > watermark` 的 outbox；旧数据仅一次性严格回填，之后稳定查询不再打开历史库。`daily_delivery` 模式在入口冻结 run_at/run_date，真实 RSSFetcher 的所有 feed、新鲜度、item 时间以及 HTML/通知输出都复用该时钟，并只把该日期的权威 RSS 快照交给 AI（不受公开 AI analysis mode 覆盖）；strict AI 使用事务性标签快照、完整分类协议和最终叙事校验；全部配置端点成功后通过 strict has/latest/record period API 推进检查点。Remote 的共享 `news/{date}.db` 所有写者及其他 strict mutation 统一使用真实 If-Match/If-None-Match conditional PUT；before/upload 都从 bound SQLite connection `backup()` 一致快照，strict caller/read/后续 mutation 失败走显式 batch abort，恢复失败则安全失效或持久 poison，普通 batch end 的最终结果只提交一次并向流水线传播，任何严格阶段失败都返回非零。
 
 **技术栈：** Python 3.10+、SQLite、pytz、TrendRadar 存储抽象、现有 AI 筛选与通知调度器、Docker Compose、unittest
 
@@ -20,11 +20,11 @@
 - 创建 `trendradar/storage/first_seen_schema.sql`：固定 `rss/first-seen-v1.db` 的版本元数据、canonical identity 主键、source version/watermark、processed write 与时间索引。
 - 修改 `trendradar/storage/sqlite_mixin.py`：读取准确 `executed_at`，实现绑定 listed provenance 的增量 outbox/watermark 消费、一次性历史回填、不可变 first-seen upsert/候选查询和事务性 strict 标签替换。
 - 修改 `trendradar/storage/local.py`：本地固定账本、同步保存、strict 标签快照和显式 batch 完成/中止结果。
-- 修改 `trendradar/storage/remote.py`：远端版本 provenance、dirty authoritative 状态、连接失效/原子刷新、共享 news 全写者 conditional PUT CAS、批次首镜像 abort 和单一账本对象。
+- 修改 `trendradar/storage/remote.py`：远端版本 provenance、dirty authoritative 状态、连接 `backup()` 一致快照、原子刷新、共享 news 全写者 conditional PUT CAS、批次首镜像 abort、安全失效/poison 状态机和单一账本对象。
 - 修改 `trendradar/storage/manager.py`：一致转发 strict period、first-seen、strict 标签与 batch end/abort 结果。
 - 修改 `trendradar/core/scheduler.py`：向业务编排暴露最近执行时间，并按 report mode 成对路由 strict has/latest/record period 读取与写入；调度解析接受冻结 run_at。
 - 修改 `trendradar/ai/filter.py`：strict 分类解析完整 flat schema/ID/tag/唯一性/有限数值/非空字符串协议，一次 repair 后仍非法则整批失败。
-- 修改 `trendradar/ai/filter_pipeline.py`：允许快照 ID 成为权威范围；strict 标签全量原子替换并读回；strict 错误统一 abort，普通最终 batch 提交显式 False 时关闭流水线。
+- 修改 `trendradar/ai/filter_pipeline.py`：允许快照 ID 成为权威范围；strict 标签全量原子替换并读回；strict 错误统一 abort 并报告 rollback failure，普通最终 batch 提交显式 False 时关闭流水线且不二次 end。
 - 修改 `trendradar/ai/analyzer.py`：grounding 和配置裁剪后校验最终可交付叙事。
 - 修改 `trendradar/context.py`：把权威快照范围和显式 operation_date 同时传给 AI 分类和报告转换，并把冻结 operation_at 绑定到 HTML renderer、通知 splitter 和邮件逻辑时间。
 - 修改 `trendradar/crawler/rss/fetcher.py` 与 `trendradar/utils/time.py`：一次 fetch_all 的所有 feed、年份替换、新鲜度与 item 发现时间复用入口冻结时钟。
@@ -41,6 +41,7 @@
 - 创建 `tests/test_daily_delivery_review5.py`：listed-version 一致快照/增量 watermark、共享 news 全写者 CAS、strict period 读取与跨午夜 operation_date 主链测试。
 - 创建 `tests/test_daily_delivery_review6.py`：真实双 feed 跨午夜时钟、Remote AI/period 失败镜像恢复、AI mode 权威范围、strict latest capability 和冻结输出 payload 测试。
 - 创建 `tests/test_daily_delivery_review7.py`：strict 首 mutation 后 caller/第二次 begin 失败回滚、普通最终 CAS 结果传播与第三方 `None` 兼容测试。
+- 创建 `tests/test_daily_delivery_review8.py`：持久 WAL connection backup、restore/close/sidecar 失败安全失效、双失败 poison、无快照 dirty 和 ordinary 单次 end 测试。
 - 修改 `tests/test_weekly_digest.py`：公共快照工具重构后的周报回归断言。
 - 修改 `tests/test_weekly_schedule.py`：确认 weekly 能力保留且严格规则未退化。
 - 修改 `tests/test_news_search_pipeline.py`：确认每日交付下固定 RSS 或搜索来源失败会中止。
@@ -968,6 +969,11 @@ Remote strict AI 的 batch/non-batch、普通 wrapper 以及 strict period 在 4
 或第二次 mutation 的 baseline/connection/before-image 失败必须 abort 而非提交，远端和本地
 dirty 均恢复批次前状态；普通 Remote 的 deferred CAS/PUT 失败必须由 Manager 的
 `end_batch=False` 传播到 pipeline 并返回失败，同时第三方旧 `None` 与 rowcount 0 no-op 兼容。
+
+第八轮一致性边界还需确认：WAL 下 before-image 与最终上传必须由同一 bound connection 的
+`backup()` 生成；restore/close/sidecar 任一恢复失败后只能安全失效并重下，失效也失败则 poison
+并拒绝后续 strict 访问；dirty 无 snapshot 同样必须失效。ordinary final end 已返回 False/抛错
+后 cleanup 不得再次调用第三方 end，rollback failure 必须与原始 pipeline error 同时报告。
 
 - [ ] **步骤 4：做只读代码审查并修复 Critical/Important**
 

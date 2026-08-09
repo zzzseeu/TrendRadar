@@ -69,7 +69,10 @@ ETag/VersionId 与最终 HEAD 一致；不支持条件写的远端后端明确�
 提供独立于提交的 abort：任一 strict caller 校验、读取或后续 mutation 建立 baseline 失败时，
 恢复该批第一次 mutation 前镜像并清理连接、WAL/SHM 与 dirty，不能用提交型 end 做错误清理。
 普通批次的 end 必须把最终 CAS/PUT 结果传播到流水线；仅显式 `False` 表示失败，第三方旧
-后端返回 `None` 保持兼容。
+后端返回 `None` 保持兼容。before-image 与上传 payload 必须由对应的当前 SQLite connection
+通过 `backup()` 生成一致单文件快照，不能直接读取可能落后于已提交 WAL 的主 `.db`。恢复
+失败时先安全失效本地 DB/sidecar/provenance 并强制重下；安全失效也失败则保留 poison token，
+后续 strict 读写确定性拒绝。流水线已尝试 ordinary end 后不得在 cleanup 中再次提交。
 
 首次运行只读取最近 24 小时；已有成功检查点后不设置静默丢弃上限，积压内容保留到
 完整成功为止，并交给现有通知分批机制处理。
@@ -153,6 +156,10 @@ rollback；Remote 的 False、异常或 CAS 失败必须恢复 mutation 前镜�
   strict begin 失败标记为整批失败，禁止错误 cleanup 提交首项。普通 wrapper 和最终
   `end_batch` 都必须向调用方反映远端提交失败，但第三方 `None` 与普通批次返回 0 的合法
   no-op 保持兼容，不回滚先前成功修改。后续 strict 读取只能看到权威远端状态。
+- Remote 持久 WAL 覆盖 ordinary 成功 mutation + 0 no-op、strict end 与 strict abort，并由
+  全新 observer 验证 connection backup 上传/恢复内容；restore replace、connection close、
+  WAL sidecar 清理失败必须安全重下，restore 与失效双失败必须 poison，dirty 无 before-image
+  也不得复用本地主库。ordinary end 返回 False 或抛出后 cleanup 只能观察结果，不能二次 end。
 - first-seen 消费覆盖 Remote 读取 v2 期间变为 v3、Local DB/WAL 读取期间变化，以及同一
   日库多 generation 的真正增量 watermark；失败不得推进水位，下一轮仍须处理新 outbox。
 - Remote 共享 news DB 覆盖旧热榜写者不能覆盖新 checkpoint/AI 状态；热榜保存失败必须

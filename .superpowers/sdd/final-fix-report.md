@@ -842,3 +842,92 @@ RED：新增 Manager 传播与真实 ordinary begin→mutation→上传失败两
 
 第七次最终测试计数：聚焦 163、兼容 93、全量 505；三套最终命令合计执行 761 个测试
 （聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审无新增遗留问题。
+
+## 第八次最终复审修复
+
+### 1. Remote SQLite 一致快照与 WAL
+
+根因：Remote 的 mutation before-image 和最终上传都直接读取主 `.db`；SQLite 使用持久 WAL
+时，`commit()` 只保证连接视图已提交，不保证 WAL 已 checkpoint 回主库。于是当前进程通过
+开放连接能读到新状态，而新 Remote observer 下载的对象仍可能是旧状态；普通批次中第二个
+0 no-op 的局部回滚也可能把第一个已成功 mutation 的 WAL 状态丢掉。
+
+RED：新增持久 WAL 三条真实 Remote 测试。ordinary mutation + 0 no-op 和 strict end 均由
+全新 observer 读到旧 hash，`Ran 3` 中 2 failures、exit 1；strict abort 的旧状态基线用例
+首跑通过。
+
+修复：新增基于当前 bound `sqlite3.Connection.backup()` 的一致快照 helper。before-image、
+news/RSS/first-seen SQLite 上传都从同一连接生成独立单文件镜像，包含已提交 WAL；不切换
+journal mode，不引入既有库迁移风险。Remote mutation 将已绑定连接显式传到最终上传，CAS
+payload 与本地 mutation 视图一致。GREEN：WAL 三项 `Ran 3 in 18.991s, OK`，exit 0；三个
+场景均由全新 backend observer 验证远端内容。
+
+### 2. abort/rollback 失败的安全状态机
+
+根因：旧 abort 在 `finally` 无条件清除 snapshot、dirty 与 batch failure，即使恢复本身失败；
+dirty 但没有 before-image 的 token 只清 sidecar，不删除主库/provenance。失败后的本地脏库
+因此可能继续被 strict read 当成权威内容，甚至在后续批次提交。
+
+RED：新增 replace、connection close、WAL sidecar 三类恢复故障、安全失效也失败、以及
+dirty 无 before-image 共五项。首跑 `Ran 5`，5 failures、exit 1：失败 token 被清空，本地
+strict read 仍看到 aborted hash，且后续 begin 未被 poison 拒绝。
+
+修复：每个 `(date, db_type)` token 只有进入以下终态才从 pending 集合移除：一致镜像恢复
+成功；关闭连接并删除主库/WAL/SHM/journal/temp、清 authoritative/provenance 的安全失效
+成功；或安全失效也失败后写入独立、跨 batch 保留的 poison。poison token 的 strict refresh、
+dirty 标记和 mutation 均确定性拒绝；dirty 无 snapshot 直接安全失效并在下次 strict read
+重新下载。pipeline 不再吞掉 abort failure，而把原始阶段错误与回滚/关闭错误合并到失败
+结果。GREEN：恢复状态五项 `Ran 5 in 28.386s, OK`，exit 0；pipeline 错误传播与单次 end
+两项 `Ran 2 in 0.002s, OK`，exit 0。
+
+### 3. ordinary batch 只终结一次
+
+根因：ordinary `end_batch()` 明确返回 False 或抛错后，pipeline 的通用错误 cleanup 又调用
+一次 `end_batch()`。Remote 的第二次调用通常恰好为空，但第三方后端没有幂等保证，可能
+发生重复提交或掩盖首次失败。
+
+RED：第三方 fake 令 `end_batch.side_effect=[False, True]`，观察到 call count 为 2，测试
+失败。修复：pipeline 在调用提交前记录 `batch_commit_attempted`；ordinary cleanup 仅在尚未
+尝试最终提交时关闭一次，strict 错误仍走 abort。显式 False 仍是失败，第三方 `None` 与
+rowcount 0 no-op 语义不变。GREEN：测试观察到 call count 精确为 1。
+
+### 4. 文档与兼容收敛
+
+- design spec 与 implementation plan 已同步 bound connection backup、安全失效/poison、
+  dirty 无 snapshot 和 ordinary 单次终结契约。
+- 原子保证仍限定为单个 Remote SQLite 对象；未声称多对象分布式事务或跨进程通知
+  exactly-once，也没有强制切换 SQLite journal mode。
+- review4/review5 的 Remote raw RSS、ledger、共享 news CAS 与 provenance 契约均未放宽；
+  普通 0 no-op、第三方 `end_batch() -> None` 和 weekly 行为保持兼容。
+
+## 第八次复审最终验证
+
+所有 Python 测试均使用 `docker run --network none` 和镜像内
+`/app/.venv/bin/python`，并取得明确 exit code。
+
+- 第八轮新增：`tests.test_daily_delivery_review8`，`Ran 10 in 48.753s, OK`，exit 0。
+- 第六至第八轮：`Ran 74 in 168.357s, OK`，exit 0。
+- Remote/raw RSS/ledger 相关 review4 + review5：`Ran 61 in 110.256s, OK`，exit 0。
+- 聚焦：`tests.test_daily_delivery tests.test_daily_delivery_schedule tests.test_daily_delivery_report
+  tests.test_news_search_pipeline`，`Ran 163 in 332.378s, OK`，exit 0。
+- 固定兼容：weekly digest/schedule/report、Elsevier、proxy、email，`Ran 93 in 211.989s,
+  OK`，exit 0。
+- 最终全量：`python -m unittest discover -s /workspace/tests -q`，`Ran 515 in 864.236s,
+  OK`，exit 0，无 FAIL/ERROR。
+- `bash -n docker/entrypoint.sh`、`bash -n config/daily.crontab`、
+  `bash tests/test_portable_deployment.sh`、`git diff --check` 均 exit 0；portable 输出
+  `PASS: 本地部署路径可移植性检查通过`。
+
+## 第八次复审 Diff 自审
+
+- WAL 一致性不再依赖主库 checkpoint；before、CAS payload 与 mutation 共用连接视图。
+- abort token 不会在恢复失败时静默失踪；安全失效可恢复时下一次 strict read 必须重下，
+  无法安全失效时 poison 跨 begin 保留并拒绝 strict 访问。
+- strict pipeline 报告原始错误和 rollback failure；ordinary 最终提交只尝试一次。
+- review6/7、Remote/raw RSS/ledger、聚焦、固定兼容及全量均明确 exit 0；静态 diff 审计未
+  发现新的直接缺陷。
+- 未改变 10:00、`(last_success, now]`、首次 24h、合法空推进、RSS-only、所有通知目标、
+  strict period 或密钥持久化边界；未合并 main、未部署、未真实推送。
+
+第八次最终测试计数：聚焦 163、兼容 93、全量 515；三套最终命令合计执行 771 个测试
+（聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审无遗留架构冲突。

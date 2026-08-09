@@ -126,6 +126,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         self._batch_failed = False
         self._remote_provenance: Dict[str, Optional[tuple]] = {}
         self._strict_local_authoritative: set[str] = set()
+        self._poisoned_sqlite_tokens: Dict[str, str] = {}
         self._first_seen_needs_upload = False
 
         print(f"[远程存储] 初始化完成，存储桶: {bucket_name}，签名版本: {signature_version}")
@@ -328,6 +329,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         self, remote_key: str, local_path: Path
     ) -> bool:
         """按远端对象版本刷新严格读取缓存。"""
+        self._raise_if_sqlite_token_poisoned(remote_key)
         if not hasattr(self, "_remote_provenance"):
             self._remote_provenance = {}
         if not hasattr(self, "_strict_local_authoritative"):
@@ -374,9 +376,131 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         return True
 
     def _mark_strict_local_dirty(self, remote_key: str) -> None:
+        self._raise_if_sqlite_token_poisoned(remote_key)
         if not hasattr(self, "_strict_local_authoritative"):
             self._strict_local_authoritative = set()
         self._strict_local_authoritative.add(remote_key)
+
+    def _raise_if_sqlite_token_poisoned(self, remote_key: str) -> None:
+        poisoned = getattr(self, "_poisoned_sqlite_tokens", {})
+        reason = poisoned.get(remote_key)
+        if reason:
+            raise RuntimeError(
+                f"远程 SQLite token 已污染，拒绝 strict 访问: "
+                f"{remote_key}: {reason}"
+            )
+
+    def _invalidate_local_sqlite_token(
+        self, local_path: Path, remote_key: str
+    ) -> None:
+        """安全失效本地 SQLite token，强制下一次 strict 读取重下。"""
+        failures = []
+        try:
+            self._close_cached_connection(local_path)
+        except Exception as exc:
+            failures.append(exc)
+
+        paths = [
+            local_path,
+            Path(f"{local_path}-wal"),
+            Path(f"{local_path}-shm"),
+            Path(f"{local_path}-journal"),
+            local_path.with_name(f".{local_path.name}.rollback"),
+            local_path.with_name(f".{local_path.name}.refresh"),
+        ]
+        for path in paths:
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception as exc:
+                failures.append(exc)
+
+        self._strict_local_authoritative.discard(remote_key)
+        self._remote_provenance.pop(remote_key, None)
+        if failures:
+            raise RuntimeError(
+                f"本地 SQLite token 安全失效失败: {remote_key}: {failures}"
+            )
+        getattr(self, "_poisoned_sqlite_tokens", {}).pop(remote_key, None)
+
+    def _restore_or_invalidate_sqlite_token(
+        self, local_path: Path, remote_key: str, content: bytes
+    ) -> None:
+        """恢复一致镜像；失败时安全失效，仍失败则持久 poison。"""
+        try:
+            self._restore_local_sqlite_snapshot(
+                local_path, remote_key, content
+            )
+            getattr(self, "_poisoned_sqlite_tokens", {}).pop(
+                remote_key, None
+            )
+            return
+        except Exception as restore_exc:
+            try:
+                self._invalidate_local_sqlite_token(local_path, remote_key)
+            except Exception as invalidate_exc:
+                if not hasattr(self, "_poisoned_sqlite_tokens"):
+                    self._poisoned_sqlite_tokens = {}
+                reason = (
+                    f"回滚失败={restore_exc!r}; "
+                    f"安全失效失败={invalidate_exc!r}"
+                )
+                self._poisoned_sqlite_tokens[remote_key] = reason
+                raise RuntimeError(
+                    f"远程 SQLite 回滚失败且 token 已污染: "
+                    f"{remote_key}: {reason}"
+                ) from restore_exc
+            raise RuntimeError(
+                f"远程 SQLite 回滚失败，已安全失效本地缓存: "
+                f"{remote_key}: {restore_exc}"
+            ) from restore_exc
+
+    def _snapshot_local_sqlite(
+        self,
+        local_path: Path,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bytes:
+        """通过当前连接生成包含已提交 WAL 的一致单文件快照。"""
+        owned_connection = False
+        if conn is None:
+            conn = self._db_connections.get(str(local_path))
+        if conn is None:
+            if not local_path.exists():
+                raise RuntimeError(f"本地 SQLite 不存在: {local_path}")
+            conn = sqlite3.connect(str(local_path))
+            owned_connection = True
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.NamedTemporaryFile(
+            prefix=f".{local_path.name}.snapshot-",
+            suffix=".db",
+            dir=str(local_path.parent),
+            delete=False,
+        )
+        snapshot_path = Path(temporary.name)
+        temporary.close()
+        target = None
+        try:
+            conn.commit()
+            target = sqlite3.connect(str(snapshot_path))
+            conn.backup(target)
+            target.commit()
+            target.close()
+            target = None
+            return snapshot_path.read_bytes()
+        finally:
+            if target is not None:
+                target.close()
+            if owned_connection:
+                conn.close()
+            for path in (
+                snapshot_path,
+                Path(f"{snapshot_path}-wal"),
+                Path(f"{snapshot_path}-shm"),
+                Path(f"{snapshot_path}-journal"),
+            ):
+                if path.exists():
+                    path.unlink()
 
     def _restore_local_sqlite_snapshot(
         self, local_path: Path, remote_key: str, content: bytes
@@ -401,8 +525,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         local_path = self._get_local_db_path(date_str, "news")
         remote_key = self._get_remote_db_key(date_str, "news")
         conn = self._get_ai_connection(date_str, strict=True)
-        conn.commit()
-        before = local_path.read_bytes()
+        before = self._snapshot_local_sqlite(local_path, conn)
         had_pending = token in self._batch_dirty
         if self._batch_mode:
             if not hasattr(self, "_batch_snapshots"):
@@ -426,9 +549,18 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     ) -> None:
         """恢复单次 mutation；保留同批次更早的有效本地变更。"""
         token = state["token"]
-        self._restore_local_sqlite_snapshot(
-            state["path"], state["remote_key"], state["before"]
-        )
+        try:
+            self._restore_or_invalidate_sqlite_token(
+                state["path"], state["remote_key"], state["before"]
+            )
+        except Exception:
+            if self._batch_mode:
+                self._batch_failed = True
+            else:
+                self._batch_dirty.discard(token)
+                if hasattr(self, "_batch_snapshots"):
+                    self._batch_snapshots.pop(token, None)
+            raise
         if self._batch_mode and state["had_pending"]:
             self._batch_dirty.add(token)
             self._mark_strict_local_dirty(state["remote_key"])
@@ -474,7 +606,10 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         try:
             uploaded = self._upload_sqlite(
-                state["date"], "news", strict_version=strict_upload
+                state["date"],
+                "news",
+                strict_version=strict_upload,
+                conn=state["conn"],
             )
         except Exception:
             self._rollback_news_mutation(state, mark_batch_failed=True)
@@ -565,55 +700,71 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     def abort_batch(self):
         """恢复批次首次 mutation 前镜像，不执行任何远端上传。"""
         self._batch_mode = False
-        dirty = set(self._batch_dirty)
-        snapshots = dict(getattr(self, "_batch_snapshots", {}))
+        snapshots = getattr(self, "_batch_snapshots", {})
+        tokens = set(self._batch_dirty) | set(snapshots)
         failures = []
-        try:
-            for (date, db_type), before in snapshots.items():
-                local_path = self._get_local_db_path(date, db_type)
-                remote_key = self._get_remote_db_key(date, db_type)
-                try:
-                    self._restore_local_sqlite_snapshot(
-                        local_path, remote_key, before
-                    )
-                except Exception as exc:
-                    failures.append(exc)
-
-            # 正常 mutation 总会有首镜像；这里仍清理异常中途留下的
-            # connection/WAL/dirty，避免后续 strict read 误认本地 authoritative。
-            for date, db_type in dirty.difference(snapshots):
-                local_path = self._get_local_db_path(date, db_type)
-                remote_key = self._get_remote_db_key(date, db_type)
-                try:
-                    self._close_cached_connection(local_path)
-                    for suffix in ("-wal", "-shm"):
-                        auxiliary = Path(f"{local_path}{suffix}")
-                        if auxiliary.exists():
-                            auxiliary.unlink()
-                    self._strict_local_authoritative.discard(remote_key)
-                except Exception as exc:
-                    failures.append(exc)
-        finally:
-            self._batch_dirty.clear()
-            self._batch_snapshots = {}
-            self._batch_failed = False
+        for token in tokens:
+            date, db_type = token
+            local_path = self._get_local_db_path(date, db_type)
+            remote_key = self._get_remote_db_key(date, db_type)
+            before = snapshots.get(token)
+            try:
+                self._recover_batch_token(
+                    local_path, remote_key, before
+                )
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                # pending token 只有在已恢复、已安全失效或已转成持久
+                # poison 状态后才会走到这里。
+                self._batch_dirty.discard(token)
+                snapshots.pop(token, None)
+        self._batch_snapshots = {}
+        self._batch_failed = False
         if failures:
             raise RuntimeError(f"远程数据库批次回滚失败: {failures}")
         return True
 
+    def _recover_batch_token(
+        self,
+        local_path: Path,
+        remote_key: str,
+        before: Optional[bytes],
+    ) -> None:
+        """把 pending batch token 转成 restored/invalidated/poison。"""
+        if remote_key in getattr(self, "_poisoned_sqlite_tokens", {}):
+            self._raise_if_sqlite_token_poisoned(remote_key)
+        if before is not None:
+            self._restore_or_invalidate_sqlite_token(
+                local_path, remote_key, before
+            )
+            return
+        try:
+            self._invalidate_local_sqlite_token(local_path, remote_key)
+        except Exception as invalidate_exc:
+            if not hasattr(self, "_poisoned_sqlite_tokens"):
+                self._poisoned_sqlite_tokens = {}
+            reason = f"无 before-image 且安全失效失败={invalidate_exc!r}"
+            self._poisoned_sqlite_tokens[remote_key] = reason
+            raise RuntimeError(
+                f"远程 SQLite token 已污染: {remote_key}: {reason}"
+            ) from invalidate_exc
+
     def _finish_batch(self, strict: bool) -> bool:
         """提交批次；失败对象恢复该批次第一次 mutation 前镜像。"""
         self._batch_mode = False
-        dirty = list(self._batch_dirty)
-        self._batch_dirty.clear()
+        dirty = self._batch_dirty
         snapshots = getattr(self, "_batch_snapshots", {})
         failures = []
 
         if getattr(self, "_batch_failed", False):
             failures.append("批次内本地 mutation 失败")
-            dirty = []
+            upload_tokens = []
+        else:
+            upload_tokens = list(dirty)
 
-        for date, db_type in dirty:
+        for token in upload_tokens:
+            date, db_type = token
             try:
                 uploaded = self._upload_sqlite(
                     date, db_type, strict_version=strict
@@ -622,24 +773,37 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
                 uploaded = False
                 failures.append(exc)
             if uploaded:
-                snapshots.pop((date, db_type), None)
+                dirty.discard(token)
+                snapshots.pop(token, None)
             else:
-                failures.append((date, db_type))
-                before = snapshots.pop((date, db_type), None)
-                if before is not None:
-                    local_path = self._get_local_db_path(date, db_type)
-                    remote_key = self._get_remote_db_key(date, db_type)
-                    self._restore_local_sqlite_snapshot(
-                        local_path, remote_key, before
+                failures.append(token)
+                local_path = self._get_local_db_path(date, db_type)
+                remote_key = self._get_remote_db_key(date, db_type)
+                try:
+                    self._recover_batch_token(
+                        local_path, remote_key, snapshots.get(token)
                     )
+                except Exception as exc:
+                    failures.append(exc)
+                finally:
+                    dirty.discard(token)
+                    snapshots.pop(token, None)
 
-        # 本地 mutation 已失败时没有上传，恢复本批次所有首镜像。
-        for (date, db_type), before in list(snapshots.items()):
+        # 本地 mutation 已失败或异常 token 未进入上传时，恢复/失效全部状态。
+        remaining = set(dirty) | set(snapshots)
+        for token in remaining:
+            date, db_type = token
             local_path = self._get_local_db_path(date, db_type)
             remote_key = self._get_remote_db_key(date, db_type)
-            self._restore_local_sqlite_snapshot(
-                local_path, remote_key, before
-            )
+            try:
+                self._recover_batch_token(
+                    local_path, remote_key, snapshots.get(token)
+                )
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                dirty.discard(token)
+                snapshots.pop(token, None)
         self._batch_snapshots = {}
         self._batch_failed = False
         if failures and strict:
@@ -655,6 +819,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         date: Optional[str] = None,
         db_type: str = "news",
         strict_version: bool = False,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> bool:
         """
         上传本地 SQLite 文件到远程存储
@@ -684,15 +849,11 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             return False
 
         try:
-            # 获取本地文件大小
-            local_size = local_path.stat().st_size
+            # connection.backup() 会把已提交 WAL 合并为独立 SQLite 镜像；
+            # CAS 上传不得直接读取可能落后于连接视图的主 .db 文件。
+            file_content = self._snapshot_local_sqlite(local_path, conn)
+            local_size = len(file_content)
             print(f"[远程存储] 准备上传: {local_path} ({local_size} bytes) -> {r2_key}")
-
-            # 读取文件内容为 bytes 后上传
-            # 避免传入文件对象时 requests 库使用 chunked transfer encoding
-            # 腾讯云 COS 等 S3 兼容服务可能无法正确处理 chunked encoding
-            with open(local_path, 'rb') as f:
-                file_content = f.read()
 
             # 使用 put_object 并明确设置 ContentLength，确保不使用 chunked encoding
             if conditional_write:
@@ -822,7 +983,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     def _upload_first_seen_ledger_strict(self) -> None:
         local_path = self.temp_dir / "rss" / "first-seen-v1.db"
         remote_key = "rss/first-seen-v1.db"
-        content = local_path.read_bytes()
+        content = self._snapshot_local_sqlite(local_path)
         self._mark_strict_local_dirty(remote_key)
         self._conditional_put_strict(
             remote_key, content, "application/x-sqlite3"
@@ -866,7 +1027,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             conn = self._get_connection(
                 data.date, "news", strict_exists=True
             )
-            before = local_path.read_bytes()
+            before = self._snapshot_local_sqlite(local_path, conn)
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) as count FROM news_items")
             row = cursor.fetchone()
@@ -905,7 +1066,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             log_parts.append(f"(去重后总计: {final_count} 条)")
             print("，".join(log_parts))
 
-            if not self._upload_sqlite(data.date, "news"):
+            if not self._upload_sqlite(data.date, "news", conn=conn):
                 raise RuntimeError("共享 news 数据库 CAS 上传失败")
             print("[远程存储] 数据已同步到远程存储")
             return True
