@@ -277,6 +277,18 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             self._upload_sqlite(date, db_type)
         self._batch_dirty.clear()
 
+    def end_batch_strict(self):
+        """结束严格批次；任一远程上传或验证失败即上抛。"""
+        self._batch_mode = False
+        dirty = list(self._batch_dirty)
+        self._batch_dirty.clear()
+        failed = []
+        for date, db_type in dirty:
+            if not self._upload_sqlite(date, db_type):
+                failed.append((date, db_type))
+        if failed:
+            raise RuntimeError(f"远程数据库上传失败: {failed}")
+
     def _upload_sqlite(self, date: Optional[str] = None, db_type: str = "news") -> bool:
         """
         上传本地 SQLite 文件到远程存储
@@ -375,6 +387,14 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         """严格 RSS 读取时区分真实 404 与远程访问故障。"""
         return self._get_connection(
             date, db_type="rss", strict_exists=strict
+        )
+
+    def _get_ai_connection(
+        self, date: Optional[str] = None, strict: bool = False
+    ) -> sqlite3.Connection:
+        """严格 AI 读取时区分真实 404 与远程访问故障。"""
+        return self._get_connection(
+            date, db_type="news", strict_exists=strict
         )
 
     # ========================================
@@ -589,6 +609,11 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     def get_active_ai_filter_results(self, date=None, interests_file="ai_interests.txt"):
         return self._get_active_filter_results_impl(date, interests_file)
 
+    def get_active_ai_filter_results_strict(self, date=None, interests_file="ai_interests.txt"):
+        return self._get_active_filter_results_impl(
+            date, interests_file, strict=True
+        )
+
     def deprecate_specific_ai_filter_tags(self, tag_ids, date=None):
         count = self._deprecate_specific_tags_impl(date, tag_ids)
         if count > 0:
@@ -622,6 +647,31 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     def get_analyzed_news_ids(self, source_type="hotlist", date=None, interests_file="ai_interests.txt"):
         return self._get_analyzed_news_ids_impl(date, source_type, interests_file)
 
+    def get_analyzed_news_ids_strict(self, source_type="hotlist", date=None, interests_file="ai_interests.txt"):
+        return self._get_analyzed_news_ids_impl(
+            date, source_type, interests_file, strict=True
+        )
+
+    def replace_ai_filter_batch_strict(
+        self,
+        results,
+        succeeded_news_ids,
+        succeeded_rss_ids,
+        interests_file,
+        prompt_hash,
+        date=None,
+    ):
+        status = self._replace_ai_filter_batch_strict_impl(
+            date,
+            results,
+            succeeded_news_ids,
+            succeeded_rss_ids,
+            interests_file,
+            prompt_hash,
+        )
+        self._upload_sqlite(date)
+        return status
+
     def clear_analyzed_news(self, date=None, interests_file="ai_interests.txt"):
         count = self._clear_analyzed_news_impl(date, interests_file)
         if count > 0:
@@ -642,6 +692,32 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def get_all_rss_ids_strict(self, date=None):
         return self._get_all_rss_ids_impl(date, strict=True)
+
+    def get_earliest_rss_discoveries_strict(
+        self, candidate_identities, through_date
+    ):
+        dates = set()
+        paginator = self.s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=self.bucket_name, Prefix="rss/"
+        ):
+            for obj in page.get("Contents", []):
+                match = re.fullmatch(
+                    r"rss/(\d{4}-\d{2}-\d{2})\.db", obj["Key"]
+                )
+                if match and match.group(1) <= through_date:
+                    dates.add(match.group(1))
+        local_rss_dir = self.temp_dir / "rss"
+        if local_rss_dir.exists():
+            for db_path in local_rss_dir.glob("*.db"):
+                match = re.fullmatch(
+                    r"(\d{4}-\d{2}-\d{2})\.db", db_path.name
+                )
+                if match and match.group(1) <= through_date:
+                    dates.add(match.group(1))
+        return self._merge_earliest_rss_discoveries(
+            candidate_identities, dates
+        )
 
     # ========================================
     # 远程特有功能：TXT/HTML 快照（临时目录）

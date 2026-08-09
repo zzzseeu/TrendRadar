@@ -541,18 +541,33 @@ class AIFilter:
             response = self.client.chat(messages, temperature=0.1)
             json_str = self._extract_json(response)
             reviewed = json.loads(json_str) if json_str else []
-            updated = 0
-            if isinstance(reviewed, list):
-                for item in reviewed:
-                    if not isinstance(item, dict):
-                        continue
-                    result = result_by_id.get(item.get("id"))
-                    summary = " ".join(str(item.get("summary", "")).split())[:300]
-                    if result is not None and summary:
-                        result["ai_summary"] = summary
-                        updated += 1
-            print(f"[AI筛选] 逐条摘要证据校审完成: {updated}/{len(results)} 条")
-            return updated == len(results)
+            expected_ids = set(result_by_id)
+            reviewed_summaries = {}
+            if not isinstance(reviewed, list):
+                return False
+            for item in reviewed:
+                if not isinstance(item, dict):
+                    return False
+                news_id = item.get("id")
+                summary = " ".join(
+                    str(item.get("summary", "")).split()
+                )[:300]
+                if (
+                    news_id not in expected_ids
+                    or news_id in reviewed_summaries
+                    or not summary
+                ):
+                    return False
+                reviewed_summaries[news_id] = summary
+            if set(reviewed_summaries) != expected_ids:
+                return False
+            for news_id, summary in reviewed_summaries.items():
+                result_by_id[news_id]["ai_summary"] = summary
+            print(
+                f"[AI筛选] 逐条摘要证据校审完成: "
+                f"{len(reviewed_summaries)}/{len(results)} 条"
+            )
+            return True
         except Exception as exc:
             print(
                 f"[AI筛选] 逐条摘要证据校审失败，保留首轮摘要: "

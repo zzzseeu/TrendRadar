@@ -33,6 +33,35 @@ def parse_iso_datetime(
     return parsed.astimezone(target_tz)
 
 
+def parse_storage_datetime(
+    value: str,
+    storage_date: str,
+    timezone: str = DEFAULT_TIMEZONE,
+) -> Optional[datetime]:
+    """解析日库中的完整时间或历史 HH:MM/HH-MM 本地时间。"""
+    text = (value or "").strip()
+    if not text:
+        return None
+    try:
+        target_tz = pytz.timezone(timezone)
+    except pytz.UnknownTimeZoneError:
+        target_tz = pytz.timezone(DEFAULT_TIMEZONE)
+    for time_format in ("%H-%M", "%H:%M"):
+        try:
+            clock = datetime.strptime(text, time_format).time()
+            day = datetime.strptime(storage_date, "%Y-%m-%d").date()
+            return target_tz.localize(datetime.combine(day, clock))
+        except ValueError:
+            pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return target_tz.localize(parsed)
+    return parsed.astimezone(target_tz)
+
+
 def get_configured_time(timezone: str = DEFAULT_TIMEZONE) -> datetime:
     """
     获取配置时区的当前时间

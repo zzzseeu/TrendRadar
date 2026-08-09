@@ -248,6 +248,20 @@ class AIAnalyzer:
                 result.success = False
                 result.error = f"严格分析拒绝降级结果: {result.error}"
 
+            if strict and result.success and not any((
+                result.core_trends.strip(),
+                result.sentiment_controversy.strip(),
+                result.signals.strip(),
+                result.rss_insights.strip(),
+                result.outlook_strategy.strip(),
+                *(
+                    str(summary).strip()
+                    for summary in result.standalone_summaries.values()
+                ),
+            )):
+                result.success = False
+                result.error = "严格分析缺少必要摘要内容"
+
             # 第二遍仅做证据校审：删除或泛化原始输入无法直接支持的细节。
             # 这一步不负责重新分析，避免模型用领域常识补齐病害、实验方法等事实。
             if (

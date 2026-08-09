@@ -11,7 +11,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from trendradar.crawler.news_search import canonicalize_url, normalize_title
 from trendradar.storage.base import NewsItem, NewsData, RSSItem, RSSData
+from trendradar.utils.time import parse_storage_datetime
 from trendradar.utils.url import normalize_url
 
 
@@ -55,6 +57,12 @@ class SQLiteStorageMixin:
     ) -> sqlite3.Connection:
         """获取 RSS 连接；远程后端可覆盖以启用严格存在性检查。"""
         return self._get_connection(date, db_type="rss")
+
+    def _get_ai_connection(
+        self, date: Optional[str] = None, strict: bool = False
+    ) -> sqlite3.Connection:
+        """获取 AI/news 连接；远程后端可覆盖以启用严格存在性检查。"""
+        return self._get_connection(date, db_type="news")
 
     # ========================================
     # Schema 管理
@@ -1130,7 +1138,7 @@ class SQLiteStorageMixin:
             if not rows:
                 cursor.execute("""
                     SELECT crawl_time FROM rss_crawl_records
-                    ORDER BY crawl_time DESC
+                    ORDER BY id DESC
                     LIMIT 1
                 """)
                 time_row = cursor.fetchone()
@@ -1186,7 +1194,7 @@ class SQLiteStorageMixin:
             # 获取最新的抓取时间
             cursor.execute("""
                 SELECT crawl_time FROM rss_crawl_records
-                ORDER BY crawl_time DESC
+                ORDER BY id DESC
                 LIMIT 1
             """)
             time_row = cursor.fetchone()
@@ -1232,6 +1240,9 @@ class SQLiteStorageMixin:
 
             # 获取当前批次时间
             current_time = current_data.crawl_time
+            current_datetime = parse_storage_datetime(
+                current_time, current_data.date, self.timezone
+            )
 
             # 收集历史 URL（first_time < current_time 的条目）
             historical_urls: Dict[str, set] = {}
@@ -1239,7 +1250,15 @@ class SQLiteStorageMixin:
                 historical_urls[feed_id] = set()
                 for item in rss_list:
                     first_time = item.first_time or item.crawl_time
-                    if first_time < current_time:
+                    first_datetime = parse_storage_datetime(
+                        first_time, current_data.date, self.timezone
+                    )
+                    if first_datetime is not None and current_datetime is not None:
+                        is_historical = first_datetime < current_datetime
+                    else:
+                        # 非法旧值保持原有 fail-soft 行为；可解析的混合格式绝不做字符串比较。
+                        is_historical = first_time < current_time
+                    if is_historical:
                         if item.url:
                             historical_urls[feed_id].add(item.url)
 
@@ -1282,8 +1301,8 @@ class SQLiteStorageMixin:
 
             # 获取最新的抓取时间
             cursor.execute("""
-                SELECT crawl_time FROM rss_crawl_records
-                ORDER BY crawl_time DESC
+                SELECT id, crawl_time FROM rss_crawl_records
+                ORDER BY id DESC
                 LIMIT 1
             """)
 
@@ -1291,7 +1310,8 @@ class SQLiteStorageMixin:
             if not time_row:
                 return None
 
-            latest_time = time_row[0]
+            latest_record_id = time_row[0]
+            latest_time = time_row[1]
 
             # 获取该时间的 RSS 数据
             cursor.execute("""
@@ -1346,9 +1366,8 @@ class SQLiteStorageMixin:
             cursor.execute("""
                 SELECT cs.feed_id
                 FROM rss_crawl_status cs
-                JOIN rss_crawl_records cr ON cs.crawl_record_id = cr.id
-                WHERE cr.crawl_time = ? AND cs.status = 'failed'
-            """, (latest_time,))
+                WHERE cs.crawl_record_id = ? AND cs.status = 'failed'
+            """, (latest_record_id,))
 
             failed_ids = [row[0] for row in cursor.fetchall()]
 
@@ -1659,11 +1678,11 @@ class SQLiteStorageMixin:
 
     def _get_analyzed_news_ids_impl(
         self, date: Optional[str] = None, source_type: str = "hotlist",
-        interests_file: str = "ai_interests.txt"
+        interests_file: str = "ai_interests.txt", strict: bool = False
     ) -> set:
         """获取已分析过的新闻 ID 集合（用于去重）"""
         try:
-            conn = self._get_connection(date)
+            conn = self._get_ai_connection(date, strict=strict)
             cursor = conn.cursor()
 
             cursor.execute("""
@@ -1673,6 +1692,8 @@ class SQLiteStorageMixin:
 
             return {row[0] for row in cursor.fetchall()}
         except Exception as e:
+            if strict:
+                raise
             print(f"[AI筛选] 获取已分析ID失败: {e}")
             return set()
 
@@ -1760,10 +1781,165 @@ class SQLiteStorageMixin:
             print(f"[AI筛选] 保存分类结果失败: {e}")
             return 0
 
-    def _get_active_filter_results_impl(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict[str, Any]]:
+    @staticmethod
+    def _delete_strict_results_for_ids(
+        cursor: sqlite3.Cursor,
+        source_type: str,
+        news_ids: List[int],
+        interests_file: str,
+    ) -> None:
+        if not news_ids:
+            return
+        placeholders = ",".join("?" * len(news_ids))
+        cursor.execute(
+            f"DELETE FROM ai_filter_results "
+            f"WHERE source_type = ? AND news_item_id IN ({placeholders}) "
+            f"AND tag_id IN (SELECT id FROM ai_filter_tags "
+            f"WHERE interests_file = ?)",
+            [source_type, *news_ids, interests_file],
+        )
+
+    def _replace_ai_filter_batch_strict_impl(
+        self,
+        date: Optional[str],
+        results: List[Dict],
+        succeeded_news_ids: List[int],
+        succeeded_rss_ids: List[int],
+        interests_file: str,
+        prompt_hash: str,
+    ) -> Dict[str, int]:
+        """在单一事务中替换本轮结果和 analyzed 状态，并读回核验。"""
+        news_ids = list(dict.fromkeys(succeeded_news_ids))
+        rss_ids = list(dict.fromkeys(succeeded_rss_ids))
+        succeeded_by_type = {
+            "hotlist": set(news_ids),
+            "rss": set(rss_ids),
+        }
+        matched_by_type = {"hotlist": set(), "rss": set()}
+        result_keys = set()
+
+        for result in results:
+            source_type = result.get("source_type", "hotlist")
+            news_item_id = result.get("news_item_id")
+            if (
+                source_type not in succeeded_by_type
+                or news_item_id not in succeeded_by_type[source_type]
+            ):
+                raise ValueError("分类结果包含本轮成功集合之外的 ID")
+            key = (news_item_id, source_type, result.get("tag_id"))
+            if key in result_keys:
+                raise ValueError("分类结果包含重复 ID/tag")
+            result_keys.add(key)
+            matched_by_type[source_type].add(news_item_id)
+
+        conn = self._get_ai_connection(date, strict=True)
+        cursor = conn.cursor()
+        now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            conn.commit()
+            cursor.execute("BEGIN IMMEDIATE")
+            self._delete_strict_results_for_ids(
+                cursor, "hotlist", news_ids, interests_file
+            )
+            self._delete_strict_results_for_ids(
+                cursor, "rss", rss_ids, interests_file
+            )
+
+            for result in results:
+                cursor.execute("""
+                    INSERT INTO ai_filter_results
+                    (news_item_id, source_type, tag_id, relevance_score,
+                     content_level, risk_warning, content_excerpt,
+                     importance_score, ai_summary, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    result["news_item_id"],
+                    result.get("source_type", "hotlist"),
+                    result["tag_id"],
+                    result.get("relevance_score", 0.0),
+                    result.get("content_level", "title_only"),
+                    result.get("risk_warning", ""),
+                    result.get("content_excerpt", ""),
+                    result.get("importance_score", 0.0),
+                    result.get("ai_summary", ""),
+                    now_str,
+                ))
+
+            analyzed_count = 0
+            for source_type, ids in (("hotlist", news_ids), ("rss", rss_ids)):
+                for news_item_id in ids:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO ai_filter_analyzed_news
+                        (news_item_id, source_type, interests_file, prompt_hash,
+                         matched, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        news_item_id,
+                        source_type,
+                        interests_file,
+                        prompt_hash,
+                        1 if news_item_id in matched_by_type[source_type] else 0,
+                        now_str,
+                    ))
+                    analyzed_count += 1
+
+            stored_result_keys = set()
+            for source_type, ids in (("hotlist", news_ids), ("rss", rss_ids)):
+                if not ids:
+                    continue
+                placeholders = ",".join("?" * len(ids))
+                cursor.execute(
+                    f"SELECT news_item_id, source_type, tag_id "
+                    f"FROM ai_filter_results WHERE status = 'active' "
+                    f"AND source_type = ? AND news_item_id IN ({placeholders}) "
+                    f"AND tag_id IN (SELECT id FROM ai_filter_tags "
+                    f"WHERE interests_file = ?)",
+                    [source_type, *ids, interests_file],
+                )
+                stored_result_keys.update(tuple(row) for row in cursor.fetchall())
+            if stored_result_keys != result_keys:
+                raise RuntimeError("分类结果写后读回不完整")
+
+            stored_states = set()
+            for source_type, ids in (("hotlist", news_ids), ("rss", rss_ids)):
+                if not ids:
+                    continue
+                placeholders = ",".join("?" * len(ids))
+                cursor.execute(
+                    f"SELECT news_item_id, source_type, matched, prompt_hash "
+                    f"FROM ai_filter_analyzed_news WHERE source_type = ? "
+                    f"AND interests_file = ? AND news_item_id IN ({placeholders})",
+                    [source_type, interests_file, *ids],
+                )
+                stored_states.update(tuple(row) for row in cursor.fetchall())
+            expected_states = {
+                (
+                    news_item_id,
+                    source_type,
+                    1 if news_item_id in matched_by_type[source_type] else 0,
+                    prompt_hash,
+                )
+                for source_type, ids in (("hotlist", news_ids), ("rss", rss_ids))
+                for news_item_id in ids
+            }
+            if stored_states != expected_states:
+                raise RuntimeError("已分析状态写后读回不完整")
+
+            conn.commit()
+            return {"results": len(result_keys), "analyzed": analyzed_count}
+        except Exception:
+            conn.rollback()
+            raise
+
+    def _get_active_filter_results_impl(
+        self,
+        date: Optional[str] = None,
+        interests_file: str = "ai_interests.txt",
+        strict: bool = False,
+    ) -> List[Dict[str, Any]]:
         """获取指定兴趣文件的 active 分类结果，JOIN news_items 获取新闻详情"""
         try:
-            conn = self._get_connection(date)
+            conn = self._get_ai_connection(date, strict=strict)
             cursor = conn.cursor()
 
             # 热榜结果
@@ -1845,7 +2021,7 @@ class SQLiteStorageMixin:
 
             # RSS 结果（如果有 rss 库）
             try:
-                rss_conn = self._get_connection(date, db_type="rss")
+                rss_conn = self._get_rss_connection(date, strict=strict)
                 rss_cursor = rss_conn.cursor()
 
                 # 从 news 库获取 rss 类型的分类结果 ID
@@ -1910,6 +2086,8 @@ class SQLiteStorageMixin:
                                 "search_providers": info[9] or "",
                             })
             except Exception as rss_exc:
+                if strict:
+                    raise
                 print(
                     "[AI筛选] 读取 RSS 分类结果失败，已保留热榜结果: "
                     f"{type(rss_exc).__name__}: {rss_exc}"
@@ -1917,6 +2095,8 @@ class SQLiteStorageMixin:
 
             return results
         except Exception as e:
+            if strict:
+                raise
             print(f"[AI筛选] 获取分类结果失败: {e}")
             return []
 
@@ -1985,3 +2165,72 @@ class SQLiteStorageMixin:
                 raise
             print(f"[AI筛选] 获取 RSS 列表失败: {e}")
             return []
+
+    def _get_rss_discoveries_for_identities_impl(
+        self,
+        date: str,
+        candidate_identities: set[tuple],
+        strict: bool = False,
+    ) -> Dict[tuple, tuple[str, str]]:
+        """读取单个日库中候选 identity 的最早首次发现时间。"""
+        if not candidate_identities:
+            return {}
+        try:
+            conn = self._get_rss_connection(date, strict=strict)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT title, feed_id, url, first_crawl_time, last_crawl_time
+                FROM rss_items
+            """)
+            earliest: Dict[tuple, tuple[str, str]] = {}
+            earliest_at: Dict[tuple, datetime] = {}
+            for title, feed_id, url, first_time, last_time in cursor.fetchall():
+                canonical_url = canonicalize_url(url or "")
+                identity = (
+                    ("url", canonical_url)
+                    if canonical_url
+                    else ("title", feed_id, normalize_title(title or ""))
+                )
+                if identity not in candidate_identities:
+                    continue
+                discovered = first_time or last_time or ""
+                parsed = parse_storage_datetime(
+                    discovered, date, self.timezone
+                )
+                if parsed is None:
+                    raise RuntimeError(
+                        f"RSS 首次发现时间无效: {date}/{identity!r}"
+                    )
+                if identity not in earliest_at or parsed < earliest_at[identity]:
+                    earliest_at[identity] = parsed
+                    earliest[identity] = (discovered, date)
+            return earliest
+        except Exception:
+            if strict:
+                raise
+            return {}
+
+    def _merge_earliest_rss_discoveries(
+        self,
+        candidate_identities: set[tuple],
+        dates,
+    ) -> Dict[tuple, tuple[str, str]]:
+        """严格合并多个日库的候选首次发现时间。"""
+        earliest: Dict[tuple, tuple[str, str]] = {}
+        earliest_at: Dict[tuple, datetime] = {}
+        for date in sorted(set(dates)):
+            daily = self._get_rss_discoveries_for_identities_impl(
+                date, candidate_identities, strict=True
+            )
+            for identity, (discovered, storage_date) in daily.items():
+                parsed = parse_storage_datetime(
+                    discovered, storage_date, self.timezone
+                )
+                if parsed is None:
+                    raise RuntimeError(
+                        f"RSS 首次发现时间无效: {storage_date}/{identity!r}"
+                    )
+                if identity not in earliest_at or parsed < earliest_at[identity]:
+                    earliest_at[identity] = parsed
+                    earliest[identity] = (discovered, storage_date)
+        return earliest

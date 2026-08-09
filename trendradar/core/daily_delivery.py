@@ -241,6 +241,21 @@ class DailyDeliveryAggregator:
                 f"每日交付快照构建失败：窗口内最终失败源 {failed}"
             )
 
+        if deduplicated:
+            earliest = self.storage.get_earliest_rss_discoveries_strict(
+                set(deduplicated), window.end.strftime("%Y-%m-%d")
+            )
+            missing_identities = set(deduplicated) - set(earliest)
+            if missing_identities:
+                raise RuntimeError(
+                    "每日交付快照构建失败：候选首次发现历史不完整"
+                )
+            for identity, (discovered, storage_date) in earliest.items():
+                if not window.contains_discovered(discovered, storage_date):
+                    deduplicated.pop(identity, None)
+                    provider_sets.pop(identity, None)
+                    filtered_out += 1
+
         snapshot = DailyDeliverySnapshot(
             window=window,
             data=None,

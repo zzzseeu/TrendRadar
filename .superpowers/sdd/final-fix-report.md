@@ -242,3 +242,184 @@ git diff --check
 - `git diff --check` 无空白错误；未发现清单中不成立的建议，也未发现需要扩大范围的架构冲突。
 
 最终测试计数：聚焦 144、兼容 93、全量 341；三套命令合计执行 578 个测试（其中聚焦与兼容测试也包含于全量发现）。
+
+---
+
+# 第二次最终复审修复
+
+日期：2026-08-09
+范围：第二次最终复审 A–D；继续未合并 `main`、未部署、未真实推送。
+
+## A. 跨检查点 canonical 全局首次发现
+
+### 根因
+
+aggregator 先按各日库、各 feed 行的 `first_time` 做窗口过滤，再对本轮结果做 canonical identity 去重。因此同一 canonical URL 在 feed A 于检查点前首次出现、在 feed B 于检查点后再次出现时，后者会被错误视为本轮新增。窗口内读取也无法发现任意更早日库中的首次记录。
+
+### RED
+
+```bash
+<公共 Docker 前缀> -m unittest \
+  tests.test_daily_delivery.DailyDeliveryAggregatorTests.test_canonical_first_seen_before_checkpoint_on_start_day_is_excluded \
+  tests.test_daily_delivery.DailyDeliveryAggregatorTests.test_canonical_history_before_window_dates_is_excluded \
+  tests.test_daily_delivery.DailyDeliveryAggregatorTests.test_canonical_first_seen_only_inside_window_is_included \
+  tests.test_daily_delivery.DailyDeliveryRemoteStrictReadTests.test_remote_history_listing_failure_is_fail_closed -v
+```
+
+结果：运行 4 项，3 项按预期失败（两个重复推送、一个远程异常未传播），合法的窗口内首次出现用例通过；命令 exit 1。
+
+### 修复与 GREEN
+
+- StorageBackend、Local、Remote、Manager 增加批量 `get_earliest_rss_discoveries_strict` 契约。
+- 只查询本轮候选 identity，但枚举并严格读取截至 `window.end` 的全部现存 RSS 日库；同一 `window.start` 日期中早于 start 的行也参与最早时间判断。
+- identity 规则与快照完全一致：优先 canonical URL；无 URL 时为 feed + 标准化标题。
+- aggregator 在候选收集后按系统全局最早发现时间执行 `(start,end]`，且没有写 delivered 标记。
+- Remote 分页枚举历史日库；真实 404 是合法缺日，列表、下载、权限或坏库错误均上抛。
+
+同一 4 项测试复跑 `4/4 OK`，exit 0（19.585s）。正常窗口内首次内容仍纳入；普通/weekly 快照逻辑未改。
+
+## B. strict AI 完整性与缓存
+
+### 根因
+
+- strict authoritative daily 仍读取普通模式的 `analyzed_rss` 缓存，可能跳过严格逐条分类与摘要校审。
+- `_review_item_summaries` 逐项覆盖结果，却没有验证 review ID 是待校审 ID 的唯一精确集合，重复/未知 ID 可掩盖遗漏。
+- `AIAnalyzer` 只拒绝 JSON 解析失败；合法 `{}` 会以所有叙事字段为空的成功结果继续推进。
+
+### RED
+
+```bash
+<公共 Docker 前缀> -m unittest \
+  tests.test_daily_delivery.DailyDeliveryAIScopeTests.test_strict_authoritative_run_reclassifies_ordinary_cached_rss \
+  tests.test_daily_delivery.DailyDeliveryStrictAIStageTests.test_item_summary_review_rejects_duplicate_ids \
+  tests.test_daily_delivery.DailyDeliveryStrictAIStageTests.test_item_summary_review_rejects_unknown_ids \
+  tests.test_daily_delivery.DailyDeliveryStrictAIStageTests.test_item_summary_review_rejects_missing_id \
+  tests.test_daily_delivery.DailyDeliveryStrictAIStageTests.test_item_summary_review_rejects_empty_summary \
+  tests.test_daily_delivery.DailyDeliveryStrictAIStageTests.test_strict_analysis_rejects_empty_json_summary \
+  tests.test_daily_delivery_schedule.DailyDeliveryScheduleTests.test_empty_json_ai_summary_does_not_advance_checkpoint -v
+```
+
+结果：运行 7 项，4 项失败（普通缓存被复用、`{}` 被接受、重复 ID 与未知 ID 被接受），其余缺失/空摘要与主流程检查已有部分防线；命令 exit 1。
+
+### 修复与 GREEN
+
+- strict + authoritative 对全部 allowed RSS 重新分类校审，不消费普通 analyzed 缓存；仍先严格读取 analyzed 表以排除存储故障。
+- review 结果逐项验证类型、已知 ID、唯一 ID、非空摘要，最终 ID 集合必须精确等于待校审集合；完整验证后才更新摘要。
+- strict analyzer 要求核心趋势、情感、信号、RSS 洞察、展望或 standalone 摘要中至少一个具有非空叙事内容；空 `{}` 明确失败。
+- 重试通过后由 C 的事务 replace 清理并替换本轮旧结果，只消费本轮成功 ID。
+
+同一 7 项测试复跑 `7/7 OK`，exit 0（9.024s）。普通模式继续复用缓存并保留 fail-soft 行为。
+
+## C. strict AI 存储 fail-closed
+
+### 根因
+
+普通 `_save_filter_results_impl` 和 `_save_analyzed_news_impl` 会逐项吞写入错误并只返回计数；pipeline 不校验计数。active 结果和 analyzed ID 读取也会把异常转换成空列表/集合，导致坏库与合法无匹配不可区分。
+
+### RED
+
+```bash
+<公共 Docker 前缀> -m unittest \
+  tests.test_daily_delivery.DailyDeliveryStrictAIStorageTests -v
+```
+
+结果：5/5 按预期失败，exit 1（16.949s）：写入计数不一致、strict analyzed 读取异常、strict active 读取异常均未被调用/传播；真实 SQLite 的 analyzed 写 trigger 异常被逐项吞掉，损坏的 `ai_filter_results` 表也被当作合法空结果。
+
+### 修复与 GREEN
+
+- Base 对新 strict API 默认抛 `NotImplementedError`；Local、Remote、Manager 显式实现一致契约。
+- `replace_ai_filter_batch_strict` 在一个 SQLite `BEGIN IMMEDIATE` 事务中，仅清理当前 interests file、本轮成功 ID 的旧结果，写入全部分类结果及 matched/unmatched 状态。
+- 同一事务内读回并精确校验 `(news_item_id, source_type, tag_id)`、matched、prompt hash；任一写入/数量/读回差异回滚并上抛。
+- strict analyzed/active 读取不再吞异常；pipeline 捕获后返回 `AIFilterResult.success=False`，并校验最终 active 结果唯一集合精确等于本轮 matched keys。
+- 部分分类批次失败时不保存部分 strict 结果；Remote `end_batch_strict` 要求所有脏数据库上传且远程验证成功。
+
+同一 5 项测试复跑 `5/5 OK`，exit 0（16.015s），其中两项使用真实 SQLite 损坏路径。既有 daily 主流程失败测试继续证明 `success=False` 不写 once/checkpoint；普通/weekly 仍走原 fail-soft API。
+
+## D. 混合 crawl_time 升级兼容
+
+### 根因
+
+新完整日期秒值与历史 `HH:MM` 在 `ORDER BY crawl_time` 和 Python 字符串 `<` 中不可比较。例如历史 `20:00` 会在字典序上被误判为晚于 `2026-08-09 21:00:05`，使 current 选错批次、incremental 把旧条目重新当新增。
+
+### RED
+
+```bash
+<公共 Docker 前缀> -m unittest \
+  tests.test_daily_delivery.DailyDeliveryMixedRSSCrawlTimeTests -v
+```
+
+结果：2/2 失败，exit 1（4.971s）；current 返回历史 `20:00` 批次，incremental 同时返回旧条目和真正新增条目。
+
+### 修复与 GREEN
+
+- current 与 RSSData 的最新 crawl time 改为按 `rss_crawl_records.id DESC` 获取，抓取状态也直接绑定最新 record ID。
+- incremental 将完整时间与历史 `HH:MM`/`HH-MM` 统一解析为日库日期、配置时区的 datetime 后比较；只有不可解析的异常旧值保留原 fail-soft fallback。
+
+同一 2 项真实 SQLite 测试复跑 `2/2 OK`，exit 0（5.110s）。
+
+## 第二次复审最终验证
+
+### 相关模块
+
+```bash
+<公共 Docker 前缀> -m unittest tests.test_daily_delivery -v
+```
+
+结果：`Ran 70 tests in 183.679s`，`OK`，exit 0。
+
+### 聚焦回归
+
+```bash
+<公共 Docker 前缀> -m unittest \
+  tests.test_daily_delivery \
+  tests.test_daily_delivery_schedule \
+  tests.test_daily_delivery_report \
+  tests.test_news_search_pipeline -q
+```
+
+结果：`Ran 162 tests in 241.399s`，`OK`，exit 0。
+
+### 兼容回归
+
+```bash
+<公共 Docker 前缀> -m unittest \
+  tests.test_weekly_digest \
+  tests.test_weekly_schedule \
+  tests.test_weekly_report_output \
+  tests.test_elsevier_full_text \
+  tests.test_direct_first_proxy \
+  tests.test_email_delivery -q
+```
+
+结果：`Ran 93 tests in 155.011s`，`OK`，exit 0。
+
+### 全量回归
+
+```bash
+<公共 Docker 前缀> -m unittest discover -s /workspace/tests -q
+```
+
+结果：`Ran 359 tests in 408.664s`，`OK`，exit 0。
+
+### 静态、便携性与 diff
+
+```bash
+bash -n docker/entrypoint.sh
+bash -n config/daily.crontab
+bash tests/test_portable_deployment.sh
+git diff --check
+```
+
+结果：四项均 exit 0；portable 输出 `PASS: 本地部署路径可移植性检查通过`。
+
+## 第二次复审 Diff 自审
+
+- A 的历史查询只扫描候选 identity，但覆盖截至窗口结束的全部现存 RSS 日库；同日起点前记录不会漏判，且没有提前持久化 delivered 状态。
+- strict cache 语义为每次 authoritative daily 全量重校审 allowed RSS；事务 replace 使失败后的重试可覆盖/清理旧 matched 与 unmatched 状态。
+- strict review、分析叙事、存储写入、存储读回和远程持久化均以结构化状态或异常判定，不依赖日志文本。
+- strict active 结果只消费本轮成功 ID，并验证其唯一 key 集合；普通与 weekly 继续使用原 active 缓存和 fail-soft API。
+- 混合时间格式不再参与字符串排序/比较；显示字段与历史数据库 schema 均无需迁移。
+- 未改变 10:00 调度、`(last_success, now]`、首次 24h、合法空推进、同日成功跳过交付、freshness、通知目标或密钥持久化契约。
+- 未发现第二次清单中不成立的建议，也未出现需要扩大范围的架构冲突。
+
+第二次最终测试计数：聚焦 162、兼容 93、全量 359；三套最终命令合计执行 614 个测试（聚焦与兼容也包含于全量发现），全部为明确 exit 0。

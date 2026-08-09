@@ -299,6 +299,64 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
         self.assertEqual(items[0].search_providers, "gdelt,google_news")
         self.assertEqual(snapshot.duplicate_count, 1)
 
+    def test_canonical_first_seen_before_checkpoint_on_start_day_is_excluded(self):
+        canonical = "https://example.org/checkpoint-story"
+        save_rss_day(self.backend, "2026-08-08", "2026-08-08 09:00:00", [
+            RSSItem(
+                title="Seen before checkpoint",
+                feed_id="alpha",
+                url=f"{canonical}?utm_source=alpha",
+            ),
+        ])
+        save_rss_day(self.backend, "2026-08-09", "2026-08-09 09:00:00", [
+            RSSItem(
+                title="Rediscovered after checkpoint",
+                feed_id="beta",
+                url=f"{canonical}?utm_source=beta",
+            ),
+        ])
+
+        snapshot = self.build()
+
+        self.assertEqual(list(snapshot.iter_items()), [])
+
+    def test_canonical_history_before_window_dates_is_excluded(self):
+        canonical = "https://example.org/older-story"
+        save_rss_day(self.backend, "2026-08-07", "2026-08-07 09:00:00", [
+            RSSItem(
+                title="Seen on an older day",
+                feed_id="alpha",
+                url=f"{canonical}?utm_source=alpha",
+            ),
+        ])
+        save_rss_day(self.backend, "2026-08-09", "2026-08-09 09:00:00", [
+            RSSItem(
+                title="Rediscovered in window",
+                feed_id="beta",
+                url=f"{canonical}?utm_source=beta",
+            ),
+        ])
+
+        snapshot = self.build()
+
+        self.assertEqual(list(snapshot.iter_items()), [])
+
+    def test_canonical_first_seen_only_inside_window_is_included(self):
+        save_rss_day(self.backend, "2026-08-09", "2026-08-09 09:00:00", [
+            RSSItem(
+                title="First seen in window",
+                feed_id="journal",
+                url="https://example.org/new-story?utm_source=rss",
+            ),
+        ])
+
+        snapshot = self.build()
+
+        self.assertEqual(
+            [item.title for item in snapshot.iter_items()],
+            ["First seen in window"],
+        )
+
     def test_existing_tracking_url_is_reused_as_the_exact_snapshot_row(self):
         tracking_url = "https://example.org/exact?utm_source=current"
         save_rss_day(self.backend, "2026-08-09", "09-00", [RSSItem(
@@ -725,6 +783,91 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
             ["rss"],
         )
 
+    def test_strict_authoritative_run_reclassifies_ordinary_cached_rss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            now = shanghai(2026, 8, 9, 10, 0)
+            try:
+                with patch.object(
+                    storage, "_get_configured_time", return_value=now
+                ):
+                    save_rss_day(storage, "2026-08-09", "09:30", [RSSItem(
+                        title="Cached ordinary classification",
+                        feed_id="journal",
+                        feed_name="Journal",
+                        url="https://example.org/cached-classification",
+                    )])
+                    self.assertEqual(storage.save_ai_filter_tags(
+                        [{
+                            "tag": "育种",
+                            "description": "育种进展",
+                            "priority": 1,
+                        }],
+                        version=1,
+                        prompt_hash="stable",
+                        interests_file="ai_interests.txt",
+                    ), 1)
+                    rss_id = storage.get_all_rss_ids_strict(
+                        "2026-08-09"
+                    )[0]["id"]
+                    config = {
+                        "TIMEZONE": "Asia/Shanghai",
+                        "RSS": {
+                            "ENABLED": True,
+                            "FRESHNESS_FILTER": {"ENABLED": False},
+                        },
+                        "AI": {},
+                        "AI_FILTER": {"BATCH_INTERVAL": 0},
+                        "FILTER": {},
+                    }
+                    fake_filter = MagicMock()
+                    fake_filter.load_interests_content.return_value = "育种"
+                    fake_filter.compute_interests_hash.return_value = "stable"
+                    fake_filter.classify_batch.return_value = [{
+                        "news_item_id": rss_id,
+                        "tag_id": 1,
+                        "relevance_score": 0.9,
+                        "importance_score": 0.8,
+                        "ai_summary": "水稻育种进展",
+                    }]
+
+                    with patch(
+                        "trendradar.ai.filter_pipeline.AIFilter",
+                        return_value=fake_filter,
+                    ):
+                        ordinary = AIFilterPipeline(
+                            config, storage, lambda: now
+                        )
+                        ordinary._enrich_pending_items = (
+                            lambda items, _label: items
+                        )
+                        self.assertTrue(ordinary.run().success)
+
+                        strict = AIFilterPipeline(
+                            config,
+                            storage,
+                            lambda: now,
+                            allowed_rss_ids={rss_id},
+                            rss_ids_authoritative=True,
+                            strict=True,
+                        )
+                        strict._enrich_pending_items = (
+                            lambda items, _label: items
+                        )
+                        self.assertTrue(strict.run().success)
+
+                self.assertEqual(fake_filter.classify_batch.call_count, 2)
+                self.assertTrue(
+                    fake_filter.classify_batch.call_args.kwargs["strict"]
+                )
+            finally:
+                storage.cleanup()
+
     def test_authoritative_scope_filters_active_results(self):
         storage = MagicMock()
         storage.get_latest_prompt_hash.return_value = "stable"
@@ -873,6 +1016,17 @@ class DailyDeliveryStrictAIStageTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertIn("校审", result.error)
 
+    def test_strict_analysis_rejects_empty_json_summary(self):
+        analyzer = self._analyzer()
+        analyzer._call_ai = MagicMock(return_value="{}")
+
+        result = analyzer.analyze(
+            [], self._rss_stats(), report_mode="daily_delivery", strict=True
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("摘要", result.error)
+
     @staticmethod
     def _filter(summary_review_response):
         ai_filter = AIFilter.__new__(AIFilter)
@@ -911,6 +1065,329 @@ class DailyDeliveryStrictAIStageTests(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+
+    @staticmethod
+    def _review_succeeds(reviewed):
+        ai_filter = AIFilter.__new__(AIFilter)
+        ai_filter.client = MagicMock()
+        ai_filter.client.chat.return_value = json.dumps(
+            reviewed, ensure_ascii=False
+        )
+        ai_filter.debug = False
+        return ai_filter._review_item_summaries(
+            [
+                {"id": 1, "title": "第一条", "content": "证据一"},
+                {"id": 2, "title": "第二条", "content": "证据二"},
+            ],
+            [
+                {"news_item_id": 1, "ai_summary": "草稿一"},
+                {"news_item_id": 2, "ai_summary": "草稿二"},
+            ],
+        )
+
+    def test_item_summary_review_rejects_duplicate_ids(self):
+        self.assertFalse(self._review_succeeds([
+            {"id": 1, "summary": "校审一"},
+            {"id": 1, "summary": "重复校审"},
+        ]))
+
+    def test_item_summary_review_rejects_unknown_ids(self):
+        self.assertFalse(self._review_succeeds([
+            {"id": 1, "summary": "校审一"},
+            {"id": 2, "summary": "校审二"},
+            {"id": 999, "summary": "未知"},
+        ]))
+
+    def test_item_summary_review_rejects_missing_id(self):
+        self.assertFalse(self._review_succeeds([
+            {"id": 1, "summary": "校审一"},
+        ]))
+
+    def test_item_summary_review_rejects_empty_summary(self):
+        self.assertFalse(self._review_succeeds([
+            {"id": 1, "summary": "校审一"},
+            {"id": 2, "summary": ""},
+        ]))
+
+
+class DailyDeliveryStrictAIStorageTests(unittest.TestCase):
+    @staticmethod
+    def _config():
+        return {
+            "TIMEZONE": "Asia/Shanghai",
+            "RSS": {
+                "ENABLED": True,
+                "FRESHNESS_FILTER": {"ENABLED": False},
+            },
+            "AI": {},
+            "AI_FILTER": {"BATCH_INTERVAL": 0},
+            "FILTER": {},
+        }
+
+    @staticmethod
+    def _rss_row(news_id=7):
+        return {
+            "id": news_id,
+            "title": "Strict storage article",
+            "source_id": "journal",
+            "source_name": "Journal",
+            "url": "https://example.org/strict-storage",
+            "published_at": "2026-08-09T01:00:00Z",
+        }
+
+    def _mock_pipeline(self, storage):
+        storage.get_latest_prompt_hash.return_value = "stable"
+        storage.get_active_ai_filter_tags.return_value = [
+            {"id": 1, "tag": "育种", "priority": 1}
+        ]
+        storage.get_all_rss_ids_strict.return_value = [self._rss_row()]
+        storage.get_analyzed_news_ids.return_value = set()
+        storage.get_active_ai_filter_results.return_value = [{
+            **self._rss_row(),
+            "news_item_id": 7,
+            "source_type": "rss",
+            "tag_id": 1,
+            "tag": "育种",
+            "relevance_score": 0.9,
+            "ai_summary": "育种进展",
+        }]
+        pipeline = AIFilterPipeline(
+            self._config(),
+            storage,
+            lambda: shanghai(2026, 8, 9, 10, 0),
+            allowed_rss_ids={7},
+            rss_ids_authoritative=True,
+            strict=True,
+        )
+        pipeline._enrich_pending_items = lambda items, _label: items
+        return pipeline
+
+    @staticmethod
+    def _fake_filter():
+        ai_filter = MagicMock()
+        ai_filter.load_interests_content.return_value = "育种"
+        ai_filter.compute_interests_hash.return_value = "stable"
+        ai_filter.classify_batch.return_value = [{
+            "news_item_id": 7,
+            "tag_id": 1,
+            "relevance_score": 0.9,
+            "importance_score": 0.8,
+            "ai_summary": "育种进展",
+        }]
+        return ai_filter
+
+    def test_strict_result_write_count_mismatch_fails_pipeline(self):
+        storage = MagicMock()
+        storage.replace_ai_filter_batch_strict.return_value = {
+            "results": 0,
+            "analyzed": 1,
+        }
+        storage.get_analyzed_news_ids_strict.return_value = {7}
+        storage.get_active_ai_filter_results_strict.return_value = []
+        pipeline = self._mock_pipeline(storage)
+
+        with patch(
+            "trendradar.ai.filter_pipeline.AIFilter",
+            return_value=self._fake_filter(),
+        ):
+            result = pipeline.run()
+
+        self.assertFalse(result.success)
+        self.assertIn("存储", result.error)
+
+    def test_strict_analyzed_id_read_failure_fails_pipeline(self):
+        storage = MagicMock()
+        storage.get_analyzed_news_ids_strict.side_effect = RuntimeError(
+            "analyzed ids broken"
+        )
+        pipeline = self._mock_pipeline(storage)
+
+        with patch(
+            "trendradar.ai.filter_pipeline.AIFilter",
+            return_value=self._fake_filter(),
+        ):
+            result = pipeline.run()
+
+        self.assertFalse(result.success)
+        self.assertIn("存储", result.error)
+
+    def test_strict_active_result_read_failure_fails_pipeline(self):
+        storage = MagicMock()
+        storage.replace_ai_filter_batch_strict.return_value = {
+            "results": 1,
+            "analyzed": 1,
+        }
+        storage.get_analyzed_news_ids_strict.return_value = {7}
+        storage.get_active_ai_filter_results_strict.side_effect = RuntimeError(
+            "active results broken"
+        )
+        pipeline = self._mock_pipeline(storage)
+
+        with patch(
+            "trendradar.ai.filter_pipeline.AIFilter",
+            return_value=self._fake_filter(),
+        ):
+            result = pipeline.run()
+
+        self.assertFalse(result.success)
+        self.assertIn("存储", result.error)
+
+    def _run_real_pipeline(self, storage, rss_id):
+        pipeline = AIFilterPipeline(
+            self._config(),
+            storage,
+            lambda: shanghai(2026, 8, 9, 10, 0),
+            allowed_rss_ids={rss_id},
+            rss_ids_authoritative=True,
+            strict=True,
+        )
+        pipeline._enrich_pending_items = lambda items, _label: items
+        fake_filter = self._fake_filter()
+        fake_filter.classify_batch.return_value[0]["news_item_id"] = rss_id
+        with patch(
+            "trendradar.ai.filter_pipeline.AIFilter",
+            return_value=fake_filter,
+        ):
+            return pipeline.run()
+
+    def _real_storage(self, tmp):
+        storage = LocalStorageBackend(
+            data_dir=tmp,
+            enable_txt=False,
+            enable_html=False,
+            timezone="Asia/Shanghai",
+        )
+        now = shanghai(2026, 8, 9, 10, 0)
+        time_patch = patch.object(
+            storage, "_get_configured_time", return_value=now
+        )
+        time_patch.start()
+        self.addCleanup(time_patch.stop)
+        save_rss_day(storage, "2026-08-09", "09:30", [RSSItem(
+            title="Strict storage article",
+            feed_id="journal",
+            feed_name="Journal",
+            url="https://example.org/strict-storage",
+        )])
+        self.assertEqual(storage.save_ai_filter_tags(
+            [{
+                "tag": "育种",
+                "description": "育种进展",
+                "priority": 1,
+            }],
+            version=1,
+            prompt_hash="stable",
+            interests_file="ai_interests.txt",
+        ), 1)
+        rss_id = storage.get_all_rss_ids_strict("2026-08-09")[0]["id"]
+        return storage, rss_id
+
+    def test_strict_analyzed_write_exception_fails_real_sqlite_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage, rss_id = self._real_storage(tmp)
+            try:
+                conn = storage._get_connection("2026-08-09")
+                conn.execute("""
+                    CREATE TRIGGER fail_analyzed_write
+                    BEFORE INSERT ON ai_filter_analyzed_news
+                    BEGIN
+                        SELECT RAISE(ABORT, 'analyzed write broken');
+                    END
+                """)
+                conn.commit()
+
+                result = self._run_real_pipeline(storage, rss_id)
+
+                self.assertFalse(result.success)
+                self.assertIn("存储", result.error)
+            finally:
+                storage.cleanup()
+
+    def test_strict_result_table_damage_fails_real_sqlite_pipeline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage, rss_id = self._real_storage(tmp)
+            try:
+                conn = storage._get_connection("2026-08-09")
+                conn.execute("DROP TABLE ai_filter_results")
+                conn.execute("CREATE TABLE ai_filter_results (id INTEGER)")
+                conn.commit()
+
+                result = self._run_real_pipeline(storage, rss_id)
+
+                self.assertFalse(result.success)
+                self.assertIn("存储", result.error)
+            finally:
+                storage.cleanup()
+
+
+class DailyDeliveryMixedRSSCrawlTimeTests(unittest.TestCase):
+    @staticmethod
+    def _storage(tmp):
+        return LocalStorageBackend(
+            data_dir=tmp,
+            enable_txt=False,
+            enable_html=False,
+            timezone="Asia/Shanghai",
+        )
+
+    @staticmethod
+    def _item(title, url):
+        return RSSItem(
+            title=title,
+            feed_id="journal",
+            feed_name="Journal",
+            url=url,
+        )
+
+    def test_latest_batch_uses_crawl_record_order_with_mixed_formats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = self._storage(tmp)
+            try:
+                save_rss_day(storage, "2026-08-09", "20:00", [
+                    self._item("Legacy evening", "https://example.org/legacy"),
+                ])
+                save_rss_day(storage, "2026-08-09", "2026-08-09 21:00:05", [
+                    self._item("Precise latest", "https://example.org/latest"),
+                ])
+
+                latest = storage.get_latest_rss_data("2026-08-09")
+
+                self.assertEqual(latest.crawl_time, "2026-08-09 21:00:05")
+                self.assertEqual(
+                    [item.title for item in latest.items["journal"]],
+                    ["Precise latest"],
+                )
+            finally:
+                storage.cleanup()
+
+    def test_incremental_normalizes_legacy_and_precise_times(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = self._storage(tmp)
+            try:
+                old_item = self._item(
+                    "Already seen", "https://example.org/already-seen"
+                )
+                save_rss_day(storage, "2026-08-09", "20:00", [old_item])
+                current = RSSData(
+                    date="2026-08-09",
+                    crawl_time="2026-08-09 21:00:05",
+                    items={"journal": [
+                        old_item,
+                        self._item("Actually new", "https://example.org/new"),
+                    ]},
+                    id_to_name={"journal": "Journal"},
+                    failed_ids=[],
+                )
+                self.assertTrue(storage.save_rss_data(current))
+
+                new_items = storage.detect_new_rss_items(current)
+
+                self.assertEqual(
+                    [item.title for item in new_items["journal"]],
+                    ["Actually new"],
+                )
+            finally:
+                storage.cleanup()
 
 
 class DailyDeliveryStrictTranslationTests(unittest.TestCase):
@@ -1160,6 +1637,27 @@ class DailyDeliveryRemoteStrictReadTests(unittest.TestCase):
                     ["Readable current day"],
                 )
                 self.assertEqual(snapshot.missing_dates, ["2026-08-08"])
+            finally:
+                backend.cleanup()
+
+    def test_remote_history_listing_failure_is_fail_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = self._build_remote_with_readable_current_day(tmp)
+            paginator = backend.s3_client.get_paginator.return_value
+            paginator.paginate.side_effect = RuntimeError("history list failed")
+            operation = getattr(
+                backend,
+                "get_earliest_rss_discoveries_strict",
+                lambda *_args, **_kwargs: None,
+            )
+            try:
+                with self.assertRaisesRegex(
+                    RuntimeError, "history list failed"
+                ):
+                    operation(
+                        {("url", "https://example.org/current")},
+                        "2026-08-09",
+                    )
             finally:
                 backend.cleanup()
 

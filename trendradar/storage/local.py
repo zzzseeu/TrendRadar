@@ -278,6 +278,10 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
     # AI 智能筛选
     # ========================================
 
+    def end_batch_strict(self):
+        """本地事务已同步落盘，无额外批次持久化动作。"""
+        self.end_batch()
+
     def get_active_ai_filter_tags(self, date=None, interests_file="ai_interests.txt"):
         return self._get_active_tags_impl(date, interests_file)
 
@@ -299,6 +303,11 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
     def get_active_ai_filter_results(self, date=None, interests_file="ai_interests.txt"):
         return self._get_active_filter_results_impl(date, interests_file)
 
+    def get_active_ai_filter_results_strict(self, date=None, interests_file="ai_interests.txt"):
+        return self._get_active_filter_results_impl(
+            date, interests_file, strict=True
+        )
+
     def deprecate_specific_ai_filter_tags(self, tag_ids, date=None):
         return self._deprecate_specific_tags_impl(date, tag_ids)
 
@@ -317,6 +326,29 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
     def get_analyzed_news_ids(self, source_type="hotlist", date=None, interests_file="ai_interests.txt"):
         return self._get_analyzed_news_ids_impl(date, source_type, interests_file)
 
+    def get_analyzed_news_ids_strict(self, source_type="hotlist", date=None, interests_file="ai_interests.txt"):
+        return self._get_analyzed_news_ids_impl(
+            date, source_type, interests_file, strict=True
+        )
+
+    def replace_ai_filter_batch_strict(
+        self,
+        results,
+        succeeded_news_ids,
+        succeeded_rss_ids,
+        interests_file,
+        prompt_hash,
+        date=None,
+    ):
+        return self._replace_ai_filter_batch_strict_impl(
+            date,
+            results,
+            succeeded_news_ids,
+            succeeded_rss_ids,
+            interests_file,
+            prompt_hash,
+        )
+
     def clear_analyzed_news(self, date=None, interests_file="ai_interests.txt"):
         return self._clear_analyzed_news_impl(date, interests_file)
 
@@ -331,6 +363,22 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def get_all_rss_ids_strict(self, date=None):
         return self._get_all_rss_ids_impl(date, strict=True)
+
+    def get_earliest_rss_discoveries_strict(
+        self, candidate_identities, through_date
+    ):
+        rss_dir = self.data_dir / "rss"
+        dates = []
+        if rss_dir.exists():
+            for db_path in rss_dir.glob("*.db"):
+                match = re.fullmatch(
+                    r"(\d{4}-\d{2}-\d{2})\.db", db_path.name
+                )
+                if match and match.group(1) <= through_date:
+                    dates.append(match.group(1))
+        return self._merge_earliest_rss_discoveries(
+            candidate_identities, dates
+        )
 
     # ========================================
     # 本地特有功能：TXT/HTML 快照

@@ -333,6 +333,10 @@ class StorageManager:
         """结束批量模式（统一上传脏数据库）"""
         self.get_backend().end_batch()
 
+    def end_batch_strict(self):
+        """严格结束批量模式，远程持久化失败向上抛出。"""
+        self.get_backend().end_batch_strict()
+
     def get_active_ai_filter_tags(self, date=None, interests_file="ai_interests.txt"):
         """获取指定兴趣文件的 active 标签"""
         return self.get_backend().get_active_ai_filter_tags(date, interests_file)
@@ -361,6 +365,12 @@ class StorageManager:
         """获取指定兴趣文件的 active 分类结果"""
         return self.get_backend().get_active_ai_filter_results(date, interests_file)
 
+    def get_active_ai_filter_results_strict(self, date=None, interests_file="ai_interests.txt"):
+        """严格获取 active 分类结果。"""
+        return self.get_backend().get_active_ai_filter_results_strict(
+            date, interests_file
+        )
+
     def deprecate_specific_ai_filter_tags(self, tag_ids, date=None):
         """废弃指定 ID 的标签及其关联分类结果"""
         return self.get_backend().deprecate_specific_ai_filter_tags(tag_ids, date)
@@ -385,6 +395,31 @@ class StorageManager:
         """获取已分析过的新闻 ID 集合"""
         return self.get_backend().get_analyzed_news_ids(source_type, date, interests_file)
 
+    def get_analyzed_news_ids_strict(self, source_type="hotlist", date=None, interests_file="ai_interests.txt"):
+        """严格获取已分析 ID 集合。"""
+        return self.get_backend().get_analyzed_news_ids_strict(
+            source_type, date, interests_file
+        )
+
+    def replace_ai_filter_batch_strict(
+        self,
+        results,
+        succeeded_news_ids,
+        succeeded_rss_ids,
+        interests_file,
+        prompt_hash,
+        date=None,
+    ):
+        """事务性替换本轮严格分类结果及分析状态。"""
+        return self.get_backend().replace_ai_filter_batch_strict(
+            results,
+            succeeded_news_ids,
+            succeeded_rss_ids,
+            interests_file,
+            prompt_hash,
+            date,
+        )
+
     def clear_analyzed_news(self, date=None, interests_file="ai_interests.txt"):
         """清除指定兴趣文件的所有已分析记录"""
         return self.get_backend().clear_analyzed_news(date, interests_file)
@@ -404,6 +439,14 @@ class StorageManager:
     def get_all_rss_ids_strict(self, date=None):
         """严格获取所有 RSS ID 和标题，读取异常向上抛出。"""
         return self.get_backend().get_all_rss_ids_strict(date)
+
+    def get_earliest_rss_discoveries_strict(
+        self, candidate_identities, through_date
+    ):
+        """批量读取候选 RSS identity 的系统最早发现时间。"""
+        return self.get_backend().get_earliest_rss_discoveries_strict(
+            candidate_identities, through_date
+        )
 
 
 

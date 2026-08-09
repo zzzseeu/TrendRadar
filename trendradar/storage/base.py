@@ -500,6 +500,10 @@ class StorageBackend(ABC):
         """结束批量模式"""
         pass
 
+    def end_batch_strict(self) -> None:
+        """严格结束批量模式；任何持久化失败必须向上抛出。"""
+        raise NotImplementedError("存储后端不支持严格批量持久化")
+
     def get_active_ai_filter_tags(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict]:
         return []
 
@@ -521,6 +525,10 @@ class StorageBackend(ABC):
     def get_active_ai_filter_results(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict]:
         return []
 
+    def get_active_ai_filter_results_strict(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict]:
+        """严格读取 active 分类结果；读取错误不得伪装成空结果。"""
+        raise NotImplementedError("存储后端不支持严格 AI 分类结果读取")
+
     def deprecate_specific_ai_filter_tags(self, tag_ids: List[int], date: Optional[str] = None) -> int:
         return 0
 
@@ -539,6 +547,22 @@ class StorageBackend(ABC):
     def get_analyzed_news_ids(self, source_type: str = "hotlist", date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> Set[str]:
         return set()
 
+    def get_analyzed_news_ids_strict(self, source_type: str = "hotlist", date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> Set[str]:
+        """严格读取已分析 ID；读取错误不得伪装成空集合。"""
+        raise NotImplementedError("存储后端不支持严格 AI 已分析 ID 读取")
+
+    def replace_ai_filter_batch_strict(
+        self,
+        results: List[Dict],
+        succeeded_news_ids: List[int],
+        succeeded_rss_ids: List[int],
+        interests_file: str,
+        prompt_hash: str,
+        date: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """事务性替换本轮分类结果及 matched/unmatched 状态。"""
+        raise NotImplementedError("存储后端不支持严格 AI 批次替换")
+
     def clear_analyzed_news(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:
         return 0
 
@@ -556,6 +580,12 @@ class StorageBackend(ABC):
     ) -> List[Dict]:
         """严格读取 RSS ID；默认转发以兼容第三方存储后端。"""
         return self.get_all_rss_ids(date)
+
+    def get_earliest_rss_discoveries_strict(
+        self, candidate_identities: Set[tuple], through_date: str
+    ) -> Dict[tuple, tuple[str, str]]:
+        """批量读取候选 identity 在全部现存日库中的最早发现。"""
+        raise NotImplementedError("存储后端不支持严格 RSS 历史发现查询")
 
     def get_rss_feed_statuses(
         self, date: Optional[str] = None

@@ -623,6 +623,36 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         scheduler.record_execution.assert_not_called()
 
     @patch("trendradar.__main__.AIAnalyzer")
+    def test_empty_json_ai_summary_does_not_advance_checkpoint(
+        self, analyzer_class
+    ):
+        analyzer, scheduler, dispatcher = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+        )
+        analyzer.ctx.config["AI"] = {}
+        analyzer.ctx.config["AI_ANALYSIS"] = {
+            "ENABLED": True,
+            "MODE": "follow_report",
+        }
+
+        def strict_empty_result(*_args, **kwargs):
+            self.assertTrue(kwargs["strict"])
+            return AIAnalysisResult(
+                success=False,
+                raw_response="{}",
+                error="严格分析缺少必要摘要内容",
+            )
+
+        analyzer_class.return_value.analyze.side_effect = strict_empty_result
+
+        self.assertFalse(analyzer.run())
+
+        analyzer.ctx.generate_html.assert_not_called()
+        dispatcher.dispatch_all.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+
+    @patch("trendradar.__main__.AIAnalyzer")
     def test_daily_delivery_passes_strict_contract_to_ai_analyzer(
         self, analyzer_class
     ):

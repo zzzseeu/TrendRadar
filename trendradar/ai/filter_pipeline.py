@@ -204,8 +204,15 @@ class AIFilterPipeline:
 
         print(f"[AI筛选] 使用 {len(active_tags)} 个标签")
 
-        # 4. 收集待分类新闻
-        pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, freshness_filtered_rss = self._collect_pending_news(effective_interests_file)
+        # 4. 收集待分类新闻。严格模式下存储读取失败不能降级成空集合。
+        try:
+            pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, freshness_filtered_rss = self._collect_pending_news(effective_interests_file)
+        except Exception as exc:
+            self._end_batch_after_storage_error()
+            return AIFilterResult(
+                success=False,
+                error=f"严格 AI 存储读取失败: {type(exc).__name__}: {exc}",
+            )
 
         self._print_pending_stats(
             all_news, analyzed_hotlist, pending_news,
@@ -225,23 +232,86 @@ class AIFilterPipeline:
             and len(succeeded_news_ids) + len(succeeded_rss_ids) < total_pending
         )
 
-        # 6. 保存结果
-        self._save_results(
-            total_results, succeeded_news_ids, succeeded_rss_ids,
-            effective_interests_file, current_hash,
-        )
-
-        # 7. 结束批量模式
-        self.storage.end_batch()
-
         if scoped_batch_failed:
+            try:
+                self._end_batch()
+            except Exception as exc:
+                return AIFilterResult(
+                    success=False,
+                    error=f"严格 AI 存储持久化失败: {type(exc).__name__}: {exc}",
+                )
             return AIFilterResult(
                 success=False,
                 error="范围内 AI 分类批次失败，已拒绝使用部分结果",
             )
 
+        # 6. 保存结果并结束批量模式。严格模式要求事务写入和持久化均成功。
+        try:
+            self._save_results(
+                total_results, succeeded_news_ids, succeeded_rss_ids,
+                effective_interests_file, current_hash,
+            )
+            self._end_batch()
+        except Exception as exc:
+            self._end_batch_after_storage_error()
+            return AIFilterResult(
+                success=False,
+                error=f"严格 AI 存储持久化失败: {type(exc).__name__}: {exc}",
+            )
+
         # 8. 查询并组装返回结果
-        all_results = self.storage.get_active_ai_filter_results(interests_file=effective_interests_file)
+        try:
+            if self._strict:
+                all_results = self.storage.get_active_ai_filter_results_strict(
+                    interests_file=effective_interests_file
+                )
+            else:
+                all_results = self.storage.get_active_ai_filter_results(
+                    interests_file=effective_interests_file
+                )
+        except Exception as exc:
+            return AIFilterResult(
+                success=False,
+                error=f"严格 AI 存储读取失败: {type(exc).__name__}: {exc}",
+            )
+
+        if self._strict:
+            expected_result_keys = {
+                (
+                    result["news_item_id"],
+                    result.get("source_type", "hotlist"),
+                    result["tag_id"],
+                )
+                for result in total_results
+            }
+            current_ids = {
+                (news_item_id, "hotlist")
+                for news_item_id in succeeded_news_ids
+            } | {
+                (news_item_id, "rss")
+                for news_item_id in succeeded_rss_ids
+            }
+            all_results = [
+                result for result in all_results
+                if (result.get("news_item_id"), result.get("source_type"))
+                in current_ids
+            ]
+            actual_result_keys = [
+                (
+                    result.get("news_item_id"),
+                    result.get("source_type"),
+                    result.get("tag_id"),
+                )
+                for result in all_results
+            ]
+            if (
+                len(actual_result_keys) != len(set(actual_result_keys))
+                or set(actual_result_keys) != expected_result_keys
+            ):
+                return AIFilterResult(
+                    success=False,
+                    error="严格 AI 存储读回结果与本轮匹配集合不一致",
+                )
         all_results = [
             result
             for result in all_results
@@ -272,6 +342,19 @@ class AIFilterPipeline:
                 print(f"[AI筛选][DEBUG]   {key}: {count} 条")
 
         return self._build_filter_result(all_results, active_tags, total_pending)
+
+    def _end_batch(self) -> None:
+        if self._strict:
+            self.storage.end_batch_strict()
+        else:
+            self.storage.end_batch()
+
+    def _end_batch_after_storage_error(self) -> None:
+        """尽力关闭批次；原始严格存储错误仍是本轮失败原因。"""
+        try:
+            self._end_batch()
+        except Exception:
+            pass
 
     def _handle_tag_update(
         self,
@@ -415,8 +498,20 @@ class AIFilterPipeline:
                     continue
                 fresh_rss.append(n)
 
-            analyzed_rss = self.storage.get_analyzed_news_ids("rss", interests_file=effective_interests_file)
-            pending_rss = [n for n in fresh_rss if n["id"] not in analyzed_rss]
+            if self._strict and self._rss_ids_authoritative:
+                # 即使严格模式不复用缓存，也必须证明 analyzed 表可读。
+                self.storage.get_analyzed_news_ids_strict(
+                    "rss", interests_file=effective_interests_file
+                )
+                pending_rss = fresh_rss
+                analyzed_rss = set()
+            else:
+                analyzed_rss = self.storage.get_analyzed_news_ids(
+                    "rss", interests_file=effective_interests_file
+                )
+                pending_rss = [
+                    n for n in fresh_rss if n["id"] not in analyzed_rss
+                ]
 
         return pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, freshness_filtered_rss
 
@@ -586,6 +681,33 @@ class AIFilterPipeline:
         return enriched_items
 
     def _save_results(self, total_results, succeeded_news_ids, succeeded_rss_ids, effective_interests_file, current_hash):
+        if self._strict:
+            status = self.storage.replace_ai_filter_batch_strict(
+                total_results,
+                succeeded_news_ids,
+                succeeded_rss_ids,
+                effective_interests_file,
+                current_hash,
+            )
+            expected_analyzed = len(set(succeeded_news_ids)) + len(
+                set(succeeded_rss_ids)
+            )
+            if (
+                not isinstance(status, dict)
+                or status.get("results") != len(total_results)
+                or status.get("analyzed") != expected_analyzed
+            ):
+                raise RuntimeError(
+                    "严格 AI 批次保存数量不一致: "
+                    f"expected=({len(total_results)}, {expected_analyzed}), "
+                    f"actual={status!r}"
+                )
+            print(
+                f"[AI筛选] 严格保存 {status['results']} 条分类结果、"
+                f"{status['analyzed']} 条分析状态"
+            )
+            return
+
         if total_results:
             saved = self.storage.save_ai_filter_results(total_results)
             print(f"[AI筛选] 保存 {saved} 条分类结果")
