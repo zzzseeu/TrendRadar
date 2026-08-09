@@ -592,8 +592,22 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             return failure_value
         try:
             result = mutation(state["conn"])
-        except Exception:
-            self._rollback_news_mutation(state, mark_batch_failed=True)
+        except Exception as mutation_exc:
+            try:
+                self._rollback_news_mutation(
+                    state, mark_batch_failed=True
+                )
+            except Exception as rollback_exc:
+                combined = RuntimeError(
+                    "共享 news 数据库 mutation 失败: "
+                    f"{type(mutation_exc).__name__}: {mutation_exc}; "
+                    "回滚失败: "
+                    f"{type(rollback_exc).__name__}: {rollback_exc}"
+                )
+                if strict_upload:
+                    raise combined from mutation_exc
+                print(f"[远程存储] {combined}")
+                return failure_value
             if strict_upload:
                 raise
             return failure_value
@@ -611,15 +625,42 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
                 strict_version=strict_upload,
                 conn=state["conn"],
             )
-        except Exception:
-            self._rollback_news_mutation(state, mark_batch_failed=True)
+        except Exception as upload_exc:
+            try:
+                self._rollback_news_mutation(
+                    state, mark_batch_failed=True
+                )
+            except Exception as rollback_exc:
+                combined = RuntimeError(
+                    "共享 news 数据库上传失败: "
+                    f"{type(upload_exc).__name__}: {upload_exc}; "
+                    "回滚失败: "
+                    f"{type(rollback_exc).__name__}: {rollback_exc}"
+                )
+                if strict_upload:
+                    raise combined from upload_exc
+                print(f"[远程存储] {combined}")
+                return failure_value
             if strict_upload:
                 raise
             return failure_value
         if not uploaded:
-            self._rollback_news_mutation(state, mark_batch_failed=True)
+            upload_exc = RuntimeError("共享 news 数据库严格上传失败")
+            try:
+                self._rollback_news_mutation(
+                    state, mark_batch_failed=True
+                )
+            except Exception as rollback_exc:
+                combined = RuntimeError(
+                    f"{upload_exc}; 回滚失败: "
+                    f"{type(rollback_exc).__name__}: {rollback_exc}"
+                )
+                if strict_upload:
+                    raise combined from upload_exc
+                print(f"[远程存储] {combined}")
+                return failure_value
             if strict_upload:
-                raise RuntimeError("共享 news 数据库严格上传失败")
+                raise upload_exc
             return failure_value
         return result
 
@@ -1048,10 +1089,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
                 data, "[远程存储]", conn=conn
             )
             if not success:
-                self._restore_local_sqlite_snapshot(
-                    local_path, remote_key, before
-                )
-                return False
+                raise RuntimeError("热榜本地事务保存失败")
 
             cursor.execute("SELECT COUNT(*) as count FROM news_items")
             row = cursor.fetchone()
@@ -1073,9 +1111,18 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         except Exception as exc:
             print(f"[远程存储] 热榜数据严格保存失败: {exc}")
             if "before" in locals():
-                self._restore_local_sqlite_snapshot(
-                    local_path, remote_key, before
-                )
+                try:
+                    self._restore_or_invalidate_sqlite_token(
+                        local_path, remote_key, before
+                    )
+                except Exception as rollback_exc:
+                    # 普通热榜保存保持 fail-soft 返回，但安全失效失败会
+                    # 留下 poison，使后续 strict 读取确定性拒绝该缓存。
+                    print(
+                        "[远程存储] 热榜保存失败且回滚/失效失败: "
+                        f"{type(exc).__name__}: {exc}; "
+                        f"{type(rollback_exc).__name__}: {rollback_exc}"
+                    )
             return False
 
     def get_today_all_data(self, date: Optional[str] = None) -> Optional[NewsData]:

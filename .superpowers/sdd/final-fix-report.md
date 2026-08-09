@@ -931,3 +931,56 @@ rowcount 0 no-op 语义不变。GREEN：测试观察到 call count 精确为 1�
 
 第八次最终测试计数：聚焦 163、兼容 93、全量 515；三套最终命令合计执行 771 个测试
 （聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审无遗留架构冲突。
+
+## 第八次复审迟到审计补充修复
+
+提交 `89bc9d53` 后收到已在途的独立只读审计结果；其中两项 Important 经生产数据流复核
+成立，因此保留原提交并以 follow-up 修复，不隐瞒或忽略迟到反馈。
+
+### 1. 普通热榜保存统一恢复状态机
+
+根因：`Remote.save_news_data()` 的本地保存 False 与 CAS/upload 异常分支仍直接调用
+`_restore_local_sqlite_snapshot()`，绕过新建的 restore→safe invalidate→poison 状态机；第一次
+raw restore 失败还会落入外层 except 再次 raw restore。持续 restore/close/sidecar 故障会
+让异常逃出普通 fail-soft API，且没有 poison，后续 strict read 可能复用已变异本地库。
+
+RED：真实 Remote baseline 保存一条热榜，令 conditional PUT 返回 ServiceUnavailable，并同时
+注入 restore 与 invalidate 失败。调用直接抛出 `OSError: restore unavailable`，没有返回 False，
+也没有 poison。该项与后述两项合跑 `Ran 3 in 15.013s`，2 failures + 1 error，exit 1。
+
+修复：热榜本地事务 False 也进入唯一异常出口；凡已取得 before-image 的失败统一调用
+`_restore_or_invalidate_sqlite_token()`。恢复成功则回到 baseline；恢复失败但安全失效成功则
+后续 strict read 重下；二者都失败则 poison。普通热榜 API 记录组合错误并稳定返回 False，
+而 poison 令后续 strict read 确定性拒绝，远端 observer 始终保持旧状态。
+
+### 2. backend 原错误与 rollback 错误同时保留
+
+根因：`_run_news_mutation()` 的 mutation 和 upload except 先直接调用 rollback；一旦 rollback
+本身抛错，Python 用 rollback 异常替换原始 mutation/CAS 异常。pipeline 虽会报告 cleanup
+错误，却已拿不到 `mutation exploded` 或 PUT ServiceUnavailable 的首因。
+
+RED：新增真实 strict pipeline mutation 和真实 conditional PUT 两条。restore 首次失败而
+safe invalidation 成功时，结果分别只含 `restore exploded`，丢失 `mutation exploded`；以及只
+含 `restore after upload exploded`，丢失 ServiceUnavailable。
+
+修复：mutation、upload exception 与显式 upload False 三条路径分别保留原异常，再单独捕获
+rollback 异常并生成包含两者类型/消息的组合错误，以原异常作为 exception cause。strict 向
+pipeline/调用方上抛组合错误；ordinary 在本地已恢复、失效或 poison 后仍按旧 fail-soft 返回
+failure value。GREEN：三项 `Ran 3 in 16.007s, OK`，exit 0。
+
+### 3. 补充验证与文档
+
+- review4 至 review8 的 Remote/raw RSS/ledger/CAS/rollback 组合：`Ran 138 in 283.014s,
+  OK`，exit 0。
+- 聚焦：`Ran 163 in 357.167s, OK`，exit 0。
+- 固定兼容：`Ran 93 in 225.306s, OK`，exit 0。
+- 最终全量：`python -m unittest discover -s /workspace/tests -q`，`Ran 518 in 873.187s,
+  OK`，exit 0，无 FAIL/ERROR。
+- `bash -n docker/entrypoint.sh`、`bash -n config/daily.crontab`、
+  `bash tests/test_portable_deployment.sh` 与 `git diff --check` 均 exit 0；portable 输出
+  `PASS: 本地部署路径可移植性检查通过`。
+- design spec/implementation plan 已明确普通热榜保存不得有 raw restore 后门，backend
+  mutation/PUT 原始异常与 rollback failure 必须同时可诊断。
+
+补充后的第八次最终计数：聚焦 163、兼容 93、全量 518；三套最终命令合计执行 774 个测试
+（聚焦与兼容也包含于全量发现），全部明确 exit 0。未合并 main、未部署、未真实推送。

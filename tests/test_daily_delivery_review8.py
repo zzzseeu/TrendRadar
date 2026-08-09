@@ -15,6 +15,7 @@ from tests.test_daily_delivery_review7 import (
     pipeline_for,
     remote_prompt_hash,
 )
+from trendradar.storage.base import NewsData, NewsItem
 
 
 def enable_persistent_wal(backend):
@@ -260,6 +261,134 @@ class RemoteRollbackFailureStateTests(unittest.TestCase):
 
                 self._assert_remote_and_reloaded_local_are_old(
                     tmp, s3, backend
+                )
+            finally:
+                backend.cleanup()
+
+    def test_save_news_failure_uses_safe_recovery_and_poisons_on_double_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s3 = _ConditionalS3()
+            s3.set(KEY, news_db_bytes(tmp, "save-news-poison"), "v1")
+            backend = remote_backend(Path(tmp) / "save-news-cache", s3)
+            data = NewsData(
+                date=DATE,
+                crawl_time="2026-08-09 10:00:00",
+                items={
+                    "hot": [NewsItem(
+                        title="Must not leak after failed upload",
+                        source_id="hot",
+                        source_name="Hotlist",
+                        rank=1,
+                        url="https://example.org/no-leak",
+                    )]
+                },
+                id_to_name={"hot": "Hotlist"},
+                failed_ids=[],
+            )
+            s3.fail_keys_once.add(KEY)
+            try:
+                with patch.object(
+                    backend,
+                    "_restore_local_sqlite_snapshot",
+                    side_effect=OSError("restore unavailable"),
+                ), patch.object(
+                    backend,
+                    "_invalidate_local_sqlite_token",
+                    side_effect=OSError("invalidation unavailable"),
+                ):
+                    self.assertFalse(backend.save_news_data(data))
+
+                self.assertEqual(
+                    remote_prompt_hash(
+                        s3, Path(tmp) / "save-news-observer"
+                    ),
+                    "old-hash",
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError, "poison|污染|不安全"
+                ):
+                    backend.get_ai_filter_tag_snapshot_strict(
+                        DATE, "rice.txt"
+                    )
+            finally:
+                backend.cleanup()
+
+    def test_strict_mutation_preserves_original_and_rollback_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s3 = _ConditionalS3()
+            s3.set(KEY, news_db_bytes(tmp, "mutation-errors"), "v1")
+            backend = remote_backend(Path(tmp) / "mutation-cache", s3)
+            pipeline = pipeline_for(backend, strict=True)
+            original_restore = backend._restore_local_sqlite_snapshot
+            restore_calls = 0
+
+            def fail_first_restore(local_path, remote_key, content):
+                nonlocal restore_calls
+                restore_calls += 1
+                if restore_calls == 1:
+                    raise OSError("restore exploded")
+                return original_restore(local_path, remote_key, content)
+
+            try:
+                with patch(
+                    "trendradar.ai.filter_pipeline.AIFilter",
+                    return_value=configured_filter("new-hash"),
+                ), patch.object(
+                    backend,
+                    "_replace_ai_filter_tags_strict_impl",
+                    side_effect=RuntimeError("mutation exploded"),
+                ), patch.object(
+                    backend,
+                    "_restore_local_sqlite_snapshot",
+                    side_effect=fail_first_restore,
+                ):
+                    result = pipeline.run()
+
+                self.assertFalse(result.success)
+                self.assertIn("mutation exploded", result.error)
+                self.assertIn("restore exploded", result.error)
+                self.assertEqual(
+                    remote_prompt_hash(
+                        s3, Path(tmp) / "mutation-error-observer"
+                    ),
+                    "old-hash",
+                )
+            finally:
+                backend.cleanup()
+
+    def test_strict_upload_preserves_original_and_rollback_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s3 = _ConditionalS3()
+            s3.set(KEY, news_db_bytes(tmp, "upload-errors"), "v1")
+            backend = remote_backend(Path(tmp) / "upload-cache", s3)
+            original_restore = backend._restore_local_sqlite_snapshot
+            restore_calls = 0
+
+            def fail_first_restore(local_path, remote_key, content):
+                nonlocal restore_calls
+                restore_calls += 1
+                if restore_calls == 1:
+                    raise OSError("restore after upload exploded")
+                return original_restore(local_path, remote_key, content)
+
+            s3.fail_keys_once.add(KEY)
+            try:
+                with patch.object(
+                    backend,
+                    "_restore_local_sqlite_snapshot",
+                    side_effect=fail_first_restore,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "ServiceUnavailable.*restore after upload exploded",
+                    ):
+                        replace_tags(backend, "must-not-commit")
+
+                self.assertEqual(
+                    remote_prompt_hash(
+                        s3, Path(tmp) / "upload-error-observer"
+                    ),
+                    "old-hash",
                 )
             finally:
                 backend.cleanup()

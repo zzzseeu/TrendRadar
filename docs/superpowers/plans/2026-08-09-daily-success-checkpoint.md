@@ -20,7 +20,7 @@
 - 创建 `trendradar/storage/first_seen_schema.sql`：固定 `rss/first-seen-v1.db` 的版本元数据、canonical identity 主键、source version/watermark、processed write 与时间索引。
 - 修改 `trendradar/storage/sqlite_mixin.py`：读取准确 `executed_at`，实现绑定 listed provenance 的增量 outbox/watermark 消费、一次性历史回填、不可变 first-seen upsert/候选查询和事务性 strict 标签替换。
 - 修改 `trendradar/storage/local.py`：本地固定账本、同步保存、strict 标签快照和显式 batch 完成/中止结果。
-- 修改 `trendradar/storage/remote.py`：远端版本 provenance、dirty authoritative 状态、连接 `backup()` 一致快照、原子刷新、共享 news 全写者 conditional PUT CAS、批次首镜像 abort、安全失效/poison 状态机和单一账本对象。
+- 修改 `trendradar/storage/remote.py`：远端版本 provenance、dirty authoritative 状态、连接 `backup()` 一致快照、原子刷新、共享 news 全写者 conditional PUT CAS、批次首镜像 abort、热榜/AI 统一安全失效/poison 与组合错误状态机和单一账本对象。
 - 修改 `trendradar/storage/manager.py`：一致转发 strict period、first-seen、strict 标签与 batch end/abort 结果。
 - 修改 `trendradar/core/scheduler.py`：向业务编排暴露最近执行时间，并按 report mode 成对路由 strict has/latest/record period 读取与写入；调度解析接受冻结 run_at。
 - 修改 `trendradar/ai/filter.py`：strict 分类解析完整 flat schema/ID/tag/唯一性/有限数值/非空字符串协议，一次 repair 后仍非法则整批失败。
@@ -972,8 +972,9 @@ dirty 均恢复批次前状态；普通 Remote 的 deferred CAS/PUT 失败必须
 
 第八轮一致性边界还需确认：WAL 下 before-image 与最终上传必须由同一 bound connection 的
 `backup()` 生成；restore/close/sidecar 任一恢复失败后只能安全失效并重下，失效也失败则 poison
-并拒绝后续 strict 访问；dirty 无 snapshot 同样必须失效。ordinary final end 已返回 False/抛错
-后 cleanup 不得再次调用第三方 end，rollback failure 必须与原始 pipeline error 同时报告。
+并拒绝后续 strict 访问；dirty 无 snapshot 与普通热榜 save 失败同样必须走统一恢复入口。
+ordinary final end 已返回 False/抛错后 cleanup 不得再次调用第三方 end；backend mutation/PUT
+原始错误和 rollback failure 必须同时保留并由 pipeline 报告。
 
 - [ ] **步骤 4：做只读代码审查并修复 Critical/Important**
 
