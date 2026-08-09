@@ -288,7 +288,10 @@ class AIFilterPipeline:
 
         if scoped_batch_failed:
             try:
-                self._end_batch()
+                if self._strict:
+                    self.storage.abort_batch()
+                else:
+                    self._end_batch()
             except Exception as exc:
                 return AIFilterResult(
                     success=False,
@@ -305,12 +308,19 @@ class AIFilterPipeline:
                 total_results, succeeded_news_ids, succeeded_rss_ids,
                 effective_interests_file, current_hash,
             )
-            self._end_batch()
+            batch_result = self._end_batch()
+            # 第三方旧后端可能仍返回 None；仅明确 False 代表延迟
+            # CAS/PUT 已失败，不能把本地 rowcount 当成持久化成功。
+            if batch_result is False:
+                raise RuntimeError("AI 批次最终持久化失败")
         except Exception as exc:
             self._end_batch_after_storage_error()
             return AIFilterResult(
                 success=False,
-                error=f"严格 AI 存储持久化失败: {type(exc).__name__}: {exc}",
+                error=(
+                    f"{'严格 ' if self._strict else ''}AI 存储持久化失败: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
             )
 
         # 8. 查询并组装返回结果
@@ -454,16 +464,18 @@ class AIFilterPipeline:
                 raise RuntimeError("严格 AI 标签读回集合/描述/priority 不一致")
         return tags
 
-    def _end_batch(self) -> None:
+    def _end_batch(self) -> Optional[bool]:
         if self._strict:
-            self.storage.end_batch_strict()
-        else:
-            self.storage.end_batch()
+            return self.storage.end_batch_strict()
+        return self.storage.end_batch()
 
     def _end_batch_after_storage_error(self) -> None:
-        """尽力关闭批次；原始严格存储错误仍是本轮失败原因。"""
+        """错误时严格回滚；普通模式保留既有 fail-soft 关闭语义。"""
         try:
-            self._end_batch()
+            if self._strict:
+                self.storage.abort_batch()
+            else:
+                self._end_batch()
         except Exception:
             pass
 

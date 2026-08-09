@@ -374,9 +374,17 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
     # AI 智能筛选
     # ========================================
 
+    def end_batch(self):
+        """本地 mutation 已同步提交，无延迟持久化动作。"""
+        return True
+
+    def abort_batch(self):
+        """本地后端没有跨调用延迟批次，保持显式成功契约。"""
+        return True
+
     def end_batch_strict(self):
         """本地事务已同步落盘，无额外批次持久化动作。"""
-        self.end_batch()
+        return self.end_batch()
 
     def get_active_ai_filter_tags(self, date=None, interests_file="ai_interests.txt"):
         return self._get_active_tags_impl(date, interests_file)

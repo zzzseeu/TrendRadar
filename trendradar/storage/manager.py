@@ -355,11 +355,15 @@ class StorageManager:
 
     def end_batch(self):
         """结束批量模式（统一上传脏数据库）"""
-        self.get_backend().end_batch()
+        return self.get_backend().end_batch()
+
+    def abort_batch(self):
+        """中止批次并恢复后端的批次前状态。"""
+        return self.get_backend().abort_batch()
 
     def end_batch_strict(self):
         """严格结束批量模式，远程持久化失败向上抛出。"""
-        self.get_backend().end_batch_strict()
+        return self.get_backend().end_batch_strict()
 
     def get_active_ai_filter_tags(self, date=None, interests_file="ai_interests.txt"):
         """获取指定兴趣文件的 active 标签"""

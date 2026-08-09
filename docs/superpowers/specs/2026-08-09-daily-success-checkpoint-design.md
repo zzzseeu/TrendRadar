@@ -65,7 +65,11 @@ strict 上传必须使用服务端 `If-Match` 或 `If-None-Match: *` 条件 PUT�
 ETag/VersionId 与最终 HEAD 一致；不支持条件写的远端后端明确失败关闭。由于
 `news/{date}.db` 同时承载热榜、AI 标签/结果与 period 状态，Remote 对该共享对象的所有
 生产写者（包括普通热榜保存）都必须从严格刷新并绑定的 baseline 派生，再通过同一 CAS
-提交；普通业务可对冲突 fail-soft，但不得用无条件 PUT 覆盖严格状态。
+提交；普通业务可对冲突 fail-soft，但不得用无条件 PUT 覆盖严格状态。Remote 批次必须
+提供独立于提交的 abort：任一 strict caller 校验、读取或后续 mutation 建立 baseline 失败时，
+恢复该批第一次 mutation 前镜像并清理连接、WAL/SHM 与 dirty，不能用提交型 end 做错误清理。
+普通批次的 end 必须把最终 CAS/PUT 结果传播到流水线；仅显式 `False` 表示失败，第三方旧
+后端返回 `None` 保持兼容。
 
 首次运行只读取最近 24 小时；已有成功检查点后不设置静默丢弃上限，积压内容保留到
 完整成功为止，并交给现有通知分批机制处理。
@@ -144,9 +148,11 @@ rollback；Remote 的 False、异常或 CAS 失败必须恢复 mutation 前镜�
 - 远程 strict 写覆盖 existing/create 条件 PUT、pre-PUT/PUT 后/创建竞争、dirty read 冲突
   和 strict period CAS 失败本地回滚；不承诺跨进程通知 exactly-once，端点仍可能重复。
 - Remote AI 标签/分类的 batch 与 non-batch mutation 覆盖 412、上传失败和 strict 底层
-  False：严格批次恢复首次 mutation 前镜像、关闭旧连接并清除 dirty；普通 wrapper 也
-  必须向调用方反映远端提交失败，但普通批次返回 0 的合法 no-op 不回滚先前成功修改。
-  后续 strict 读取只能看到权威远端状态。
+  False：严格批次恢复首次 mutation 前镜像、关闭旧连接并清除 dirty；caller 校验或第二次
+  mutation 的 HEAD/refresh/connection/before-image 失败必须显式 abort，backend 也要把
+  strict begin 失败标记为整批失败，禁止错误 cleanup 提交首项。普通 wrapper 和最终
+  `end_batch` 都必须向调用方反映远端提交失败，但第三方 `None` 与普通批次返回 0 的合法
+  no-op 保持兼容，不回滚先前成功修改。后续 strict 读取只能看到权威远端状态。
 - first-seen 消费覆盖 Remote 读取 v2 期间变为 v3、Local DB/WAL 读取期间变化，以及同一
   日库多 generation 的真正增量 watermark；失败不得推进水位，下一轮仍须处理新 outbox。
 - Remote 共享 news DB 覆盖旧热榜写者不能覆盖新 checkpoint/AI 状态；热榜保存失败必须

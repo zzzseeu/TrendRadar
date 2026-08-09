@@ -451,6 +451,10 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         try:
             state = self._begin_news_mutation(date)
         except Exception:
+            if strict_upload and self._batch_mode:
+                # 即使 mutation 尚未取得自己的 before-image，同批更早的
+                # mutation 也绝不能在 caller 错误清理时被提交。
+                self._batch_failed = True
             if strict_upload:
                 raise
             return failure_value
@@ -557,6 +561,45 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     def end_batch(self):
         """结束批量模式：统一上传所有脏数据库"""
         return self._finish_batch(strict=False)
+
+    def abort_batch(self):
+        """恢复批次首次 mutation 前镜像，不执行任何远端上传。"""
+        self._batch_mode = False
+        dirty = set(self._batch_dirty)
+        snapshots = dict(getattr(self, "_batch_snapshots", {}))
+        failures = []
+        try:
+            for (date, db_type), before in snapshots.items():
+                local_path = self._get_local_db_path(date, db_type)
+                remote_key = self._get_remote_db_key(date, db_type)
+                try:
+                    self._restore_local_sqlite_snapshot(
+                        local_path, remote_key, before
+                    )
+                except Exception as exc:
+                    failures.append(exc)
+
+            # 正常 mutation 总会有首镜像；这里仍清理异常中途留下的
+            # connection/WAL/dirty，避免后续 strict read 误认本地 authoritative。
+            for date, db_type in dirty.difference(snapshots):
+                local_path = self._get_local_db_path(date, db_type)
+                remote_key = self._get_remote_db_key(date, db_type)
+                try:
+                    self._close_cached_connection(local_path)
+                    for suffix in ("-wal", "-shm"):
+                        auxiliary = Path(f"{local_path}{suffix}")
+                        if auxiliary.exists():
+                            auxiliary.unlink()
+                    self._strict_local_authoritative.discard(remote_key)
+                except Exception as exc:
+                    failures.append(exc)
+        finally:
+            self._batch_dirty.clear()
+            self._batch_snapshots = {}
+            self._batch_failed = False
+        if failures:
+            raise RuntimeError(f"远程数据库批次回滚失败: {failures}")
+        return True
 
     def _finish_batch(self, strict: bool) -> bool:
         """提交批次；失败对象恢复该批次第一次 mutation 前镜像。"""

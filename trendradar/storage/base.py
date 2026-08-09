@@ -517,9 +517,13 @@ class StorageBackend(ABC):
         """开启批量模式（远程后端延迟上传，本地后端无操作）"""
         pass
 
-    def end_batch(self) -> None:
-        """结束批量模式"""
+    def end_batch(self) -> Optional[bool]:
+        """结束批量模式；显式 False 表示最终持久化失败。"""
         pass
+
+    def abort_batch(self) -> None:
+        """中止批次；不支持回滚批次状态的后端必须明确失败。"""
+        raise NotImplementedError("存储后端不支持批次回滚")
 
     def end_batch_strict(self) -> None:
         """严格结束批量模式；任何持久化失败必须向上抛出。"""

@@ -768,3 +768,77 @@ OK`，exit 0；weekly direct-call 兼容的 2 个旧测试定向复验也 `OK`�
 
 第六次最终测试计数：聚焦 163、兼容 93、全量 500；三套最终命令合计执行 756 个测试
 （聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审无遗留架构冲突。
+
+## 第七次最终复审修复
+
+### 1. strict batch 错误统一 abort
+
+根因：`AIFilterPipeline` 已开启 strict batch 且第一项标签 mutation 已写入本地 dirty 后，
+caller-side 标签快照校验/读取失败仍调用 `end_batch_strict()`，从而可能把本应失败的第一项
+提交到远端；第二次 `_begin_news_mutation()` 的 HEAD、刷新、连接或 before-image 获取异常也
+没有主动把批次标记为失败。
+
+RED：新增真实 Remote + pipeline 两项，分别令第一项标签 mutation 后的 strict 校验失败和
+第二次 begin 失败；两项都观察到远端 prompt hash 从批次前值变为新值。第七轮模块首跑
+`Ran 5`，其中这两项及普通提交结果两项共 4 failures、exit 1。
+
+修复：Base/Local/Remote/Manager 增加显式 `abort_batch` 契约。Remote abort 不上传，恢复每个
+news 对象第一次 mutation 前的 SQLite 镜像，关闭连接并清理 WAL/SHM、dirty、snapshot 与
+batch 状态；strict `_begin_news_mutation` 异常在批次内先自保护标记 `_batch_failed`。
+pipeline 的 strict storage/read/validation 错误统一走 abort，只有完整成功路径才执行
+`end_batch_strict()`。GREEN：两项 `Ran 2 in 11.767s, OK`，exit 0；远端保持批次前 hash，
+本地连接、WAL/SHM 与 dirty 状态均已清理。
+
+### 2. ordinary batch 最终提交结果传播
+
+根因：普通 pipeline 的 mutation rowcount 只表示本地 SQLite 写入；Remote CAS/PUT 在
+`end_batch()` 才发生。Remote 已能在上传失败时返回 False 并恢复镜像，但 Manager 丢弃返回值，
+pipeline 也不检查，最终错误报告 `success=True`。
+
+RED：新增 Manager 传播与真实 ordinary begin→mutation→上传失败两项，均观察到 False 被
+吞掉/pipeline success=True；同时第三方 backend 的 legacy `end_batch() -> None` 用例首跑即
+通过，用于锁定兼容边界。
+
+修复：Base 将 `end_batch()` 明确为可返回最终持久化结果；Local/Remote/Manager 保留并传播
+返回值。ordinary pipeline 只把恒等于 `False` 的结果视为最终持久化失败；第三方旧实现的
+`None` 继续兼容，mutation 的 rowcount 0 仍是合法 no-op。GREEN：三项
+`Ran 3 in 11.721s, OK`，exit 0；第七轮完整新增模块 `Ran 5 in 22.769s, OK`，exit 0。
+
+### 3. 文档与兼容收敛
+
+- design spec 与 implementation plan 已同步 strict abort、首 mutation 前镜像恢复、backend
+  begin 自保护、ordinary 最终提交结果传播，以及 `None`/rowcount 0 的兼容语义。
+- 第六轮 Remote failure recovery、strict CAS/dirty、strict period 与 frozen run clock 的契约
+  均未放宽；未扩展跨进程通知 exactly-once 范围。
+- 普通/weekly 单实例、第三方旧 backend 和合法 zero no-op 行为保持不变。
+
+## 第七次复审最终验证
+
+所有 Python 测试均使用 `docker run --network none` 和镜像内
+`/app/.venv/bin/python`，并取得明确 exit code。
+
+- 第七轮新增：`tests.test_daily_delivery_review7`，`Ran 5 in 22.769s, OK`，exit 0。
+- 第六轮 + 第七轮：`Ran 64 in 118.873s, OK`，exit 0。
+- 第三至第五轮：`Ran 81 in 174.832s, OK`，exit 0。
+- 聚焦：`tests.test_daily_delivery tests.test_daily_delivery_schedule tests.test_daily_delivery_report
+  tests.test_news_search_pipeline`，`Ran 163 in 310.582s, OK`，exit 0。
+- 固定兼容：weekly digest/schedule/report、Elsevier、proxy、email，`Ran 93 in 212.707s,
+  OK`，exit 0。
+- 最终全量：`python -m unittest discover -s /workspace/tests -q`，`Ran 505 in 874.087s,
+  OK`，exit 0，无 FAIL/ERROR。
+- `bash -n docker/entrypoint.sh`、`bash -n config/daily.crontab`、
+  `bash tests/test_portable_deployment.sh`、`git diff --check` 均 exit 0；portable 输出
+  `PASS: 本地部署路径可移植性检查通过`。
+
+## 第七次复审 Diff 自审
+
+- strict 错误路径不再借用 commit cleanup；pipeline 与 Remote begin 各自提供一层 abort 防护。
+- abort 恢复整批第一 mutation 前状态，而非只恢复最后一次局部 before-image；连接及 SQLite
+  sidecar 一并清理，失败状态不能在下一次 strict 读取时被误提交。
+- ordinary commit 结果穿透 backend→Manager→pipeline；只有显式 False 失败，None 与 zero
+  no-op 不被误伤。
+- 未改变 daily delivery 的时间窗口、RSS-only、checkpoint、通知全目标、strict CAS、标签与
+  AI 完整性契约；未合并 main、未部署、未真实推送。
+
+第七次最终测试计数：聚焦 163、兼容 93、全量 505；三套最终命令合计执行 761 个测试
+（聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审无新增遗留问题。
