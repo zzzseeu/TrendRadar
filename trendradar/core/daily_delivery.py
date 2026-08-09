@@ -128,17 +128,26 @@ class DailyDeliveryAggregator:
         total_read = 0
         filtered_out = 0
         duplicate_count = 0
+        latest_feed_statuses: dict[str, str] = {}
 
         for storage_date in window.storage_dates:
             daily_data = self.storage.get_rss_data(storage_date)
             if daily_data is None:
                 missing_dates.append(storage_date)
                 continue
-            if daily_data.failed_ids:
-                failed = ", ".join(sorted(daily_data.failed_ids))
-                raise RuntimeError(
-                    f"每日交付快照构建失败：日库 {storage_date} 含失败源 {failed}"
-                )
+
+            get_statuses = getattr(self.storage, "get_rss_feed_statuses", None)
+            daily_statuses = (
+                get_statuses(storage_date) if callable(get_statuses) else None
+            )
+            if not isinstance(daily_statuses, dict):
+                daily_statuses = {
+                    feed_id: "success" for feed_id in daily_data.items
+                }
+                daily_statuses.update({
+                    feed_id: "failed" for feed_id in daily_data.failed_ids
+                })
+            latest_feed_statuses.update(daily_statuses)
 
             for feed_id, name in daily_data.id_to_name.items():
                 if name:
@@ -198,6 +207,17 @@ class DailyDeliveryAggregator:
 
         if len(missing_dates) == len(window.storage_dates):
             raise RuntimeError("每日交付快照构建失败：窗口内日库全部缺失")
+
+        failed_feeds = sorted(
+            feed_id
+            for feed_id, status in latest_feed_statuses.items()
+            if status == "failed"
+        )
+        if failed_feeds:
+            failed = ", ".join(failed_feeds)
+            raise RuntimeError(
+                f"每日交付快照构建失败：窗口内最终失败源 {failed}"
+            )
 
         snapshot = DailyDeliverySnapshot(
             window=window,

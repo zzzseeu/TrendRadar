@@ -761,6 +761,94 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
             "daily_delivery"
         ))
 
+    def test_normal_run_keeps_partial_endpoint_success_and_ai_fallback(self):
+        analyzer, scheduler, dispatcher = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+            filter_method="ai",
+            notification_results={"wework": True, "email": False},
+        )
+        scheduler.resolve.return_value = delivery_schedule(
+            period_key="ordinary",
+            period_name="普通推送",
+            report_mode="incremental",
+            ai_mode="follow_report",
+            filter_method="ai",
+            once_analyze=False,
+            once_push=False,
+        )
+        analyzer.ctx.run_ai_filter.return_value = AIFilterResult(
+            success=False, error="classifier unavailable"
+        )
+
+        self.assertTrue(analyzer.run())
+
+        analyzer.ctx.run_ai_filter.assert_called_once()
+        analyzer.ctx.count_frequency.assert_called_once()
+        dispatcher.dispatch_all.assert_called_once()
+        self.assertFalse(
+            dispatcher.dispatch_all.call_args.kwargs["require_all_targets"]
+        )
+        scheduler.record_execution.assert_not_called()
+
+    @patch("trendradar.__main__.AIAnalyzer")
+    def test_analysis_only_content_succeeds_without_dispatch_or_push_checkpoint(
+        self, analyzer_class
+    ):
+        analyzer, scheduler, dispatcher = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+            html_enabled=True,
+        )
+        scheduler.resolve.return_value = delivery_schedule(
+            analyze=True, push=False
+        )
+        analyzer.ctx.config["AI"] = {}
+        analyzer.ctx.config["AI_ANALYSIS"] = {
+            "ENABLED": True,
+            "MODE": "follow_report",
+        }
+        analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+            success=True
+        )
+
+        self.assertTrue(analyzer.run())
+
+        analyzer_class.return_value.analyze.assert_called_once()
+        analyzer.ctx.generate_html.assert_called_once()
+        dispatcher.dispatch_all.assert_not_called()
+        scheduler.record_execution.assert_called_once_with(
+            "daily_delivery", "analyze", "2026-08-09"
+        )
+
+    @patch("trendradar.__main__.AIAnalyzer")
+    def test_push_only_skips_enabled_ai_summary_and_delivers(
+        self, analyzer_class
+    ):
+        analyzer, scheduler, dispatcher = self.build_analyzer(
+            rss_items=[RSS_STAT],
+            raw_rss_items=[{"title": "Rice breeding"}],
+        )
+        scheduler.resolve.return_value = delivery_schedule(
+            analyze=False, push=True
+        )
+        analyzer.ctx.config["AI"] = {}
+        analyzer.ctx.config["AI_ANALYSIS"] = {
+            "ENABLED": True,
+            "MODE": "follow_report",
+        }
+
+        self.assertTrue(analyzer.run())
+
+        analyzer_class.return_value.analyze.assert_not_called()
+        dispatcher.dispatch_all.assert_called_once()
+        self.assertIsNone(
+            dispatcher.dispatch_all.call_args.kwargs["ai_analysis"]
+        )
+        scheduler.record_execution.assert_called_once_with(
+            "daily_delivery", "push", "2026-08-09"
+        )
+
     def test_missing_authoritative_snapshot_never_advances_checkpoint(self):
         for configure in (
             lambda analyzer: setattr(analyzer.ctx, "rss_enabled", False),
@@ -818,6 +906,41 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
 
 
 class DailyDeliveryStorageContractTests(unittest.TestCase):
+    @staticmethod
+    def _save_feed_status(
+        backend, date_str, crawl_time, feed_id, status, *, with_item=True
+    ):
+        items = {}
+        failed_ids = []
+        if status == "success":
+            items[feed_id] = []
+            if with_item:
+                items[feed_id].append(RSSItem(
+                    title=f"{feed_id} recovered",
+                    feed_id=feed_id,
+                    feed_name=feed_id.title(),
+                    url=f"https://example.org/{feed_id}/{date_str}",
+                    first_time=f"{date_str} {crawl_time}:00",
+                ))
+        else:
+            failed_ids = [feed_id]
+        return backend.save_rss_data(RSSData(
+            date=date_str,
+            crawl_time=crawl_time,
+            items=items,
+            id_to_name={feed_id: feed_id.title()},
+            failed_ids=failed_ids,
+        ))
+
+    @staticmethod
+    def _build_cross_day_snapshot(backend):
+        tomorrow = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 10, 10, 0)
+        )
+        return DailyDeliveryAggregator(backend, "Asia/Shanghai").build(
+            tomorrow, "2026-08-09 08:00:00"
+        )
+
     def test_scheduler_reads_checkpoint_through_real_storage_manager(self):
         with tempfile.TemporaryDirectory() as tmp:
             manager = StorageManager(
@@ -934,6 +1057,124 @@ class DailyDeliveryStorageContractTests(unittest.TestCase):
                     [item.title for item in snapshot.iter_items()],
                     ["Rice breeding"],
                 )
+            finally:
+                backend.cleanup()
+
+    def test_cross_day_success_recovers_previous_day_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            try:
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-09", "09:00", "journal", "failed"
+                ))
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-10", "09:00", "journal", "success"
+                ))
+
+                snapshot = self._build_cross_day_snapshot(backend)
+
+                self.assertEqual(
+                    [item.title for item in snapshot.iter_items()],
+                    ["journal recovered"],
+                )
+            finally:
+                backend.cleanup()
+
+    def test_cross_day_failure_without_later_feed_status_still_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            try:
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-09", "09:00", "journal", "failed"
+                ))
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-10", "09:00", "other", "success"
+                ))
+
+                with self.assertRaisesRegex(RuntimeError, "journal"):
+                    self._build_cross_day_snapshot(backend)
+            finally:
+                backend.cleanup()
+
+    def test_cross_day_later_failure_overrides_previous_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            try:
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-09", "09:00", "journal", "success"
+                ))
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-10", "09:00", "journal", "failed"
+                ))
+
+                with self.assertRaisesRegex(RuntimeError, "journal"):
+                    self._build_cross_day_snapshot(backend)
+            finally:
+                backend.cleanup()
+
+    def test_cross_day_empty_success_recovers_previous_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            try:
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-09", "09:00", "journal", "failed"
+                ))
+                self.assertTrue(self._save_feed_status(
+                    backend,
+                    "2026-08-10",
+                    "09:00",
+                    "journal",
+                    "success",
+                    with_item=False,
+                ))
+
+                snapshot = self._build_cross_day_snapshot(backend)
+
+                self.assertEqual(list(snapshot.iter_items()), [])
+            finally:
+                backend.cleanup()
+
+    def test_rss_status_query_failure_is_not_treated_as_empty_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            backend = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            try:
+                self.assertTrue(self._save_feed_status(
+                    backend, "2026-08-09", "09:00", "journal", "success"
+                ))
+                with patch.object(
+                    backend,
+                    "_read_latest_rss_feed_statuses",
+                    side_effect=RuntimeError("status read failed"),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "status read failed"
+                    ):
+                        backend.get_rss_feed_statuses("2026-08-09")
             finally:
                 backend.cleanup()
 

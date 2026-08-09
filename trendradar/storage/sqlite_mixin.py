@@ -1053,14 +1053,13 @@ class SQLiteStorageMixin:
             return False, 0, 0
 
     @staticmethod
-    def _get_latest_failed_rss_ids(cursor) -> List[str]:
-        """返回每个 RSS 源最新一次抓取仍为失败的源 ID。"""
+    def _read_latest_rss_feed_statuses(cursor) -> Dict[str, str]:
+        """读取当前日库中每个 RSS 源最新一次抓取状态。"""
         cursor.execute("""
-            SELECT cs.feed_id
+            SELECT cs.feed_id, cs.status
             FROM rss_crawl_status cs
             JOIN rss_crawl_records cr ON cs.crawl_record_id = cr.id
-            WHERE cs.status = 'failed'
-              AND cr.id = (
+            WHERE cr.id = (
                   SELECT MAX(cr2.id)
                   FROM rss_crawl_status cs2
                   JOIN rss_crawl_records cr2
@@ -1069,7 +1068,25 @@ class SQLiteStorageMixin:
               )
             ORDER BY cs.feed_id
         """)
-        return [row[0] for row in cursor.fetchall()]
+        return dict(cursor.fetchall())
+
+    @classmethod
+    def _get_latest_failed_rss_ids(cls, cursor) -> List[str]:
+        """返回每个 RSS 源最新一次抓取仍为失败的源 ID。"""
+        return [
+            feed_id
+            for feed_id, status in cls._read_latest_rss_feed_statuses(
+                cursor
+            ).items()
+            if status == "failed"
+        ]
+
+    def _get_rss_feed_statuses_impl(
+        self, date: Optional[str] = None
+    ) -> Dict[str, str]:
+        """返回指定日库中每个 RSS 源按记录 ID 判定的最新状态。"""
+        conn = self._get_connection(date, db_type="rss")
+        return self._read_latest_rss_feed_statuses(conn.cursor())
 
     def _get_rss_data_impl(self, date: Optional[str] = None) -> Optional[RSSData]:
         """

@@ -551,6 +551,23 @@ class StorageBackend(ABC):
     def get_all_rss_ids(self, date: Optional[str] = None) -> List[Dict]:
         return []
 
+    def get_rss_feed_statuses(
+        self, date: Optional[str] = None
+    ) -> Dict[str, str]:
+        """返回指定日库中每个 RSS 源的最新抓取状态。
+
+        默认实现仅从聚合数据推导，供未实现状态查询的存储后端保持兼容。
+        """
+        get_rss_data = getattr(self, "get_rss_data", None)
+        if not callable(get_rss_data):
+            return {}
+        data = get_rss_data(date)
+        if data is None:
+            return {}
+        statuses = {feed_id: "success" for feed_id in data.items}
+        statuses.update({feed_id: "failed" for feed_id in data.failed_ids})
+        return statuses
+
 
 def convert_crawl_results_to_news_data(
     results: Dict[str, Dict],

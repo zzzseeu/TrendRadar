@@ -880,7 +880,11 @@ class NewsAnalyzer:
         # AI 分析（如果启用，用于 HTML 报告）
         ai_result = None
         ai_config = self.ctx.config.get("AI_ANALYSIS", {})
-        if ai_config.get("ENABLED", False) and (stats or rss_items):
+        if (
+            ai_config.get("ENABLED", False)
+            and (stats or rss_items)
+            and (schedule is None or schedule.analyze)
+        ):
             # 获取模式策略来确定报告类型
             mode_strategy = self._get_mode_strategy()
             report_type = mode_strategy["report_type"]
@@ -1023,7 +1027,10 @@ class NewsAnalyzer:
             # AI 分析：优先使用传入的结果，避免重复分析
             if ai_result is None:
                 ai_config = cfg.get("AI_ANALYSIS", {})
-                if ai_config.get("ENABLED", False):
+                if (
+                    ai_config.get("ENABLED", False)
+                    and (schedule is None or schedule.analyze)
+                ):
                     ai_result = self._run_ai_analysis(
                         stats, rss_items, mode, report_type, id_to_name,
                         current_results=current_results, schedule=schedule,
@@ -1033,6 +1040,7 @@ class NewsAnalyzer:
             if (
                 self._is_strict_delivery_mode(mode)
                 and cfg.get("AI_ANALYSIS", {}).get("ENABLED", False)
+                and (schedule is None or schedule.analyze)
                 and (ai_result is None or not ai_result.success)
             ):
                 error = ai_result.error if ai_result is not None else "无有效结果"
@@ -2008,6 +2016,10 @@ class NewsAnalyzer:
             if not self._record_delivery_checkpoint(schedule):
                 print("[每日交付] 空周期 push 检查点持久化失败")
                 return False
+            return True
+
+        if self.report_mode == "daily_delivery" and not schedule.push:
+            print("[每日交付] 分析完成，调度器未启用推送")
             return True
 
         # 发送通知
