@@ -395,8 +395,8 @@ presets:
 #     其余时间走默认配置（静默采集）
 
 custom:
-  name: "自然周周报"
-  description: "每日静默采集，每周一汇总推送上一自然周。"
+  name: "每日新增推送"
+  description: "每天汇总上次完整成功推送后首次发现的内容。"
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   # 默认配置
@@ -417,6 +417,7 @@ custom:
                                    #   daily       → 当日所有新闻的汇总
                                    #   current     → 当前在榜的新闻
                                    #   incremental → 只推送新增内容
+                                   #   daily_delivery → 每日新增
 
                                    
     # frequency_file: "general.txt"
@@ -458,15 +459,15 @@ custom:
   #       系统会自动识别为跨越午夜的时间段。
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   periods:
-    monday_weekly:
-      name: "自然周周报"
+    daily_delivery:
+      name: "每日新增"
       start: "00:00"
       end: "24:00"
       collect: true
       analyze: true
       ai_mode: "follow_report"
       push: true
-      report_mode: "weekly"
+      report_mode: "daily_delivery"
       once:
         analyze: true
         push: true
@@ -480,10 +481,8 @@ custom:
   # 然后在第 3 步的 week_map 中分配给不同的星期。
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   day_plans:
-    monday:
-      periods: ["monday_weekly"]
-    silent:
-      periods: []
+    daily:
+      periods: ["daily_delivery"]
 
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -492,13 +491,13 @@ custom:
   # 1=周一  2=周二  3=周三  4=周四  5=周五  6=周六  7=周日
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   week_map:
-    1: "monday"
-    2: "silent"
-    3: "silent"
-    4: "silent"
-    5: "silent"
-    6: "silent"
-    7: "silent"
+    1: "daily"
+    2: "daily"
+    3: "daily"
+    4: "daily"
+    5: "daily"
+    6: "daily"
+    7: "daily"
 
 
   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -125,6 +125,8 @@ def render_feishu_content(
             mode_text = "当前榜单模式下暂无匹配的热点词汇"
         elif mode == "weekly":
             mode_text = "上周周报模式下暂无匹配的热点词汇"
+        elif mode == "daily_delivery":
+            mode_text = "每日新增模式下暂无匹配内容"
         else:
             mode_text = "暂无匹配的热点词汇"
         text_content = f"📭 {mode_text}\n\n"
@@ -265,6 +267,8 @@ def render_dingtalk_content(
             mode_text = "当前榜单模式下暂无匹配的热点词汇"
         elif mode == "weekly":
             mode_text = "上周周报模式下暂无匹配的热点词汇"
+        elif mode == "daily_delivery":
+            mode_text = "每日新增模式下暂无匹配内容"
         else:
             mode_text = "暂无匹配的热点词汇"
         text_content += f"📭 {mode_text}\n\n"

@@ -40,7 +40,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
             )
         )
 
-    def test_custom_timeline_collects_daily_and_pushes_only_on_monday(self):
+    def test_custom_timeline_collects_and_pushes_daily_delivery_every_day(self):
         config = yaml.safe_load(
             (ROOT / "config/config.yaml").read_text(encoding="utf-8")
         )
@@ -60,29 +60,29 @@ class WeeklyConfigurationTests(unittest.TestCase):
                 "once": {"analyze": False, "push": False},
             },
         )
-        monday = timeline["periods"]["monday_weekly"]
+        daily_delivery = timeline["periods"]["daily_delivery"]
         self.assertEqual(
-            monday,
+            daily_delivery,
             {
-                "name": "自然周周报",
+                "name": "每日新增",
                 "start": "00:00",
                 "end": "24:00",
                 "collect": True,
                 "analyze": True,
                 "ai_mode": "follow_report",
                 "push": True,
-                "report_mode": "weekly",
+                "report_mode": "daily_delivery",
                 "once": {"analyze": True, "push": True},
             },
         )
         self.assertEqual(
             timeline["day_plans"],
-            {"monday": {"periods": ["monday_weekly"]}, "silent": {"periods": []}},
+            {"daily": {"periods": ["daily_delivery"]}},
         )
         self.assertEqual(
             timeline["week_map"],
-            {1: "monday", 2: "silent", 3: "silent", 4: "silent", 5: "silent",
-             6: "silent", 7: "silent"},
+            {1: "daily", 2: "daily", 3: "daily", 4: "daily", 5: "daily",
+             6: "daily", 7: "daily"},
         )
         self.assertEqual(timeline["overlap"], {"policy": "error_on_overlap"})
 
@@ -90,12 +90,12 @@ class WeeklyConfigurationTests(unittest.TestCase):
             config["schedule"], timeline_data, MagicMock(),
             lambda: datetime(2026, 8, 10, 23, 59),
         ).resolve()
-        self.assertEqual(resolved.period_key, "monday_weekly")
+        self.assertEqual(resolved.period_key, "daily_delivery")
         self.assertTrue(resolved.collect)
         self.assertTrue(resolved.analyze)
         self.assertTrue(resolved.push)
-        self.assertEqual(resolved.report_mode, "weekly")
-        self.assertEqual(resolved.ai_mode, "weekly")
+        self.assertEqual(resolved.report_mode, "daily_delivery")
+        self.assertEqual(resolved.ai_mode, "daily_delivery")
         self.assertTrue(resolved.once_analyze)
         self.assertTrue(resolved.once_push)
 
