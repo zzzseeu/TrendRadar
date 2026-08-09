@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytz
 
 from trendradar.core.weekly import WeeklyRSSAggregator, previous_natural_week
+from trendradar.core.rss_snapshot import item_identity, stable_title_guid
 from trendradar.crawler.news_search import normalize_title
 from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
@@ -187,6 +188,28 @@ class NaturalWeekWindowTests(unittest.TestCase):
 
 
 class WeeklyRSSAggregatorTests(unittest.TestCase):
+    def test_shared_snapshot_identity_prefers_canonical_url(self):
+        item = RSSItem(
+            title="Rice breeding update",
+            feed_id="feed-a",
+            url="https://example.org/paper?utm_source=rss",
+        )
+
+        self.assertEqual(
+            item_identity(item),
+            ("url", "https://example.org/paper"),
+        )
+
+    def test_shared_title_guid_is_stable_and_namespaced(self):
+        item = RSSItem(title=" Rice   Breeding ", feed_id="feed-a")
+
+        first = stable_title_guid(item, namespace="weekly")
+        second = stable_title_guid(item, namespace="weekly")
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("weekly-title:"))
+        self.assertNotIn("Rice", first)
+
     def test_rss_item_dict_round_trip_preserves_guid(self):
         item = RSSItem(title="GUID item", feed_id="journal", guid="stable-guid")
 

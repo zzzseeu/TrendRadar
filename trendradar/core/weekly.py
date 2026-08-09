@@ -1,6 +1,5 @@
 """自然周时间窗口和 RSS 周快照聚合。"""
 
-import hashlib
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Iterator
@@ -8,6 +7,12 @@ from typing import Iterator
 import pytz
 
 from trendradar.crawler.news_search import canonicalize_url, normalize_title
+from trendradar.core.rss_snapshot import (
+    item_identity,
+    item_richness,
+    search_providers,
+    stable_title_guid,
+)
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.utils.time import parse_iso_datetime
 
@@ -70,40 +75,6 @@ class WeeklyRSSSnapshot:
         ))
 
 
-def _item_identity(item: RSSItem) -> tuple[str, ...]:
-    """返回用于跨日去重的稳定条目身份。"""
-    canonical = canonicalize_url(item.url)
-    if canonical:
-        return ("url", canonical)
-    normalized = normalize_title(item.title)
-    return ("title", item.feed_id, normalized) if normalized else ()
-
-
-def _title_fallback_guid(item: RSSItem) -> str:
-    """为无 URL/GUID 的标题回退身份生成不含正文的稳定 GUID。"""
-    identity = f"{item.feed_id}\0{normalize_title(item.title)}"
-    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    return f"weekly-title:{digest}"
-
-
-def _richness(item: RSSItem) -> tuple[int, int, float, bool]:
-    """用于稳定选择同一新闻中信息更完整的版本。"""
-    return (
-        len(item.summary or ""),
-        item.source_count or 0,
-        item.pre_hot_score or 0.0,
-        bool(item.author),
-    )
-
-
-def _providers(item: RSSItem) -> set[str]:
-    return {
-        provider.strip()
-        for provider in (item.search_providers or "").split(",")
-        if provider.strip()
-    }
-
-
 class WeeklyRSSAggregator:
     """从八个日库构建并持久化一个自然周 RSS 快照。"""
 
@@ -143,7 +114,7 @@ class WeeklyRSSAggregator:
                         filtered_out += 1
                         continue
 
-                    identity = _item_identity(item)
+                    identity = item_identity(item)
                     if not identity:
                         filtered_out += 1
                         continue
@@ -162,16 +133,16 @@ class WeeklyRSSAggregator:
                     existing = deduplicated.get(identity)
                     if existing is None:
                         candidate.search_providers = ",".join(
-                            sorted(_providers(candidate))
+                            sorted(search_providers(candidate))
                         )
                         deduplicated[identity] = candidate
-                        provider_sets[identity] = _providers(candidate)
+                        provider_sets[identity] = search_providers(candidate)
                         continue
 
                     duplicate_count += 1
                     providers = provider_sets[identity]
-                    providers.update(_providers(candidate))
-                    if _richness(candidate) > _richness(existing):
+                    providers.update(search_providers(candidate))
+                    if item_richness(candidate) > item_richness(existing):
                         deduplicated[identity] = candidate
 
                     merged = deduplicated[identity]
@@ -224,7 +195,7 @@ class WeeklyRSSAggregator:
         for item in ordered_items:
             canonical_url = canonicalize_url(item.url)
             if not canonical_url and not item.guid:
-                item.guid = _title_fallback_guid(item)
+                item.guid = stable_title_guid(item, namespace="weekly")
             anchor = existing_anchors.get(canonical_url) or canonical_anchors.get(
                 canonical_url
             )
