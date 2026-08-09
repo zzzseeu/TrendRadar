@@ -51,6 +51,7 @@ class AIFilterPipeline:
         allowed_rss_ids: Optional[set[int]] = None,
         rss_ids_authoritative: bool = False,
         strict: bool = False,
+        operation_date: Optional[str] = None,
     ):
         self.config = config
         self.storage = storage_manager
@@ -88,6 +89,9 @@ class AIFilterPipeline:
         )
         self._rss_ids_authoritative = rss_ids_authoritative
         self._strict = strict
+        self._operation_date = operation_date
+        if self._strict and self._operation_date is None:
+            self._operation_date = self.get_time().strftime("%Y-%m-%d")
 
         self._priority_sort_enabled = config.get("FILTER", {}).get("PRIORITY_SORT_ENABLED", False)
         self._rank_threshold = config.get("RANK_THRESHOLD", 50)
@@ -183,6 +187,7 @@ class AIFilterPipeline:
         if self._strict:
             try:
                 tag_snapshot = self.storage.get_ai_filter_tag_snapshot_strict(
+                    date=self._operation_date,
                     interests_file=effective_interests_file
                 )
                 stored_hash = tag_snapshot.get("prompt_hash")
@@ -200,6 +205,7 @@ class AIFilterPipeline:
                         tags_data,
                         new_version,
                         current_hash,
+                        date=self._operation_date,
                         interests_file=effective_interests_file,
                     )
                     active_tags = self._validate_strict_tag_snapshot(
@@ -311,6 +317,7 @@ class AIFilterPipeline:
         try:
             if self._strict:
                 all_results = self.storage.get_active_ai_filter_results_strict(
+                    date=self._operation_date,
                     interests_file=effective_interests_file
                 )
             else:
@@ -587,7 +594,9 @@ class AIFilterPipeline:
 
         if self._rss_enabled:
             if self._rss_ids_authoritative:
-                all_rss = self.storage.get_all_rss_ids_strict()
+                all_rss = self.storage.get_all_rss_ids_strict(
+                    date=self._operation_date
+                )
             else:
                 all_rss = self.storage.get_all_rss_ids()
 
@@ -605,7 +614,9 @@ class AIFilterPipeline:
             if self._strict and self._rss_ids_authoritative:
                 # 即使严格模式不复用缓存，也必须证明 analyzed 表可读。
                 self.storage.get_analyzed_news_ids_strict(
-                    "rss", interests_file=effective_interests_file
+                    "rss",
+                    date=self._operation_date,
+                    interests_file=effective_interests_file,
                 )
                 pending_rss = fresh_rss
                 analyzed_rss = set()
@@ -792,6 +803,7 @@ class AIFilterPipeline:
                 succeeded_rss_ids,
                 effective_interests_file,
                 current_hash,
+                date=self._operation_date,
             )
             expected_analyzed = len(set(succeeded_news_ids)) + len(
                 set(succeeded_rss_ids)

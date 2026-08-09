@@ -160,33 +160,86 @@ class SQLiteStorageMixin:
                 ),
             )
 
-    def _read_rss_day_for_first_seen_sync(self, date: str) -> Dict[str, Any]:
+    def _read_rss_day_for_first_seen_sync(
+        self,
+        date: str,
+        listed_version: str,
+        watermark: int,
+        allow_legacy_fallback: bool,
+    ) -> Dict[str, Any]:
+        """读取与 inventory provenance 绑定的单一 SQLite 快照。"""
+        before = self._get_rss_source_version_strict(date)
+        if before != listed_version:
+            raise RuntimeError(f"RSS 日库版本在快照读取前变化: {date}")
+
         conn = self._get_rss_connection(date, strict=True)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT write_id, identity_key, first_seen, storage_date,
-                   crawl_record_id, source_generation
-            FROM rss_first_seen_outbox
-            ORDER BY source_generation, write_id
-        """)
-        outbox = [dict(row) for row in cursor.fetchall()]
-        row = cursor.execute(
-            """SELECT value FROM rss_storage_metadata
-               WHERE key = 'generation'"""
-        ).fetchone()
-        generation = int(row[0]) if row else 0
-        cursor.execute("""
-            SELECT title, feed_id, url, first_crawl_time, last_crawl_time
-            FROM rss_items
-        """)
-        rows = []
-        for title, feed_id, url, first_time, last_time in cursor.fetchall():
-            identity = self._rss_identity_for_ledger(title, feed_id, url)
-            rows.append((identity, first_time or last_time or "", date))
+        bound = self._get_rss_source_version_strict(date)
+        if bound != listed_version:
+            raise RuntimeError(f"RSS 日库版本在快照绑定时变化: {date}")
+
+        try:
+            conn.commit()
+            conn.execute("BEGIN")
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT write_id, identity_key, first_seen, storage_date,
+                          crawl_record_id, source_generation
+                   FROM rss_first_seen_outbox
+                   WHERE source_generation > ?
+                   ORDER BY source_generation, write_id""",
+                (watermark,),
+            )
+            outbox = [dict(row) for row in cursor.fetchall()]
+            row = cursor.execute(
+                """SELECT value FROM rss_storage_metadata
+                   WHERE key = 'generation'"""
+            ).fetchone()
+            generation = int(row[0]) if row else 0
+            if generation < watermark:
+                raise RuntimeError(
+                    f"RSS 日库 generation 回退: {date} "
+                    f"{generation} < {watermark}"
+                )
+
+            rows = []
+            # 旧版本数据库没有 durable outbox；只在首次迁移且确实没有
+            # outbox 时读取 rss_items，后续 generation 永远只走增量 outbox。
+            if allow_legacy_fallback and watermark == 0 and not outbox:
+                cursor.execute("""
+                    SELECT title, feed_id, url,
+                           first_crawl_time, last_crawl_time
+                    FROM rss_items
+                """)
+                for (
+                    title,
+                    feed_id,
+                    url,
+                    first_time,
+                    last_time,
+                ) in cursor.fetchall():
+                    identity = self._rss_identity_for_ledger(
+                        title, feed_id, url
+                    )
+                    rows.append((
+                        identity,
+                        first_time or last_time or "",
+                        date,
+                    ))
+
+            after = self._get_rss_source_version_strict(date)
+            if after != listed_version:
+                raise RuntimeError(
+                    f"RSS 日库版本在快照读取后变化: {date}"
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return {
             "outbox": outbox,
             "fallback_rows": rows,
             "generation": generation,
+            "source_version": listed_version,
         }
 
     def _consume_first_seen_outboxes_strict(self, through_date: str) -> None:
@@ -195,15 +248,21 @@ class SQLiteStorageMixin:
         conn = self._get_first_seen_ledger_connection(strict=True)
         self._init_first_seen_ledger(conn)
         stored_sources = {
-            row[0]: row[1]
+            row[0]: (row[1], int(row[2]))
             for row in conn.execute(
-                "SELECT source_key, source_version FROM rss_first_seen_sources"
+                """SELECT source_key, source_version, watermark
+                   FROM rss_first_seen_sources"""
             ).fetchall()
         }
         changed = [
-            (date, source_version)
+            (
+                date,
+                source_version,
+                stored_sources.get(date, (None, 0))[1],
+                date not in stored_sources,
+            )
             for date, source_version in sorted(sources.items())
-            if stored_sources.get(date) != source_version
+            if stored_sources.get(date, (None, 0))[0] != source_version
         ]
         if not changed:
             if getattr(self, "_first_seen_needs_upload", False):
@@ -211,10 +270,13 @@ class SQLiteStorageMixin:
             return
 
         pending = []
-        for date, listed_version in changed:
-            payload = self._read_rss_day_for_first_seen_sync(date)
-            actual_version = self._get_rss_source_version_strict(date)
-            payload["source_version"] = actual_version or listed_version
+        for date, listed_version, watermark, is_initial in changed:
+            payload = self._read_rss_day_for_first_seen_sync(
+                date,
+                listed_version,
+                watermark,
+                allow_legacy_fallback=is_initial,
+            )
             pending.append((date, payload))
 
         try:
@@ -226,6 +288,15 @@ class SQLiteStorageMixin:
                     conn, payload["fallback_rows"]
                 )
                 for entry in payload["outbox"]:
+                    processed = conn.execute(
+                        """INSERT OR IGNORE INTO
+                               rss_first_seen_processed_writes
+                               (source_key, write_id, processed_at)
+                           VALUES (?, ?, ?)""",
+                        (date, entry["write_id"], now_str),
+                    )
+                    if processed.rowcount == 0:
+                        continue
                     identity = self._rss_identity_from_key(
                         entry["identity_key"]
                     )
@@ -234,22 +305,13 @@ class SQLiteStorageMixin:
                         entry["first_seen"],
                         entry["storage_date"],
                     )])
-                    conn.execute(
-                        """INSERT OR IGNORE INTO rss_first_seen_processed_writes
-                               (source_key, write_id, processed_at)
-                           VALUES (?, ?, ?)""",
-                        (date, entry["write_id"], now_str),
-                    )
                 conn.execute(
                     """INSERT INTO rss_first_seen_sources
                            (source_key, source_version, watermark, updated_at)
                        VALUES (?, ?, ?, ?)
                        ON CONFLICT(source_key) DO UPDATE SET
                            source_version = excluded.source_version,
-                           watermark = MAX(
-                               rss_first_seen_sources.watermark,
-                               excluded.watermark
-                           ),
+                           watermark = excluded.watermark,
                            updated_at = excluded.updated_at""",
                     (
                         date,
@@ -436,7 +498,12 @@ class SQLiteStorageMixin:
     # 新闻数据存储
     # ========================================
 
-    def _save_news_data_impl(self, data: NewsData, log_prefix: str = "[存储]") -> tuple[bool, int, int, int, int]:
+    def _save_news_data_impl(
+        self,
+        data: NewsData,
+        log_prefix: str = "[存储]",
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> tuple[bool, int, int, int, int]:
         """
         保存新闻数据到 SQLite（核心实现）
 
@@ -448,7 +515,7 @@ class SQLiteStorageMixin:
             (success, new_count, updated_count, title_changed_count, off_list_count)
         """
         try:
-            conn = self._get_connection(data.date)
+            conn = conn or self._get_connection(data.date)
             cursor = conn.cursor()
 
             # 获取配置时区的当前时间
@@ -1054,7 +1121,13 @@ class SQLiteStorageMixin:
     # 时间段执行记录（调度系统）
     # ========================================
 
-    def _has_period_executed_impl(self, date_str: str, period_key: str, action: str) -> bool:
+    def _has_period_executed_impl(
+        self,
+        date_str: str,
+        period_key: str,
+        action: str,
+        strict_read: bool = False,
+    ) -> bool:
         """
         检查指定时间段的某个 action 今天是否已执行
 
@@ -1067,7 +1140,11 @@ class SQLiteStorageMixin:
             是否已执行
         """
         try:
-            conn = self._get_connection(date_str)
+            conn = (
+                self._get_ai_connection(date_str, strict=True)
+                if strict_read
+                else self._get_connection(date_str)
+            )
             cursor = conn.cursor()
 
             # 先检查表是否存在
@@ -1086,6 +1163,8 @@ class SQLiteStorageMixin:
             return cursor.fetchone() is not None
 
         except Exception as e:
+            if strict_read:
+                raise
             print(f"[存储] 检查时间段执行记录失败: {e}")
             return False
 

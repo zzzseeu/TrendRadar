@@ -4,7 +4,7 @@
 
 **目标：** 每天北京时间 10:00 推送上次完整成功交付之后首次发现的农业新闻，失败时保留积压，成功或合法空周期才推进检查点。
 
-**架构：** 在现有 `period_executions` 上增加跨日期读取最近成功时间的能力，并新增按首次抓取时间聚合 RSS/新闻搜索结果的 `DailyDeliveryAggregator`。系统级首次发现由固定、版本化且不可变的 first-seen identity 账本提供：raw RSS 与 durable outbox 同事务提交，账本按 source generation/version 与 processed write 水位幂等消费；旧数据仅一次性严格回填，之后稳定查询不再打开历史库。`daily_delivery` 模式只把该快照交给 AI、报告和通知；strict AI 使用事务性标签快照、完整分类协议和最终叙事校验；全部配置端点成功后通过 strict period API 写入检查点。Remote strict mutation 统一使用真实 If-Match/If-None-Match conditional PUT，任何严格阶段失败都返回非零。
+**架构：** 在现有 `period_executions` 上增加跨日期读取最近成功时间的能力，并新增按首次抓取时间聚合 RSS/新闻搜索结果的 `DailyDeliveryAggregator`。系统级首次发现由固定、版本化且不可变的 first-seen identity 账本提供：raw RSS 与 durable outbox 同事务提交，账本把 inventory 的 listed provenance 与单一 SQLite 只读快照绑定，只消费 `source_generation > watermark` 的 outbox；旧数据仅一次性严格回填，之后稳定查询不再打开历史库。`daily_delivery` 模式在入口冻结 run_at/run_date，只把该日期的权威快照交给 AI、报告和通知；strict AI 使用事务性标签快照、完整分类协议和最终叙事校验；全部配置端点成功后通过 strict period 读写 API 推进检查点。Remote 的共享 `news/{date}.db` 所有写者及其他 strict mutation 统一使用真实 If-Match/If-None-Match conditional PUT，任何严格阶段失败都返回非零。
 
 **技术栈：** Python 3.10+、SQLite、pytz、TrendRadar 存储抽象、现有 AI 筛选与通知调度器、Docker Compose、unittest
 
@@ -18,16 +18,16 @@
 - 修改 `trendradar/storage/base.py`：声明最近周期执行、strict period、strict RSS、first-seen 和 strict 标签快照接口；未实现的第三方 strict 能力明确抛错。
 - 修改 `trendradar/storage/rss_schema.sql`：raw RSS 同事务 outbox、generation 元数据和稳定标题 fallback 持久化。
 - 创建 `trendradar/storage/first_seen_schema.sql`：固定 `rss/first-seen-v1.db` 的版本元数据、canonical identity 主键、source version/watermark、processed write 与时间索引。
-- 修改 `trendradar/storage/sqlite_mixin.py`：读取准确 `executed_at`，实现 outbox 消费/一次性历史回填、不可变 first-seen upsert/候选查询和事务性 strict 标签替换。
+- 修改 `trendradar/storage/sqlite_mixin.py`：读取准确 `executed_at`，实现绑定 listed provenance 的增量 outbox/watermark 消费、一次性历史回填、不可变 first-seen upsert/候选查询和事务性 strict 标签替换。
 - 修改 `trendradar/storage/local.py`：本地固定账本、同步保存和 strict 标签快照。
-- 修改 `trendradar/storage/remote.py`：远端版本 provenance、dirty authoritative 状态、连接失效/原子刷新、真实 conditional PUT CAS 和单一账本对象。
+- 修改 `trendradar/storage/remote.py`：远端版本 provenance、dirty authoritative 状态、连接失效/原子刷新、共享 news 全写者 conditional PUT CAS 和单一账本对象。
 - 修改 `trendradar/storage/manager.py`：一致转发 strict period、first-seen 与 strict 标签接口。
-- 修改 `trendradar/core/scheduler.py`：向业务编排暴露最近执行时间，并按 report mode 路由 strict period 写入。
+- 修改 `trendradar/core/scheduler.py`：向业务编排暴露最近执行时间，并按 report mode 成对路由 strict period 读取与写入；调度解析接受冻结 run_at。
 - 修改 `trendradar/ai/filter.py`：strict 分类解析完整 flat schema/ID/tag/唯一性/有限数值/非空字符串协议，一次 repair 后仍非法则整批失败。
 - 修改 `trendradar/ai/filter_pipeline.py`：允许快照 ID 成为权威范围；strict 标签全量原子替换并读回；范围内分类或存储批次失败时关闭交付。
 - 修改 `trendradar/ai/analyzer.py`：grounding 和配置裁剪后校验最终可交付叙事。
-- 修改 `trendradar/context.py`：把权威快照范围同时传给 AI 分类和报告转换。
-- 修改 `trendradar/__main__.py`：接入每日快照、严格失败、重试、空周期成功和全部端点成功检查点。
+- 修改 `trendradar/context.py`：把权威快照范围和显式 operation_date 同时传给 AI 分类和报告转换。
+- 修改 `trendradar/__main__.py`：入口冻结 run_at/run_date，接入每日快照、共享 news 保存检查、严格失败、重试、空周期成功和全部端点成功检查点。
 - 修改 `trendradar/report/html.py`：显示“每日新增”。
 - 修改 `trendradar/notification/splitter.py`：显示每日交付模式和精确周期标签。
 - 修改 `trendradar/notification/renderer.py`：为各通知渲染器补充每日交付空状态名称。
@@ -37,6 +37,7 @@
 - 创建 `tests/test_daily_delivery_report.py`：HTML 与通知头部测试。
 - 创建 `tests/test_daily_delivery_review3.py`：first-seen 一次性回填/不可变/重试、远程 provenance、strict 分类协议、最终 grounding、标签事务和第三方 strict capability 测试。
 - 创建 `tests/test_daily_delivery_review4.py`：outbox 新进程恢复、title-only 原子持久化、source watermark、真实 conditional CAS/dirty、strict period 与 flat scalar 类型测试。
+- 创建 `tests/test_daily_delivery_review5.py`：listed-version 一致快照/增量 watermark、共享 news 全写者 CAS、strict period 读取与跨午夜 operation_date 主链测试。
 - 修改 `tests/test_weekly_digest.py`：公共快照工具重构后的周报回归断言。
 - 修改 `tests/test_weekly_schedule.py`：确认 weekly 能力保留且严格规则未退化。
 - 修改 `tests/test_news_search_pipeline.py`：确认每日交付下固定 RSS 或搜索来源失败会中止。
@@ -419,6 +420,10 @@ def daily_delivery_window(
 generation 与条目/crawl record 同事务提交；账本按 source version/watermark 幂等消费。
 账本缺失/旧版本时一次性严格回填截止窗口结束日期的所有现存 RSS 日库（含起点日期中
 早于起点的记录），以后只打开 version/generation 变化的日库，稳定查询不得打开历史库。
+变化日库必须先绑定 inventory 的 listed version，在同一只读事务中只查询
+`source_generation > watermark` 的 outbox 并读取 generation，事务前后 provenance 不变
+才允许把 listed version/generation/watermark 原子写入账本；观察到更新版本不代表已经
+消费。初次迁移之外不得全量重放 outbox 或回退扫描 `rss_items`。
 raw 已提交、ledger 同步失败后必须允许新进程从 outbox 恢复，不依赖旧 payload 重现，
 也不写 delivered 状态。
 
@@ -692,13 +697,13 @@ docker run --rm --network none --entrypoint /app/.venv/bin/python -e PYTHONPATH=
 
 ```python
 scheduler = self.ctx.create_scheduler()
-date_str = self.ctx.format_date()
+date_str = self._operation_date()
 checkpoint = scheduler.latest_execution(
     "daily_delivery", "push", date_str
 )
 snapshot = DailyDeliveryAggregator(
     self.storage_manager, self.ctx.timezone
-).build(self.ctx.get_time(), checkpoint)
+).build(self._operation_run_at(), checkpoint)
 self._rss_window = None
 self._allowed_rss_ids = snapshot.allowed_rss_ids
 self._rss_ids_authoritative = True
@@ -706,6 +711,11 @@ self._report_period_label = snapshot.window.label
 ```
 
 快照转列表必须 `apply_freshness=False`；筛选资格已经由首次发现窗口确定，发布日期仅展示。`_run_analysis_pipeline()` 向 Context 的两条 AI 路径都传 `rss_ids_authoritative=self._rss_ids_authoritative`。
+
+单次 `run()` 必须在任何调度/采集前只读取一次配置时区时钟，冻结 `run_at`、`run_date`
+与输出时间名。上例的 scheduler resolve、聚合器 build、RSSData date/crawl_time、strict
+tag/result/analyzed/RSS ID API、通知幂等检查和 checkpoint 均使用冻结值，不得在跨午夜时
+调用 `date=None` 或再次读取 wall clock。
 
 - [ ] **步骤 4：实现严格来源、AI、报告和端点失败**
 
@@ -732,7 +742,7 @@ def _record_delivery_checkpoint(
     if not schedule.period_key:
         return False
     return self.ctx.create_scheduler().record_execution(
-        schedule.period_key, "push", self.ctx.format_date()
+        schedule.period_key, "push", self._operation_date()
     )
 ```
 
@@ -934,13 +944,16 @@ git diff --check
 
 预期：全部测试 PASS；两个 `bash -n` 和 `git diff --check` 无输出；LiteLLM 在禁网环境的价格表回退警告可忽略。
 
-最终审查还必须运行 `tests.test_daily_delivery_review3` 与 `tests.test_daily_delivery_review4`，并确认以下性能/一致性契约：多日库
+最终审查还必须运行 `tests.test_daily_delivery_review3`、`tests.test_daily_delivery_review4`
+与 `tests.test_daily_delivery_review5`，并确认以下性能/一致性契约：多日库
 backfill 后第二次候选查询不调用日库连接；远程 404→出现和 v1→v2 会刷新 checkpoint、
 RSS 和账本连接；strict tag 批次上传后 provenance 必须变化；未知/畸形/重复分类响应、
 最终空 grounding、标签中途失败或第三方缺 strict capability 都不形成成功交付。
 另外确认 title-only/raw/outbox 原子性、新进程恢复、source watermark、existing/create 的
 conditional PUT、三个竞争时点、dirty strict read、strict period CAS 回滚以及 scalar 类型
-repair。跨进程通知 exactly-once/分布式推送租约不在本计划范围内，端点可能重复语义保留。
+repair；listed-version 快照、真正增量 watermark、共享 news 全写者 CAS、strict period
+has/record 成对路由和冻结 operation_date 跨午夜主链也必须覆盖。跨进程通知
+exactly-once/分布式推送租约不在本计划范围内，端点可能重复语义保留。
 
 - [ ] **步骤 4：做只读代码审查并修复 Critical/Important**
 

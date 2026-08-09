@@ -12,6 +12,8 @@ TrendRadar 每天北京时间 10:00 执行一次采集、分析和推送。推�
 
 - Docker Cron 保持 `0 10 * * *`。
 - 时间线每天使用同一个 `daily_delivery` 周期，采集、分析和推送均启用。
+- 单次运行在入口按配置时区只读取一次 `run_at`，并冻结对应 `run_date`；即使执行跨过
+  午夜，调度解析、RSS 原始快照、AI 严格数据、通知与检查点仍全部归属该运行日期。
 - 每个日期只成功记录一次；同日人工补跑只在前一次未完整成功时继续执行。
 - 首次没有历史成功检查点时，窗口起点为当前运行时间前 24 小时。
 - 后续窗口为 `(last_success_at, current_run_at]`。
@@ -38,19 +40,28 @@ TrendRadar 每天北京时间 10:00 执行一次采集、分析和推送。推�
 `rss_first_seen_outbox`；条目、crawl record 与 outbox 要么全部提交，要么全部回滚。
 无 URL/GUID 的条目使用与账本 identity 一致的稳定标题 GUID，不能被静默跳过。
 
-账本记录各源日库的 durable generation/远端对象版本与已消费 write ID。每次保存前后和
-每次 strict 查询前幂等消费尚未处理的 outbox；因此 raw 日库已提交而账本同步失败时，
+账本记录各源日库的 durable generation/远端对象版本、已消费 generation watermark 与
+write ID。每次保存前后和每次 strict 查询前，仅查询
+`source_generation > watermark` 的 outbox 并幂等消费；兼容 `rss_items` 回填只允许发生在
+初次迁移、watermark 为 0 且没有 outbox 时。因此 raw 日库已提交而账本同步失败时，
 新进程即使本轮没有再次抓到旧 payload，也可从 durable outbox 恢复。账本持久化失败仍
 等同于 RSS 保存失败，且账本不承担 delivered 标记。
 
 升级时，账本仅在缺失或版本不兼容时严格枚举并回填截止当前窗口的全部既有 RSS 日库，
 写入 `backfill_complete` 和各 source version/watermark；以后只打开 generation 或远端
 provenance 新增/变化的日库，稳定查询不再打开或下载历史库，并只按本轮候选 identity
-查询索引。远程账本、RSS 日库、strict AI 数据库和成功检查点的 strict 读取以
+查询索引。外部 provenance 只负责发现变化：消费方必须在读取前绑定 inventory 返回的
+`listed_version`，在同一 SQLite 只读事务读取 generation/outbox/兼容数据，并在读取后
+再次确认 provenance 未变；账本只记录实际读取的 listed version、generation 与
+watermark，不能把读取后观察到的新版本误记为已消费。Local 的 DB/WAL provenance 同样
+执行前后校验。远程账本、RSS 日库、strict AI 数据库和成功检查点的 strict 读取以
 VersionId/ETag 绑定对象来源；远端对象新增或版本变化时关闭旧连接、临时下载并原子替换。
 本地 strict mutation 从首次 dirty 起即为 authoritative，版本变化或 404 不得刷新覆盖。
 strict 上传必须使用服务端 `If-Match` 或 `If-None-Match: *` 条件 PUT，并校验 PUT 返回的
-ETag/VersionId 与最终 HEAD 一致；不支持条件写的远端后端明确失败关闭。
+ETag/VersionId 与最终 HEAD 一致；不支持条件写的远端后端明确失败关闭。由于
+`news/{date}.db` 同时承载热榜、AI 标签/结果与 period 状态，Remote 对该共享对象的所有
+生产写者（包括普通热榜保存）都必须从严格刷新并绑定的 baseline 派生，再通过同一 CAS
+提交；普通业务可对冲突 fail-soft，但不得用无条件 PUT 覆盖严格状态。
 
 首次运行只读取最近 24 小时；已有成功检查点后不设置静默丢弃上限，积压内容保留到
 完整成功为止，并交给现有通知分批机制处理。
@@ -70,7 +81,8 @@ ETag/VersionId 与最终 HEAD 一致；不支持条件写的远端后端明确�
 5. 向所有已配置端点发送；
 6. 全部成功后记录 push，并以其 `executed_at` 作为下一次窗口起点。
 
-`daily_delivery` 与保留的 `weekly` 的 analyze/push 记录使用 explicit strict period API；
+`daily_delivery` 与保留的 `weekly` 的 analyze/push 状态读取和记录都使用 explicit strict
+period API；任何权限、网络、坏库或陈旧缓存错误必须在发送前 fail-closed。
 Remote 与 raw RSS、first-seen、strict AI 标签/结果共用同一 conditional-CAS 提交协议。
 
 无内容周期跳过第 4、5 步，但仍记录成功检查点。任何失败都返回非零退出码。
@@ -121,6 +133,14 @@ Remote 与 raw RSS、first-seen、strict AI 标签/结果共用同一 conditiona
   checkpoint 与 first-seen 账本均不得使用陈旧连接。
 - 远程 strict 写覆盖 existing/create 条件 PUT、pre-PUT/PUT 后/创建竞争、dirty read 冲突
   和 strict period CAS 失败本地回滚；不承诺跨进程通知 exactly-once，端点仍可能重复。
+- first-seen 消费覆盖 Remote 读取 v2 期间变为 v3、Local DB/WAL 读取期间变化，以及同一
+  日库多 generation 的真正增量 watermark；失败不得推进水位，下一轮仍须处理新 outbox。
+- Remote 共享 news DB 覆盖旧热榜写者不能覆盖新 checkpoint/AI 状态；热榜保存失败必须
+  在主流程继续生成 TXT、分析或发送前中止。
+- strict period 读取覆盖 404、权限/网络/坏库和远端版本刷新；调度器必须按 report mode
+  对 has/record 成对路由严格接口。
+- 跨午夜主链覆盖冻结 N 日的 RSS 保存、快照、AI 标签/结果/ID、通知和检查点；N+1 日的
+  同 ID 数据不得被误读。
 - strict 分类覆盖未知 ID/tag、缺字段、非法元素、重复 ID、修复成功/失败；标签替换覆盖
   SQLite 中途失败回滚、保存 0、读失败、旧 active 残留和远端上传版本验证。
 - 现有 weekly、Elsevier、代理、邮件多收件人和普通报告模式回归测试继续通过。

@@ -99,7 +99,7 @@ class Scheduler:
 
         return timeline
 
-    def resolve(self) -> ResolvedSchedule:
+    def resolve(self, now: Optional[datetime] = None) -> ResolvedSchedule:
         """
         解析当前时间对应的调度配置
 
@@ -121,7 +121,7 @@ class Scheduler:
                 once_push=False,
             )
 
-        now = self.get_time()
+        now = now or self.get_time()
         weekday = now.isoweekday()  # 1=周一 ... 7=周日
         now_hhmm = now.strftime("%H:%M")
 
@@ -281,7 +281,26 @@ class Scheduler:
             return cfg.get("report_mode", "current")
         return ai_mode
 
-    def already_executed(self, period_key: str, action: str, date_str: str) -> bool:
+    def _uses_strict_period_storage(self, period_key: str) -> bool:
+        if period_key in self.timeline.get("periods", {}):
+            report_mode = self._merge_with_default(period_key).get(
+                "report_mode", self.fallback_report_mode
+            )
+        else:
+            report_mode = (
+                period_key
+                if period_key in {"weekly", "daily_delivery"}
+                else self.fallback_report_mode
+            )
+        return report_mode in {"weekly", "daily_delivery"}
+
+    def already_executed(
+        self,
+        period_key: str,
+        action: str,
+        date_str: str,
+        strict: Optional[bool] = None,
+    ) -> bool:
         """
         检查指定时间段的某个 action 今天是否已执行
 
@@ -293,6 +312,12 @@ class Scheduler:
         Returns:
             是否已执行
         """
+        if strict is None:
+            strict = self._uses_strict_period_storage(period_key)
+        if strict:
+            return self.storage.has_period_executed_strict(
+                date_str, period_key, action
+            )
         return self.storage.has_period_executed(date_str, period_key, action)
 
     def record_execution(
@@ -311,18 +336,7 @@ class Scheduler:
             date_str: 日期 YYYY-MM-DD
         """
         if strict is None:
-            if period_key in self.timeline.get("periods", {}):
-                report_mode = self._merge_with_default(period_key).get(
-                    "report_mode", self.fallback_report_mode
-                )
-            else:
-                # 兼容调用方以 report mode 作为稳定 period key 的路径。
-                report_mode = (
-                    period_key
-                    if period_key in {"weekly", "daily_delivery"}
-                    else self.fallback_report_mode
-                )
-            strict = report_mode in {"weekly", "daily_delivery"}
+            strict = self._uses_strict_period_storage(period_key)
         if strict:
             return self.storage.record_period_execution_strict(
                 date_str, period_key, action

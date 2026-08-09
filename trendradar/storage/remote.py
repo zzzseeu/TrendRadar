@@ -376,6 +376,18 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
             self._strict_local_authoritative = set()
         self._strict_local_authoritative.add(remote_key)
 
+    def _restore_local_sqlite_snapshot(
+        self, local_path: Path, remote_key: str, content: bytes
+    ) -> None:
+        """CAS 失败时恢复 mutation 前本地镜像并清除 dirty。"""
+        self._close_cached_connection(local_path)
+        temporary_path = local_path.with_name(
+            f".{local_path.name}.rollback"
+        )
+        temporary_path.write_bytes(content)
+        temporary_path.replace(local_path)
+        self._strict_local_authoritative.discard(remote_key)
+
     def _conditional_put_strict(
         self, remote_key: str, content: bytes, content_type: str
     ) -> tuple:
@@ -483,7 +495,10 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         """
         local_path = self._get_local_db_path(date, db_type)
         r2_key = self._get_remote_db_key(date, db_type)
-        if strict_version:
+        # news/{date}.db 同时承载热榜、AI 状态和 period checkpoint；
+        # 所有写者都必须走同一 conditional CAS，不能存在普通 PUT 后门。
+        conditional_write = strict_version or db_type == "news"
+        if conditional_write:
             self._mark_strict_local_dirty(r2_key)
         if self._batch_mode:
             self._batch_dirty.add((date, db_type))
@@ -505,7 +520,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
                 file_content = f.read()
 
             # 使用 put_object 并明确设置 ContentLength，确保不使用 chunked encoding
-            if strict_version:
+            if conditional_write:
                 self._conditional_put_strict(
                     r2_key, file_content, "application/x-sqlite3"
                 )
@@ -519,7 +534,7 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
                 )
             print(f"[远程存储] 已上传: {local_path} -> {r2_key}")
 
-            if strict_version:
+            if conditional_write:
                 # conditional PUT 内部已把 PUT provenance 与最终 HEAD 精确
                 # 对齐；不再追加一个无法归属于本轮写入的弱 exists 检查。
                 print(f"[远程存储] 上传验证成功: {r2_key}")
@@ -559,6 +574,12 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         db_path = str(local_path)
         remote_key = self._get_remote_db_key(date, db_type)
         remote_exists = None
+
+        # news DB 的任一生产写者都必须从绑定的远端 baseline 派生。
+        # 普通业务方法仍可在各自异常处理里 fail-soft，但不能读取陈旧
+        # 快照后再覆盖 strict AI/checkpoint 状态。
+        if db_type == "news":
+            strict_exists = True
 
         if strict_exists:
             remote_exists = self._refresh_remote_sqlite_strict(
@@ -663,44 +684,62 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
 
         流程：下载现有数据库 → 插入/更新数据 → 上传回远程存储
         """
-        # 查询已有记录数
-        conn = self._get_connection(data.date)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) as count FROM news_items")
-        row = cursor.fetchone()
-        existing_count = row[0] if row else 0
-        if existing_count > 0:
-            print(f"[远程存储] 已有 {existing_count} 条历史记录，将合并新数据")
+        local_path = self._get_local_db_path(data.date, "news")
+        remote_key = self._get_remote_db_key(data.date, "news")
+        try:
+            # 先严格刷新并绑定 baseline；后续提交只允许 conditional CAS。
+            conn = self._get_connection(
+                data.date, "news", strict_exists=True
+            )
+            before = local_path.read_bytes()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) as count FROM news_items")
+            row = cursor.fetchone()
+            existing_count = row[0] if row else 0
+            if existing_count > 0:
+                print(
+                    f"[远程存储] 已有 {existing_count} 条历史记录，"
+                    "将合并新数据"
+                )
 
-        # 使用 mixin 的实现保存数据
-        success, new_count, updated_count, title_changed_count, off_list_count = \
-            self._save_news_data_impl(data, "[远程存储]")
+            (
+                success,
+                new_count,
+                updated_count,
+                title_changed_count,
+                off_list_count,
+            ) = self._save_news_data_impl(
+                data, "[远程存储]", conn=conn
+            )
+            if not success:
+                self._restore_local_sqlite_snapshot(
+                    local_path, remote_key, before
+                )
+                return False
 
-        if not success:
-            return False
+            cursor.execute("SELECT COUNT(*) as count FROM news_items")
+            row = cursor.fetchone()
+            final_count = row[0] if row else 0
+            log_parts = [f"[远程存储] 处理完成：新增 {new_count} 条"]
+            if updated_count > 0:
+                log_parts.append(f"更新 {updated_count} 条")
+            if title_changed_count > 0:
+                log_parts.append(f"标题变更 {title_changed_count} 条")
+            if off_list_count > 0:
+                log_parts.append(f"脱榜 {off_list_count} 条")
+            log_parts.append(f"(去重后总计: {final_count} 条)")
+            print("，".join(log_parts))
 
-        # 查询合并后的总记录数
-        cursor.execute("SELECT COUNT(*) as count FROM news_items")
-        row = cursor.fetchone()
-        final_count = row[0] if row else 0
-
-        # 输出详细的存储统计日志
-        log_parts = [f"[远程存储] 处理完成：新增 {new_count} 条"]
-        if updated_count > 0:
-            log_parts.append(f"更新 {updated_count} 条")
-        if title_changed_count > 0:
-            log_parts.append(f"标题变更 {title_changed_count} 条")
-        if off_list_count > 0:
-            log_parts.append(f"脱榜 {off_list_count} 条")
-        log_parts.append(f"(去重后总计: {final_count} 条)")
-        print("，".join(log_parts))
-
-        # 上传到远程存储
-        if self._upload_sqlite(data.date):
-            print(f"[远程存储] 数据已同步到远程存储")
+            if not self._upload_sqlite(data.date, "news"):
+                raise RuntimeError("共享 news 数据库 CAS 上传失败")
+            print("[远程存储] 数据已同步到远程存储")
             return True
-        else:
-            print(f"[远程存储] 上传远程存储失败")
+        except Exception as exc:
+            print(f"[远程存储] 热榜数据严格保存失败: {exc}")
+            if "before" in locals():
+                self._restore_local_sqlite_snapshot(
+                    local_path, remote_key, before
+                )
             return False
 
     def get_today_all_data(self, date: Optional[str] = None) -> Optional[NewsData]:
@@ -726,6 +765,14 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
     def has_period_executed(self, date_str: str, period_key: str, action: str) -> bool:
         """检查指定时间段的某个 action 是否已执行"""
         return self._has_period_executed_impl(date_str, period_key, action)
+
+    def has_period_executed_strict(
+        self, date_str: str, period_key: str, action: str
+    ) -> bool:
+        """严格刷新共享 news DB 后读取执行状态。"""
+        return self._has_period_executed_impl(
+            date_str, period_key, action, strict_read=True
+        )
 
     def record_period_execution(self, date_str: str, period_key: str, action: str) -> bool:
         """记录时间段的 action 执行"""
@@ -767,13 +814,11 @@ class RemoteStorageBackend(SQLiteStorageMixin, StorageBackend):
         except Exception as exc:
             print(f"[远程存储] 严格时间段执行记录失败: {exc}")
             if "before" in locals():
-                self._close_cached_connection(local_path)
-                temporary_path = local_path.with_name(
-                    f".{local_path.name}.rollback"
+                self._restore_local_sqlite_snapshot(
+                    local_path, remote_key, before
                 )
-                temporary_path.write_bytes(before)
-                temporary_path.replace(local_path)
-            self._strict_local_authoritative.discard(remote_key)
+            else:
+                self._strict_local_authoritative.discard(remote_key)
             return False
 
     def get_latest_period_execution(

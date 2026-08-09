@@ -142,6 +142,10 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
         for path in (db_path, Path(f"{db_path}-wal")):
             if path.exists():
                 stat = path.stat()
+                # SQLite 可在首次只读事务时创建零字节 WAL；它不代表
+                # source generation 变化，不能制造虚假的并发冲突。
+                if path.name.endswith("-wal") and stat.st_size == 0:
+                    continue
                 parts.append((path.name, stat.st_size, stat.st_mtime_ns))
         if not parts:
             raise RuntimeError(f"RSS 日库不存在: {date}")
@@ -234,6 +238,14 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
     def has_period_executed(self, date_str: str, period_key: str, action: str) -> bool:
         """检查指定时间段的某个 action 是否已执行"""
         return self._has_period_executed_impl(date_str, period_key, action)
+
+    def has_period_executed_strict(
+        self, date_str: str, period_key: str, action: str
+    ) -> bool:
+        """严格读取执行状态，SQLite 错误不得退化为未执行。"""
+        return self._has_period_executed_impl(
+            date_str, period_key, action, strict_read=True
+        )
 
     def record_period_execution(self, date_str: str, period_key: str, action: str) -> bool:
         """记录时间段的 action 执行"""

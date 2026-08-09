@@ -303,6 +303,14 @@ class StorageManager:
         """检查指定时间段的某个 action 是否已执行"""
         return self.get_backend().has_period_executed(date_str, period_key, action)
 
+    def has_period_executed_strict(
+        self, date_str: str, period_key: str, action: str
+    ) -> bool:
+        """严格读取时间段执行状态。"""
+        return self.get_backend().has_period_executed_strict(
+            date_str, period_key, action
+        )
+
     def record_period_execution(self, date_str: str, period_key: str, action: str) -> bool:
         """记录时间段的 action 执行"""
         return self.get_backend().record_period_execution(date_str, period_key, action)

@@ -467,6 +467,12 @@ class StorageBackend(ABC):
         """
         return False
 
+    def has_period_executed_strict(
+        self, date_str: str, period_key: str, action: str
+    ) -> bool:
+        """严格读取时间段执行状态；不支持错误区分的后端必须抛错。"""
+        raise NotImplementedError("存储后端不支持严格时间段执行读取")
+
     def record_period_execution(self, date_str: str, period_key: str, action: str) -> bool:
         """
         记录时间段的 action 执行

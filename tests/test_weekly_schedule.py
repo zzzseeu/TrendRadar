@@ -37,6 +37,9 @@ TIMELINE = {"custom": {
         5: "silent", 6: "silent", 7: "silent",
     },
 }}
+RUN_AT = pytz.timezone("Asia/Shanghai").localize(
+    datetime(2026, 8, 10, 10, 0)
+)
 
 
 def schedule(**overrides):
@@ -92,7 +95,11 @@ class WeeklyScheduleTests(unittest.TestCase):
 
     def test_silent_run_never_enters_analysis_pipeline(self):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
-        analyzer.ctx = SimpleNamespace(cleanup=MagicMock(), config={"DEBUG": False})
+        analyzer.ctx = SimpleNamespace(
+            cleanup=MagicMock(),
+            config={"DEBUG": False},
+            get_time=MagicMock(return_value=RUN_AT),
+        )
         analyzer.report_mode = "current"
         analyzer._initialize_and_check_config = MagicMock(return_value=True)
         analyzer._resolve_and_apply_schedule = MagicMock(
@@ -189,7 +196,11 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         events = []
         resolved = schedule(report_mode="weekly")
-        analyzer.ctx = SimpleNamespace(cleanup=MagicMock(), config={"DEBUG": False})
+        analyzer.ctx = SimpleNamespace(
+            cleanup=MagicMock(),
+            config={"DEBUG": False},
+            get_time=MagicMock(return_value=RUN_AT),
+        )
         analyzer.report_mode = "weekly"
         analyzer._rss_window = object()
         analyzer._resolve_and_apply_schedule = MagicMock(
@@ -620,7 +631,11 @@ class WeeklyScheduleTests(unittest.TestCase):
 
     def test_run_returns_false_on_failure_and_true_for_normal_completion(self):
         successful = NewsAnalyzer.__new__(NewsAnalyzer)
-        successful.ctx = SimpleNamespace(cleanup=MagicMock(), config={"DEBUG": False})
+        successful.ctx = SimpleNamespace(
+            cleanup=MagicMock(),
+            config={"DEBUG": False},
+            get_time=MagicMock(return_value=RUN_AT),
+        )
         successful.report_mode = "daily"
         successful._resolve_and_apply_schedule = MagicMock(
             return_value=schedule(report_mode="daily", ai_mode="daily")
@@ -632,13 +647,21 @@ class WeeklyScheduleTests(unittest.TestCase):
         self.assertTrue(successful.run())
 
         failed = NewsAnalyzer.__new__(NewsAnalyzer)
-        failed.ctx = SimpleNamespace(cleanup=MagicMock(), config={"DEBUG": False})
+        failed.ctx = SimpleNamespace(
+            cleanup=MagicMock(),
+            config={"DEBUG": False},
+            get_time=MagicMock(return_value=RUN_AT),
+        )
         failed._resolve_and_apply_schedule = MagicMock(side_effect=RuntimeError("boom"))
         self.assertFalse(failed.run())
 
     def test_weekly_snapshot_exception_makes_run_fail(self):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
-        analyzer.ctx = SimpleNamespace(cleanup=MagicMock(), config={"DEBUG": False})
+        analyzer.ctx = SimpleNamespace(
+            cleanup=MagicMock(),
+            config={"DEBUG": False},
+            get_time=MagicMock(return_value=RUN_AT),
+        )
         analyzer.report_mode = "weekly"
         analyzer._resolve_and_apply_schedule = MagicMock(return_value=schedule())
         analyzer._initialize_and_check_config = MagicMock(return_value=True)

@@ -166,6 +166,11 @@ class NewsAnalyzer:
         self._rss_ids_authoritative = False
         self._daily_delivery_rss_data = None
         self._report_period_label = ""
+        # A single run owns one immutable clock snapshot.  Strict storage keys,
+        # delivery windows and scheduler decisions must never straddle midnight.
+        self._run_at = None
+        self._run_date = None
+        self._run_time_filename = None
 
         # 初始化存储管理器（使用 AppContext）
         self._init_storage_manager()
@@ -235,9 +240,25 @@ class NewsAnalyzer:
         """获取当前模式的策略配置"""
         return self.MODE_STRATEGIES.get(self.report_mode, self.MODE_STRATEGIES["daily"])
 
+    def _operation_run_at(self):
+        """Return the immutable clock snapshot for this run.
+
+        The fallback keeps directly-invoked helpers backwards compatible in
+        tests and integrations that do not enter through ``run()``.
+        """
+        return getattr(self, "_run_at", None) or self.ctx.get_time()
+
+    def _operation_date(self) -> str:
+        frozen = getattr(self, "_run_date", None)
+        return frozen or self.ctx.format_date()
+
+    def _operation_time_filename(self) -> str:
+        frozen = getattr(self, "_run_time_filename", None)
+        return frozen or self.ctx.format_time()
+
     def _resolve_and_apply_schedule(self) -> ResolvedSchedule:
         """在采集前解析一次调度，并应用本次运行的覆盖配置。"""
-        schedule = self.ctx.create_scheduler().resolve()
+        schedule = self.ctx.create_scheduler().resolve(self._operation_run_at())
         self.report_mode = schedule.report_mode
         self.frequency_file = schedule.frequency_file
         self.filter_method = schedule.filter_method or self.ctx.filter_method
@@ -270,7 +291,7 @@ class NewsAnalyzer:
         if not schedule.period_key:
             return False
         return self.ctx.create_scheduler().record_execution(
-            schedule.period_key, "push", self.ctx.format_date()
+            schedule.period_key, "push", self._operation_date()
         )
 
     def _has_notification_configured(self) -> bool:
@@ -341,7 +362,7 @@ class NewsAnalyzer:
                     return [], None
 
                 # 准备当前时间信息
-                time_info = self.ctx.format_time()
+                time_info = self._operation_time_filename()
                 title_info = self._prepare_current_title_info(current_results, time_info)
 
                 # 检测新增标题
@@ -443,7 +464,7 @@ class NewsAnalyzer:
 
         if schedule.once_analyze and schedule.period_key:
             scheduler = self.ctx.create_scheduler()
-            date_str = self.ctx.format_date()
+            date_str = self._operation_date()
             if scheduler.already_executed(schedule.period_key, "analyze", date_str):
                 strict_push_pending = (
                     self._is_strict_delivery_mode(mode)
@@ -466,7 +487,12 @@ class NewsAnalyzer:
         try:
             ai_config = self.ctx.config.get("AI", {})
             debug_mode = self.ctx.config.get("DEBUG", False)
-            analyzer = AIAnalyzer(ai_config, analysis_config, self.ctx.get_time, debug=debug_mode)
+            analyzer = AIAnalyzer(
+                ai_config,
+                analysis_config,
+                lambda: self._operation_run_at(),
+                debug=debug_mode,
+            )
 
             # 确定 AI 分析使用的模式
             ai_mode_config = analysis_config.get("MODE", "follow_report")
@@ -549,7 +575,7 @@ class NewsAnalyzer:
                 # 记录 AI 分析
                 if schedule.once_analyze and schedule.period_key:
                     scheduler = self.ctx.create_scheduler()
-                    date_str = self.ctx.format_date()
+                    date_str = self._operation_date()
                     if not scheduler.record_execution(
                         schedule.period_key, "analyze", date_str
                     ):
@@ -819,6 +845,11 @@ class NewsAnalyzer:
                     self, "_rss_ids_authoritative", False
                 ),
                 strict=mode == "daily_delivery",
+                operation_date=(
+                    self._operation_date()
+                    if mode == "daily_delivery"
+                    else None
+                ),
             )
 
             if ai_filter_result and ai_filter_result.success:
@@ -831,6 +862,11 @@ class NewsAnalyzer:
                     allowed_rss_ids=self._allowed_rss_ids,
                     rss_ids_authoritative=getattr(
                         self, "_rss_ids_authoritative", False
+                    ),
+                    operation_date=(
+                        self._operation_date()
+                        if mode == "daily_delivery"
+                        else None
                     ),
                 )
                 total_titles = (
@@ -1025,7 +1061,7 @@ class NewsAnalyzer:
 
             if schedule.once_push and schedule.period_key:
                 scheduler = self.ctx.create_scheduler()
-                date_str = self.ctx.format_date()
+                date_str = self._operation_date()
                 if scheduler.already_executed(schedule.period_key, "push", date_str):
                     print(f"[推送] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天已推送过，跳过")
                     return False
@@ -1129,7 +1165,7 @@ class NewsAnalyzer:
 
     def _initialize_and_check_config(self) -> bool:
         """通用初始化和配置检查。返回 True 表示可以继续执行。"""
-        now = self.ctx.get_time()
+        now = self._operation_run_at()
         print(f"当前北京时间: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
         if not self.ctx.config["ENABLE_CRAWLER"]:
@@ -1173,15 +1209,18 @@ class NewsAnalyzer:
         )
 
         # 转换为 NewsData 格式并保存到存储后端
-        crawl_time = self.ctx.format_time()
-        crawl_date = self.ctx.format_date()
+        crawl_time = self._operation_time_filename()
+        crawl_date = self._operation_date()
         news_data = convert_crawl_results_to_news_data(
             results, id_to_name, failed_ids, crawl_time, crawl_date
         )
 
         # 保存到存储后端（SQLite）
-        if self.storage_manager.save_news_data(news_data):
+        news_saved = self.storage_manager.save_news_data(news_data)
+        if news_saved:
             print(f"数据已保存到存储后端: {self.storage_manager.backend_name}")
+        elif self.report_mode == "daily_delivery":
+            raise RuntimeError("每日交付热榜数据保存失败")
 
         # 保存 TXT 快照（如果启用）
         txt_file = self.storage_manager.save_txt_snapshot(news_data)
@@ -1278,6 +1317,25 @@ class NewsAnalyzer:
 
             # 抓取数据
             rss_data = fetcher.fetch_all()
+            # RSSFetcher may finish after midnight.  The run owns the date and
+            # discovery timestamp captured at its entry, so normalize the
+            # returned snapshot (and only item timestamps originating from the
+            # fetcher's snapshot clock) before any durable write.
+            if getattr(self, "_run_at", None) is not None:
+                source_crawl_time = rss_data.crawl_time
+                operation_time = self._operation_run_at().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                rss_data.date = self._operation_date()
+                rss_data.crawl_time = operation_time
+                for fetched_items in rss_data.items.values():
+                    for item in fetched_items:
+                        for attribute in (
+                            "crawl_time", "first_time", "last_time"
+                        ):
+                            value = getattr(item, attribute, "")
+                            if not value or value == source_crawl_time:
+                                setattr(item, attribute, operation_time)
 
             self._rss_source_total = len(feeds)
             self._rss_source_failed = len(rss_data.failed_ids)
@@ -1421,13 +1479,13 @@ class NewsAnalyzer:
 
         if self.report_mode == "daily_delivery":
             scheduler = self.ctx.create_scheduler()
-            date_str = self.ctx.format_date()
+            date_str = self._operation_date()
             checkpoint = scheduler.latest_execution(
                 "daily_delivery", "push", date_str
             )
             snapshot = DailyDeliveryAggregator(
                 self.storage_manager, self.ctx.timezone
-            ).build(self.ctx.get_time(), checkpoint)
+            ).build(self._operation_run_at(), checkpoint)
             self._rss_window = None
             self._allowed_rss_ids = snapshot.allowed_rss_ids
             self._rss_ids_authoritative = True
@@ -1465,7 +1523,7 @@ class NewsAnalyzer:
         if self.report_mode == "weekly":
             snapshot = WeeklyRSSAggregator(
                 self.storage_manager, self.ctx.timezone,
-            ).build(self.ctx.get_time())
+            ).build(self._operation_run_at())
             if not snapshot.data:
                 print("[周报] 上一自然周没有可用数据，不生成空周报")
                 return None, None, None, set()
@@ -1753,12 +1811,12 @@ class NewsAnalyzer:
                 rss_items=rss_items,
                 total_count=len(rss_items),
                 feeds_info=feeds_info,
-                get_time_func=self.ctx.get_time,
+                get_time_func=lambda: self._operation_run_at(),
             )
 
             # 保存 HTML 文件（扁平化结构：output/html/日期/）
-            date_folder = self.ctx.format_date()
-            time_filename = self.ctx.format_time()
+            date_folder = self._operation_date()
+            time_filename = self._operation_time_filename()
             output_dir = Path("output") / "html" / date_folder
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1793,7 +1851,7 @@ class NewsAnalyzer:
         current_platform_ids = self.ctx.platform_ids
 
         new_titles = self.ctx.detect_new_titles(current_platform_ids)
-        time_info = self.ctx.format_time()
+        time_info = self._operation_time_filename()
         word_groups, filter_words, global_filters = self.ctx.load_frequency_words(self.frequency_file)
 
         html_file = None
@@ -2073,6 +2131,9 @@ class NewsAnalyzer:
     def run(self) -> bool:
         """执行分析流程"""
         try:
+            self._run_at = self.ctx.get_time()
+            self._run_date = self._run_at.strftime("%Y-%m-%d")
+            self._run_time_filename = self._run_at.strftime("%H-%M")
             schedule = self._resolve_and_apply_schedule()
             if not self._initialize_and_check_config():
                 return True
@@ -2102,7 +2163,7 @@ class NewsAnalyzer:
                 and schedule.once_push
                 and schedule.period_key
                 and self.ctx.create_scheduler().already_executed(
-                    schedule.period_key, "push", self.ctx.format_date()
+                    schedule.period_key, "push", self._operation_date()
                 )
             ):
                 print("[每日交付] 今天已成功交付，保留采集结果并跳过分析和通知")

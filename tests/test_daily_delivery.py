@@ -412,7 +412,10 @@ class DailyDeliveryAggregatorTests(unittest.TestCase):
 
     def test_title_fallback_snapshot_ids_are_stable_and_idempotent(self):
         date_str = "2026-08-08"
-        save_rss_day(self.backend, date_str, "11-00", [])
+        # Build a genuine pre-outbox database.  Calling the current save API
+        # first would advance the durable generation/watermark and a later raw
+        # SQL insert would correctly be treated as an unsupported writer that
+        # bypassed the outbox contract.
         conn = self.backend._get_connection(date_str, db_type="rss")
         conn.execute(
             "INSERT INTO rss_feeds (id, name) VALUES (?, ?)",

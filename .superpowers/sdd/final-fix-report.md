@@ -563,3 +563,76 @@ RED 分两组建立：raw 已 CAS 成功而 ledger 上传失败后由全新 Remo
 - 未改变 10:00、`(last_success, now]`、首次 24h、合法空推进、同日成功跳过交付、freshness、通知目标或密钥持久化；未合并 main、未部署、未真实推送。
 
 第四次最终测试计数：聚焦 163、兼容 93、全量 393；三套最终命令合计执行 649 个测试（聚焦与兼容也包含于全量发现），全部明确 exit 0。未发现需要继续扩大范围的架构冲突。
+
+## 第五次最终复审修复（consistent consumption / shared news CAS / frozen run date）
+
+### A. 共享 news DB 的全写者 CAS 与主流程保存检查
+
+根因：`news/{date}.db` 同时保存热榜、strict 标签/结果和 period checkpoint，但普通 `RemoteStorageBackend.save_news_data()` 仍可能从旧本地快照写入并无条件 PUT；同时 `_crawl_data()` 只打印保存结果，daily_delivery 即使热榜保存失败也会继续分析和通知。
+
+RED：真实双 Remote backend 先共同读取 v1，A 写入 checkpoint 后再让 B 保存热榜；另以 NewsAnalyzer 主链制造 `save_news_data=False`。与 strict period 用例合跑 6 项，初次 3 FAIL、3 ERROR，exit 1。
+
+修复：Remote 对所有 news 连接先严格刷新并绑定 baseline，对 news 的所有上传统一使用 conditional CAS；热榜保存保留 mutation 前 SQLite 镜像，CAS 失败恢复本地快照并返回 false。daily_delivery 检查热榜保存返回值，失败立即终止且不写 TXT、不进入分析/通知。普通模式仍可在业务层 fail-soft，但共享远端对象不存在无条件 PUT 后门。
+
+GREEN：A 与 C 的原 6 项全部 `OK`；stale writer 测试进一步从第三个 backend 验证 checkpoint、AI tag 和新热榜同时存在。
+
+### B / D. listed-version 一致快照与真正增量 watermark
+
+根因：第四次 ledger 消费在读取日库后又取得 `actual_version` 并将其记为已消费；若 v2 读取期间远端变成 v3，v3 可能被错误登记但其 outbox 尚未读取。消费端也会在每次 source 变化时全量读取 outbox，再依赖 processed write 去重，没有把 per-source watermark 用作查询下界。
+
+RED：4 项真实 Local/Remote SQLite 测试覆盖 Remote v2 读取中变 v3、Local WAL/provenance 变化、同日库第二 generation 不重放旧 outbox/fallback、ledger 写失败不推进 watermark。首跑 `Ran 4`，3 failures、1 pass，exit 1。
+
+修复：
+
+- inventory 的 `listed_version` 在读取前、连接绑定后及只读事务完成后均需一致；ledger 只记录实际读取的 listed version、该快照的 generation 和 watermark，绝不记录事后观察值。
+- Local 以 DB + 非空 WAL 的稳定 provenance 检测并发变化；Remote 以 inventory ETag/VersionId 绑定下载快照，变化即失败，下一轮重新发现。
+- outbox SQL 直接使用 `source_generation > watermark`；`processed_writes` 只负责崩溃重试幂等，失败事务不推进 watermark。`rss_items` fallback 仅用于首次迁移、watermark=0 且没有 outbox 的旧库。
+- source version 与 identity/processed/watermark 在同一 ledger 事务提交；generation 回退显式失败。
+
+GREEN：原 4 项 `OK`。最终 diff 自审把两个并发测试进一步强化为在 SQLite 事务读完后的 final provenance check 才制造变化；定向复验 `Ran 2 in 9.007s, OK`，证明该版本不被标成已消费、下一次查询会处理新 outbox。
+
+### C. strict period 读取
+
+根因：第四次只收紧了 period 写入；同日 analyze/push 判断仍通过 `has_period_executed()` 吞掉 SQLite、权限、网络和坏库异常，陈旧/不可读 checkpoint 会被解释为“未执行”并先发送。
+
+修复：Base 新增默认抛 `NotImplementedError` 的 `has_period_executed_strict`；Local、Remote、Manager 显式实现。SQLite strict 查询使用 strict news connection 并传播异常；Remote 每次按 provenance 严格刷新，404 可初始化合法空库，AccessDenied/下载/坏库失败关闭。Scheduler 根据最终 report mode 对 has/record 同时路由 strict，daily_delivery 与 weekly 的所有 once 判断共用该契约。
+
+GREEN：真实坏表、远端更新缓存、AccessDenied 和 scheduler 路由均通过；主流程在 checkpoint 不可读时不会进入通知。
+
+### E. 单次运行冻结 run_at / run_date
+
+根因：NewsAnalyzer 在 scheduler、checkpoint、aggregator、RSSFetcher 结果、AI pipeline 和输出阶段重复取 wall clock，并有 strict storage 调用使用 `date=None`。跨午夜时，同一交付可能从 N 日采集却读写 N+1 日标签/结果/checkpoint，甚至撞到 N+1 相同 RSS row ID。
+
+RED：2 项跨层测试分别覆盖 23:59→00:01 的 NewsAnalyzer 全链与 N/N+1 相同 ID 的真实 strict pipeline，初次 1 FAIL、1 ERROR；随后将真实 RSSFetcher 返回 N+1 日期接入 `_crawl_rss_data()`，新增用例再次以日期仍为 N+1 形成有效 RED。
+
+修复：`run()` 入口按配置时区只取一次 `run_at`，冻结 `run_date` 与文件时间；scheduler resolve、has/latest/record、daily/weekly aggregator、AIAnalyzer、HTML/report 和 raw RSS 保存均消费该快照。Context/AIFilterPipeline 增加兼容的可选 `operation_date`，daily strict tag/result/analyzed/RSS ID 的每次读写都显式传 N 日。若 RSSFetcher 跨午夜返回，保存前统一归一化 snapshot date/crawl_time 及由 fetcher snapshot clock 产生的 item 时间。普通/weekly AI 调用继续传 `None`，保留原兼容接口。
+
+GREEN：跨午夜 2 项与真实 fetcher 保存断言均通过；`ctx.get_time` 在单次 run 主链只调用一次，通知发生且 checkpoint、AI、RSS 日库全部落在 N 日。
+
+### F. 文档与兼容收敛
+
+- design spec 与 implementation plan 已同步：外部 provenance 只发现变化，listed SQLite snapshot 与 generation/watermark 绑定消费；共享 news 的所有远端写者使用 CAS；period 严格读写一致；run_at/run_date 单次冻结并贯穿 strict API。
+- 相关回归首跑发现一个旧测试夹具先通过新 API 创建 generation/watermark、再直接 SQL 插入“legacy”行，违反真实旧库前提；改为直接创建无 outbox 的旧库后定向通过。另有 direct helper fixture 缺少 `ctx.get_time`，以及 weekly fake 对新增 `operation_date` 参数不兼容；生产代码仅在完整 `run()` 已冻结时归一化 fetcher 时间、仅 daily_delivery 传 operation date，普通/weekly语义不变。
+- 没有扩大到跨进程通知 exactly-once/分布式租约；既有“端点可能因失败重试而重复”边界保持不变。
+
+## 第五次复审最终验证
+
+所有 Python 测试均使用 `docker run --network none`、工作树只读源码挂载和镜像内 `/app/.venv/bin/python`，并取得明确 exit code。
+
+- 第五次新增/相关模块：`tests.test_daily_delivery_review5`（因复用调度基类共发现 48 项）最终 `Ran 48 in 64.513s, OK`；第三/第四次 Remote 相关 `Ran 33 in 125.557s, OK`。
+- 聚焦：`tests.test_daily_delivery tests.test_daily_delivery_schedule tests.test_daily_delivery_report tests.test_news_search_pipeline`，`Ran 163 in 337.626s`，`OK`，exit 0。
+- 固定兼容：weekly digest/schedule/report、Elsevier、proxy、email 共 `Ran 93 in 212.165s`，`OK`，exit 0。
+- 最终全量：`python -m unittest discover -s /workspace/tests -q`，`Ran 441 in 706.669s`，`OK`，exit 0，无 FAIL/ERROR。
+- 最终自审增强的事务后版本变化定向：`Ran 2 in 9.007s`，`OK`，exit 0。
+- `bash -n docker/entrypoint.sh`、`bash -n config/daily.crontab`、`bash tests/test_portable_deployment.sh`、`git diff --check` 均 exit 0；portable 输出 `PASS: 本地部署路径可移植性检查通过`。
+
+## 第五次复审 Diff 自审
+
+- source provenance 读取前/绑定后/事务读后保持同一 listed version；并发变化不会被登记为消费完成，下一轮 inventory 必然重试。
+- watermark 是 outbox SQL 的实际下界；processed write、identity earliest、source version 与 watermark 同事务，失败不会越过未消费 generation。
+- Remote shared news 的普通热榜、strict tags/results 和 period 全部复用 conditional CAS；CAS 冲突不会保留本地假成功。
+- strict period 的读与写都按 report mode 路由；网络/权限/坏库不能被解释为未执行。
+- 同一 run 的采集、权威快照、AI、通知与 checkpoint 使用一个 N 日 operation date；N+1 相同 row ID 不会串库。
+- 未改变 10:00、`(last_success, now]`、首次 24h、合法空推进、同日成功跳过交付、freshness、所有通知目标或密钥持久化；未合并 main、未部署、未真实推送。
+
+第五次最终测试计数：聚焦 163、兼容 93、全量 441；三套最终命令合计执行 697 个测试（聚焦与兼容也包含于全量发现），全部明确 exit 0。最终自审没有发现新的生产缺陷或未解决架构冲突。
