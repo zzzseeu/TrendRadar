@@ -11,6 +11,7 @@ from trendradar.core.loader import _load_agro_weather_config
 
 HTML = """
 <html><body>
+<article class="agro-report">
 <h1>全国农业气象周报</h1>
 <p>预报：李轩　签发：郑昌玲　2026 年 08 月 10 日</p>
 <h2>本周西北地区东部阴雨寡照</h2>
@@ -19,6 +20,7 @@ HTML = """
 <h3>二、未来天气对农业生产影响预估及建议</h3>
 <p>未来10天，黄淮等地有强降雨，低洼农田渍涝风险高。</p>
 <p>建议：及时排涝散墒，做好病虫害监测。</p>
+</article>
 </body></html>
 """
 
@@ -50,6 +52,8 @@ class AgroWeatherClientTests(unittest.TestCase):
         self.assertIn("未来10天", report.outlook)
         self.assertIn("黄淮", report.outlook)
         self.assertIn("排涝", report.recommendations)
+        self.assertEqual(report.risk_regions, ("黄淮",))
+        self.assertEqual(report.risk_crops, ("农田",))
         session.get.assert_called_once_with(client.source_url, timeout=30)
 
     def test_accepts_sunday_early_report_for_just_ended_cycle(self):
@@ -97,6 +101,16 @@ class AgroWeatherClientTests(unittest.TestCase):
         with self.assertRaisesRegex(AgroWeatherFetchError, "签发日期"):
             AgroWeatherClient(session=session).fetch_latest(self.run_at())
 
+    def test_rejects_page_update_date_after_the_signer_name(self):
+        ambiguous_signing = HTML.replace(
+            "签发：郑昌玲　2026 年 08 月 10 日",
+            "签发：郑昌玲；页面更新时间：2026 年 08 月 10 日",
+        )
+        session = self.make_session(ambiguous_signing)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "签发日期"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
     def test_rejects_impact_section_that_contains_only_review_dates(self):
         dates_only = HTML.replace(
             "本周（2026年8月2日-2026年8月8日），东北农区光温适宜。",
@@ -118,6 +132,52 @@ class AgroWeatherClientTests(unittest.TestCase):
         session = self.make_session(moved_outlook)
 
         with self.assertRaisesRegex(AgroWeatherFetchError, "未来10天"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_rejects_footer_text_when_the_second_section_body_is_empty(self):
+        empty_second_section = """
+        <html><body><article class="agro-report">
+        <h1>全国农业气象周报</h1>
+        <p>预报：李轩　签发：郑昌玲　2026 年 08 月 10 日</p>
+        <h3>一、本周天气特点及农业影响分析</h3>
+        <p>本周（2026年8月2日-2026年8月8日），东北农区水稻长势良好。</p>
+        <h3>二、未来天气对农业生产影响预估及建议</h3>
+        </article><footer>
+        <p>未来10天，黄淮农田渍涝风险高。</p>
+        <p>建议：及时排涝。</p>
+        </footer></body></html>
+        """
+        session = self.make_session(empty_second_section)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "未来10天"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_rejects_recommendation_label_without_text(self):
+        label_only = HTML.replace("建议：及时排涝散墒，做好病虫害监测。", "建议：")
+        session = self.make_session(label_only)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "农事建议"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_rejects_outlook_without_structured_risk(self):
+        no_risk = HTML.replace(
+            "未来10天，黄淮等地有强降雨，低洼农田渍涝风险高。",
+            "未来10天天气总体正常。",
+        ).replace("及时排涝散墒，做好病虫害监测。", "做好田间观测。")
+        session = self.make_session(no_risk)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "风险区域或作物"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_rejects_navigation_title_when_article_title_does_not_match(self):
+        navigation_title = HTML.replace(
+            "<article class=\"agro-report\">\n<h1>全国农业气象周报</h1>",
+            "<nav><h1>全国农业气象周报</h1></nav>\n"
+            "<article class=\"agro-report\">\n<h1>农业气象服务</h1>",
+        )
+        session = self.make_session(navigation_title)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "标题"):
             AgroWeatherClient(session=session).fetch_latest(self.run_at())
 
     def test_rejects_non_official_source_url(self):

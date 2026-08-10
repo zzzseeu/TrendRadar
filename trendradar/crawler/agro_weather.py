@@ -15,6 +15,11 @@ OFFICIAL_AGRO_WEATHER_URL = "https://www.nmc.cn/publish/agro/ten-week/index.html
 _DATE_PATTERN = re.compile(
     r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日"
 )
+_SIGNING_DATE_PATTERN = re.compile(
+    r"签发\s*[：:]\s*"
+    r"(?:(?:[^\d年月日；;。:\s]{1,40})\s+)?"
+    r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日"
+)
 _REVIEW_RANGE_PATTERN = re.compile(
     r"本周\s*[（(]\s*"
     r"(?P<start>(?:\d{4}\s*年\s*)?\d{1,2}\s*月\s*\d{1,2}\s*日)\s*"
@@ -26,10 +31,31 @@ _SECTION_TWO = re.compile(r"^二、\s*未来天气对农业生产影响预估及
 _SECTION_HEADING = re.compile(r"^[一二三四五六七八九十]+、")
 _OUTLOOK = re.compile(r"未来\s*10\s*天")
 _RECOMMENDATION = re.compile(r"建议\s*[：:]")
+_RISK_SIGNAL = re.compile(r"风险|渍涝|干旱|冻害|低温|高温|病虫害|强降雨")
+_RISK_REGION = re.compile(
+    r"东北农区|华北|黄淮|江淮|江南|华南|西南|西北|内蒙古|新疆|青藏|"
+    r"长江中下游|四川盆地|黄土高原"
+)
+_RISK_CROP = re.compile(r"水稻|玉米|小麦|大豆|棉花|油菜|花生|马铃薯|蔬菜|果树|农田")
+_CONTENT_DIV_MARKER = re.compile(r"article|content|detail|report|news", re.IGNORECASE)
 
 
 class AgroWeatherFetchError(RuntimeError):
     """The official agro-weather page could not be fetched or safely parsed."""
+
+
+@dataclass(frozen=True)
+class _HtmlElement:
+    identifier: int
+    tag: str
+    attributes: tuple[tuple[str, str | None], ...]
+
+
+@dataclass(frozen=True)
+class _VisibleBlock:
+    text: str
+    tag: str
+    ancestors: tuple[_HtmlElement, ...]
 
 
 class _VisibleTextParser(HTMLParser):
@@ -40,10 +66,16 @@ class _VisibleTextParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._parts: list[str] = []
-        self.blocks: list[str] = []
+        self.blocks: list[_VisibleBlock] = []
         self._ignored_depth = 0
+        self._elements: list[_HtmlElement] = []
+        self._next_identifier = 0
 
     def handle_starttag(self, tag: str, attrs) -> None:
+        self._next_identifier += 1
+        self._elements.append(
+            _HtmlElement(self._next_identifier, tag, tuple(attrs))
+        )
         if tag in {"script", "style"}:
             self._ignored_depth += 1
 
@@ -57,19 +89,24 @@ class _VisibleTextParser(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style"} and self._ignored_depth:
             self._ignored_depth -= 1
-            return
         if tag in self._BLOCK_TAGS and self._parts:
             text = " ".join(self._parts).strip()
             if text:
-                self.blocks.append(text)
+                self.blocks.append(
+                    _VisibleBlock(text, tag, tuple(self._elements[:-1]))
+                )
             self._parts.clear()
+        for index in range(len(self._elements) - 1, -1, -1):
+            if self._elements[index].tag == tag:
+                del self._elements[index:]
+                break
 
     def close(self) -> None:
         super().close()
         if self._parts:
             text = " ".join(self._parts).strip()
             if text:
-                self.blocks.append(text)
+                self.blocks.append(_VisibleBlock(text, "", tuple(self._elements)))
             self._parts.clear()
 
 
@@ -82,6 +119,8 @@ class AgroWeatherReport:
     impact: str
     outlook: str
     recommendations: str
+    risk_regions: tuple[str, ...]
+    risk_crops: tuple[str, ...]
     source_url: str
 
     def belongs_to_run(self, run_at: datetime, timezone_name: str) -> bool:
@@ -153,34 +192,59 @@ class AgroWeatherClient:
         parser = _VisibleTextParser()
         parser.feed(html)
         parser.close()
-        blocks = parser.blocks
+        blocks = [
+            block
+            for block in parser.blocks
+            if not self._has_excluded_ancestor(block)
+        ]
         title_index = next(
-            (index for index, block in enumerate(blocks) if "全国农业气象周报" in block),
+            (
+                index
+                for index, block in enumerate(blocks)
+                if block.tag == "h1"
+                and self._normalize_title(block.text) == "全国农业气象周报"
+                and self._body_container(block) is not None
+            ),
             None,
         )
         if title_index is None:
             self._fail("缺少全国农业气象周报标题")
 
+        body_container = self._body_container(blocks[title_index])
+        if body_container is None:
+            self._fail("缺少报告正文容器")
+        blocks = [
+            block for block in blocks if body_container in block.ancestors
+        ]
+        title_index = next(
+            index
+            for index, block in enumerate(blocks)
+            if block.tag == "h1"
+            and self._normalize_title(block.text) == "全国农业气象周报"
+        )
+
         first_section = next(
-            (index for index, block in enumerate(blocks) if _SECTION_ONE.match(block)),
+            (index for index, block in enumerate(blocks) if _SECTION_ONE.match(block.text)),
             None,
         )
         second_section = next(
-            (index for index, block in enumerate(blocks) if _SECTION_TWO.match(block)),
+            (index for index, block in enumerate(blocks) if _SECTION_TWO.match(block.text)),
             None,
         )
         if first_section is None or second_section is None or first_section >= second_section:
             self._fail("缺少农业影响或未来天气章节")
 
-        title = blocks[title_index]
+        title = blocks[title_index].text
         metadata_blocks = blocks[title_index + 1 : first_section]
         signing_metadata = next(
-            (block for block in metadata_blocks if "签发" in block), None
+            (block.text for block in metadata_blocks if "签发" in block.text), None
         )
         report_date = self._parse_full_date(
-            _DATE_PATTERN.search(signing_metadata or ""), "签发日期"
+            _SIGNING_DATE_PATTERN.search(signing_metadata or ""), "签发日期"
         )
-        review_text = " ".join(blocks[first_section + 1 : second_section])
+        review_text = " ".join(
+            block.text for block in blocks[first_section + 1 : second_section]
+        )
         review_match = _REVIEW_RANGE_PATTERN.search(review_text)
         if review_match is None:
             self._fail("缺少本周回顾起止日期")
@@ -190,30 +254,41 @@ class AgroWeatherClient:
             reviewed_start, reviewed_end, report_date
         )
 
-        impact = " ".join(blocks[first_section + 1 : second_section]).strip()
+        impact = review_text.strip()
         next_section = next(
             (
                 index
                 for index in range(second_section + 1, len(blocks))
-                if _SECTION_HEADING.match(blocks[index])
+                if _SECTION_HEADING.match(blocks[index].text)
             ),
             len(blocks),
         )
         second_blocks = blocks[second_section + 1 : next_section]
         outlook_blocks = [
-            block for block in second_blocks if not _RECOMMENDATION.search(block)
+            block.text for block in second_blocks
+            if not _RECOMMENDATION.search(block.text)
         ]
         outlook = " ".join(outlook_blocks).strip()
         recommendations = " ".join(
-            block for block in second_blocks if _RECOMMENDATION.search(block)
+            block.text for block in second_blocks if _RECOMMENDATION.search(block.text)
         ).strip()
         impact_content = _REVIEW_RANGE_PATTERN.sub("", impact).strip(" ，。；;")
+        recommendation_content = _RECOMMENDATION.sub("", recommendations).strip(
+            " ，。；;"
+        )
+        risk_text = " ".join(
+            text for text in (impact, outlook) if _RISK_SIGNAL.search(text)
+        )
+        risk_regions = self._unique_matches(_RISK_REGION, risk_text)
+        risk_crops = self._unique_matches(_RISK_CROP, risk_text)
         if not impact_content:
             self._fail("缺少农业影响内容")
         if not outlook or not _OUTLOOK.search(outlook):
             self._fail("缺少未来10天展望")
-        if not recommendations:
+        if not recommendation_content:
             self._fail("缺少农事建议")
+        if not risk_regions or not risk_crops:
+            self._fail("缺少结构化风险区域或作物")
 
         return AgroWeatherReport(
             title=title,
@@ -223,8 +298,39 @@ class AgroWeatherClient:
             impact=impact,
             outlook=outlook,
             recommendations=recommendations,
+            risk_regions=risk_regions,
+            risk_crops=risk_crops,
             source_url=self.source_url,
         )
+
+    @staticmethod
+    def _normalize_title(value: str) -> str:
+        return "".join(value.split())
+
+    @staticmethod
+    def _has_excluded_ancestor(block: _VisibleBlock) -> bool:
+        return any(
+            element.tag in {"aside", "footer", "nav"}
+            for element in block.ancestors
+        )
+
+    @staticmethod
+    def _body_container(block: _VisibleBlock) -> _HtmlElement | None:
+        for element in reversed(block.ancestors):
+            if element.tag in {"article", "main"}:
+                return element
+            if element.tag == "div":
+                attributes = dict(element.attributes)
+                marker = " ".join(
+                    str(attributes.get(name) or "") for name in ("id", "class")
+                )
+                if _CONTENT_DIV_MARKER.search(marker):
+                    return element
+        return None
+
+    @staticmethod
+    def _unique_matches(pattern: re.Pattern[str], value: str) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(match.group(0) for match in pattern.finditer(value)))
 
     def _parse_full_date(self, match: re.Match[str] | None, label: str) -> date:
         if match is None:
