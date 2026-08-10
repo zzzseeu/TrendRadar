@@ -13,15 +13,18 @@ case "${RUN_MODE:-cron}" in
     exec python -m trendradar
     ;;
 "cron")
-    # 校验 CRON_SCHEDULE 格式（仅允许 cron 表达式合法字符）
-    CRON_EXPR="${CRON_SCHEDULE:-0 10 * * *}"
-    if ! echo "$CRON_EXPR" | grep -qE '^[0-9*/,[:space:]-]+$'; then
-        echo "❌ CRON_SCHEDULE 格式非法: $CRON_EXPR"
-        exit 1
-    fi
-
-    # 生成 crontab
-    echo "$CRON_EXPR cd /app && python -m trendradar" > /tmp/crontab
+    # 兼容旧 CRON_SCHEDULE，并支持分号分隔的多条短触发。
+    CRON_LIST="${CRON_SCHEDULES:-${CRON_SCHEDULE:-0 10 * * *}}"
+    : > /tmp/crontab
+    IFS=';' read -ra EXPRESSIONS <<< "$CRON_LIST"
+    for CRON_EXPR in "${EXPRESSIONS[@]}"; do
+        CRON_EXPR="$(echo "$CRON_EXPR" | xargs)"
+        if ! echo "$CRON_EXPR" | grep -qE '^[0-9*/,[:space:]-]+$'; then
+            echo "❌ CRON_SCHEDULES 格式非法: $CRON_EXPR"
+            exit 1
+        fi
+        echo "$CRON_EXPR cd /app && python -m trendradar" >> /tmp/crontab
+    done
     
     echo "📅 生成的crontab内容:"
     cat /tmp/crontab
@@ -41,7 +44,7 @@ case "${RUN_MODE:-cron}" in
     echo "🌐 启动 Web 服务器..."
     python manage.py start_webserver
 
-    echo "⏰ 启动supercronic: $CRON_EXPR"
+    echo "⏰ 启动supercronic: $CRON_LIST"
     echo "🎯 supercronic 将作为 PID 1 运行"
 
     exec /usr/local/bin/supercronic -passthrough-logs /tmp/crontab

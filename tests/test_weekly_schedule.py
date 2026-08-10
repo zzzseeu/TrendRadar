@@ -1,10 +1,12 @@
 import unittest
 import inspect
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytz
+import yaml
 
 from trendradar import __main__ as main_module
 from trendradar.__main__ import NewsAnalyzer
@@ -18,28 +20,48 @@ from trendradar.storage.base import RSSData, RSSItem
 
 TIMELINE = {"custom": {
     "default": {
-        "collect": True, "analyze": False, "push": False,
+        "collect": False, "analyze": False, "push": False,
         "report_mode": "current", "ai_mode": "follow_report",
         "once": {"analyze": False, "push": False},
     },
-    "periods": {"monday_weekly": {
-        "name": "自然周周报", "start": "00:00", "end": "23:59",
-        "analyze": True, "push": True, "report_mode": "weekly",
-        "ai_mode": "follow_report",
-        "once": {"analyze": True, "push": True},
-    }},
+    "periods": {
+        "daily_collect": {
+            "name": "每日静默采集", "start": "10:00", "end": "10:01",
+            "collect": True, "analyze": False, "push": False,
+            "report_mode": "current",
+        },
+        "monday_weekly": {
+            "name": "自然周周报", "start": "10:00", "end": "12:01",
+            "collect": True, "analyze": True, "push": True,
+            "report_mode": "weekly", "ai_mode": "weekly",
+            "once": {"analyze": True, "push": True},
+        },
+    },
     "day_plans": {
         "monday": {"periods": ["monday_weekly"]},
-        "silent": {"periods": []},
+        "collect_only": {"periods": ["daily_collect"]},
     },
     "week_map": {
-        1: "monday", 2: "silent", 3: "silent", 4: "silent",
-        5: "silent", 6: "silent", 7: "silent",
+        1: "monday", 2: "collect_only", 3: "collect_only",
+        4: "collect_only", 5: "collect_only", 6: "collect_only",
+        7: "collect_only",
     },
 }}
-RUN_AT = pytz.timezone("Asia/Shanghai").localize(
-    datetime(2026, 8, 10, 10, 0)
+
+
+def at(year: int, month: int, day: int, hour: int, minute: int):
+    return pytz.timezone("Asia/Shanghai").localize(
+        datetime(year, month, day, hour, minute)
+    )
+
+
+RUN_AT = at(2026, 8, 10, 10, 0)
+CURRENT_WEATHER = SimpleNamespace(
+    report_date="2026-08-10",
+    review_start="2026-08-02",
+    review_end="2026-08-08",
 )
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def schedule(**overrides):
@@ -68,6 +90,150 @@ class WeeklyScheduleTests(unittest.TestCase):
             {"enabled": True, "preset": "custom"},
             TIMELINE, MagicMock(), lambda: when,
         ).resolve()
+
+    def make_analyzer(self, run_at=RUN_AT):
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = False
+        scheduler.record_execution.return_value = True
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            cleanup=MagicMock(),
+            config={"DEBUG": False},
+            timezone="Asia/Shanghai",
+            get_time=MagicMock(return_value=run_at),
+            create_scheduler=MagicMock(return_value=scheduler),
+        )
+        analyzer.report_mode = "weekly"
+        analyzer._initialize_and_check_config = MagicMock(return_value=True)
+        analyzer._resolve_and_apply_schedule = MagicMock(return_value=schedule())
+        analyzer._fetch_agro_weather = MagicMock(return_value=CURRENT_WEATHER)
+        analyzer._crawl_data = MagicMock(return_value=({}, {}, []))
+        analyzer._crawl_rss_data = MagicMock(return_value=(None, None, [], set()))
+        analyzer._execute_mode_strategy = MagicMock(return_value=True)
+        return analyzer
+
+    def test_monday_attempt_window_and_other_days_silent_collect(self):
+        for hour, minute in [(10, 0), (10, 30), (11, 0), (11, 30), (12, 0)]:
+            with self.subTest(hour=hour, minute=minute):
+                monday = self.resolve(at(2026, 8, 10, hour, minute))
+                self.assertEqual(monday.report_mode, "weekly")
+                self.assertTrue(monday.collect and monday.analyze and monday.push)
+
+        monday_late = self.resolve(at(2026, 8, 10, 12, 30))
+        self.assertFalse(monday_late.collect)
+
+        for day in (11, 16):
+            with self.subTest(day=day):
+                collect = self.resolve(at(2026, 8, day, 10, 0))
+                self.assertTrue(collect.collect)
+                self.assertFalse(collect.analyze)
+                self.assertFalse(collect.push)
+                late = self.resolve(at(2026, 8, day, 10, 30))
+                self.assertFalse(late.collect)
+
+    def test_missing_current_weather_aborts_before_ordinary_crawl(self):
+        analyzer = self.make_analyzer()
+        analyzer._fetch_agro_weather.return_value = None
+
+        self.assertFalse(analyzer.run())
+
+        analyzer._crawl_data.assert_not_called()
+        analyzer._crawl_rss_data.assert_not_called()
+
+    def test_weather_error_aborts_before_ordinary_crawl(self):
+        analyzer = self.make_analyzer()
+        analyzer._fetch_agro_weather.side_effect = RuntimeError("气象结构错误")
+
+        self.assertFalse(analyzer.run())
+
+        analyzer._crawl_data.assert_not_called()
+        analyzer._crawl_rss_data.assert_not_called()
+
+    def test_success_checkpoint_skips_retry_before_network(self):
+        analyzer = self.make_analyzer()
+        scheduler = analyzer.ctx.create_scheduler.return_value
+        scheduler.already_executed.return_value = True
+
+        self.assertTrue(analyzer.run())
+
+        analyzer._fetch_agro_weather.assert_not_called()
+        analyzer._crawl_data.assert_not_called()
+        scheduler.already_executed.assert_called_once_with(
+            "monday_weekly", "push", "2026-08-10"
+        )
+
+    def test_force_weekly_uses_weekly_period_outside_window(self):
+        scheduler = Scheduler(
+            {"enabled": True, "preset": "custom"}, TIMELINE, MagicMock(),
+            lambda: at(2026, 8, 12, 15, 0),
+        )
+
+        forced = scheduler.resolve(force_period_key="monday_weekly")
+
+        self.assertEqual(forced.period_key, "monday_weekly")
+        self.assertEqual(forced.day_plan, "forced")
+        self.assertTrue(forced.collect and forced.analyze and forced.push)
+        self.assertEqual(forced.report_mode, "weekly")
+
+    def test_analyzer_force_weekly_requests_the_weekly_period(self):
+        run_at = at(2026, 8, 12, 15, 0)
+        scheduler = MagicMock()
+        scheduler.resolve.return_value = schedule()
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            create_scheduler=MagicMock(return_value=scheduler),
+            filter_method="ai",
+        )
+        analyzer._run_at = run_at
+        analyzer.force_weekly = True
+
+        resolved = analyzer._resolve_and_apply_schedule()
+
+        self.assertEqual(resolved.report_mode, "weekly")
+        scheduler.resolve.assert_called_once_with(
+            run_at, force_period_key="monday_weekly"
+        )
+
+    def test_force_weekly_still_respects_same_week_checkpoint(self):
+        analyzer = self.make_analyzer(run_at=at(2026, 8, 12, 15, 0))
+        scheduler = analyzer.ctx.create_scheduler.return_value
+        scheduler.already_executed.return_value = True
+
+        self.assertTrue(analyzer.run())
+
+        analyzer._fetch_agro_weather.assert_not_called()
+        scheduler.already_executed.assert_called_once_with(
+            "monday_weekly", "push", "2026-08-10"
+        )
+
+    def test_manual_weekly_delivery_records_window_end_checkpoint(self):
+        analyzer = self.make_analyzer(run_at=at(2026, 8, 12, 15, 0))
+        scheduler = analyzer.ctx.create_scheduler.return_value
+
+        self.assertTrue(analyzer._record_delivery_checkpoint(schedule()))
+
+        scheduler.record_execution.assert_called_once_with(
+            "monday_weekly", "push", "2026-08-10"
+        )
+
+    def test_active_timelines_use_the_weekly_collection_plan(self):
+        for relative in ("config/timeline.yaml", "config/timeline.en.yaml"):
+            with self.subTest(relative=relative):
+                custom = yaml.safe_load(
+                    (ROOT / relative).read_text(encoding="utf-8")
+                )["custom"]
+                self.assertFalse(custom["default"]["collect"])
+                self.assertEqual(
+                    custom["day_plans"]["monday"]["periods"],
+                    ["monday_weekly"],
+                )
+                self.assertEqual(
+                    custom["day_plans"]["collect_only"]["periods"],
+                    ["daily_collect"],
+                )
+                self.assertEqual(
+                    custom["periods"]["monday_weekly"]["end"], "12:01"
+                )
 
     def test_monday_collects_analyzes_and_pushes_weekly_once(self):
         resolved = self.resolve(
@@ -98,7 +264,11 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.ctx = SimpleNamespace(
             cleanup=MagicMock(),
             config={"DEBUG": False},
+            timezone="Asia/Shanghai",
             get_time=MagicMock(return_value=RUN_AT),
+            create_scheduler=MagicMock(return_value=MagicMock(
+                already_executed=MagicMock(return_value=False)
+            )),
         )
         analyzer.report_mode = "current"
         analyzer._initialize_and_check_config = MagicMock(return_value=True)
@@ -199,7 +369,11 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.ctx = SimpleNamespace(
             cleanup=MagicMock(),
             config={"DEBUG": False},
+            timezone="Asia/Shanghai",
             get_time=MagicMock(return_value=RUN_AT),
+            create_scheduler=MagicMock(return_value=MagicMock(
+                already_executed=MagicMock(return_value=False)
+            )),
         )
         analyzer.report_mode = "weekly"
         analyzer._rss_window = object()
@@ -208,6 +382,9 @@ class WeeklyScheduleTests(unittest.TestCase):
         )
         analyzer._initialize_and_check_config = MagicMock(
             side_effect=lambda: events.append("initialize") or True
+        )
+        analyzer._fetch_agro_weather = MagicMock(
+            side_effect=lambda: events.append("weather") or CURRENT_WEATHER
         )
         analyzer._crawl_data = MagicMock(
             side_effect=lambda: events.append("crawl") or ({}, {}, [])
@@ -221,7 +398,10 @@ class WeeklyScheduleTests(unittest.TestCase):
 
         self.assertTrue(analyzer.run())
 
-        self.assertEqual(events, ["schedule", "initialize", "crawl", "rss", "strategy"])
+        self.assertEqual(
+            events,
+            ["schedule", "weather", "initialize", "crawl", "rss", "strategy"],
+        )
         analyzer._resolve_and_apply_schedule.assert_called_once_with()
         self.assertIs(
             analyzer._execute_mode_strategy.call_args.kwargs["schedule"], resolved
@@ -629,6 +809,18 @@ class WeeklyScheduleTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
 
+    def test_main_passes_force_weekly_to_analyzer(self):
+        analyzer = MagicMock()
+        analyzer.is_github_actions = False
+        analyzer.run.return_value = True
+        analyzer.ctx.config = {"DEBUG": False}
+        with patch("sys.argv", ["trendradar", "--force-weekly"]), \
+             patch.object(main_module, "load_config", return_value={}), \
+             patch.object(main_module, "NewsAnalyzer", return_value=analyzer) as cls:
+            main_module.main()
+
+        cls.assert_called_once_with(config={}, force_weekly=True)
+
     def test_run_returns_false_on_failure_and_true_for_normal_completion(self):
         successful = NewsAnalyzer.__new__(NewsAnalyzer)
         successful.ctx = SimpleNamespace(
@@ -660,11 +852,16 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.ctx = SimpleNamespace(
             cleanup=MagicMock(),
             config={"DEBUG": False},
+            timezone="Asia/Shanghai",
             get_time=MagicMock(return_value=RUN_AT),
+            create_scheduler=MagicMock(return_value=MagicMock(
+                already_executed=MagicMock(return_value=False)
+            )),
         )
         analyzer.report_mode = "weekly"
         analyzer._resolve_and_apply_schedule = MagicMock(return_value=schedule())
         analyzer._initialize_and_check_config = MagicMock(return_value=True)
+        analyzer._fetch_agro_weather = MagicMock(return_value=CURRENT_WEATHER)
         analyzer._crawl_data = MagicMock(return_value=({}, {}, []))
         analyzer._crawl_rss_data = MagicMock(
             side_effect=RuntimeError("八个日库全部缺失")

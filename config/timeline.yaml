@@ -27,8 +27,8 @@
 #     GitHub Actions 用户 → 由 .github/workflows/crawler.yml 中的 cron 定时触发
 #                           默认每小时运行一次（如每小时第 33 分钟）
 #
-#     Docker 用户         → 由 docker/.env 中的 CRON_SCHEDULE 定时触发
-#                           默认每 30 分钟运行一次
+#     Docker 用户         → 由 docker/.env 中的 CRON_SCHEDULES 定时触发
+#                           默认每天 10:00，周一另在 10:30、11:00、11:30、12:00 重试
 #
 #   每次被唤醒后，程序按以下三个阶段依次执行：
 #
@@ -395,130 +395,42 @@ presets:
 #     其余时间走默认配置（静默采集）
 
 custom:
-  name: "每日新增推送"
-  description: "每天汇总上次完整成功推送后首次发现的内容。"
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 默认配置
-  #
-  # 当前时刻不在任何时间段（积木块）内时，使用这组开关。
-  # 时间段中没有写的字段，也会回退到这里。
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  name: "每周农业新闻 PDF"
+  description: "每天静默采集，周一生成上一自然周 PDF。"
   default:
-    collect: true                  # 是否采集数据（爬取热榜 + RSS）
-    analyze: false                 # 是否执行 AI 分析
-    ai_mode: "follow_report"      # AI 分析模式:
-                                   #   follow_report → 跟随 report_mode
-                                   #   daily         → 强制全天汇总
-                                   #   current       → 强制当前榜单
-                                   #   incremental   → 强制增量模式
-    push: false                    # 是否发送推送通知
-    report_mode: "current"         # 报告模式:
-                                   #   daily       → 当日所有新闻的汇总
-                                   #   current     → 当前在榜的新闻
-                                   #   incremental → 只推送新增内容
-                                   #   daily_delivery → 每日新增
-
-                                   
-    # frequency_file: "general.txt"
-                                   # 关键词文件（可选，位于 config/custom/keyword/）
-                                   # 不填则使用默认的 config/frequency_words.txt
-                                   # 时间段（period）中也可以设置此字段来覆盖默认值
-                                   # 例如晚间汇总用科技词库：
-                                   #   frequency_file: "tech.txt"
-                                   # 注意：仅在 filter_method 为 keyword 时生效
-                                   
-    # interests_file: "finance.txt"
-                                   # AI 兴趣描述文件（可选，位于 config/custom/ai/）
-                                   # 不填则使用默认的 config/ai_interests.txt
-                                   # 时间段（period）中也可以设置此字段来覆盖默认值
-                                   # 例如晚间汇总用金融兴趣：
-                                   #   interests_file: "finance.txt"
-                                   # 注意：仅在 filter_method 为 ai 时生效
-
-    # filter_method: "keyword"     # 筛选策略（可选: keyword | ai）
-                                   # 不填则使用全局 config.yaml 的 filter.method
-                                   # 时间段（period）中也可以设置此字段来覆盖
-                                   # 例如晚间汇总用 AI 筛选：
-                                   #   filter_method: "ai"
-    once:
-      analyze: false               # 不限制分析次数
-      push: false                  # 不限制推送次数
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 第 1 步：定义积木块（时间段）
-  #
-  # 每个时间段有一个唯一的 key（如 deep_quiet），
-  # 以及 start / end 表示生效的时间范围。
-  #
-  # 只需要写「和 default 不同的字段」，其余自动继承 default。
-  # 例如 weekday_morning 没写 collect，就会继承 default 的 collect: true。
-  #
-  # 提示：如果 start > end（如 22:00 → 07:00），
-  #       系统会自动识别为跨越午夜的时间段。
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    collect: false
+    analyze: false
+    push: false
+    report_mode: "current"
+    ai_mode: "follow_report"
+    once: {analyze: false, push: false}
   periods:
-    daily_delivery:
-      name: "每日新增"
-      start: "00:00"
-      end: "24:00"
+    daily_collect:
+      name: "每日静默采集"
+      start: "10:00"
+      end: "10:01"
+      collect: true
+      analyze: false
+      push: false
+      report_mode: "current"
+    monday_weekly:
+      name: "每周农业新闻 PDF"
+      start: "10:00"
+      end: "12:01"
       collect: true
       analyze: true
-      ai_mode: "follow_report"
       push: true
-      report_mode: "daily_delivery"
-      once:
-        analyze: true
-        push: true
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 第 2 步：把积木块拼成日计划
-  #
-  # 把上面定义的时间段组合成一天的安排。
-  # 你可以定义多个日计划（如 workday 和 weekend），
-  # 然后在第 3 步的 week_map 中分配给不同的星期。
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      report_mode: "weekly"
+      ai_mode: "weekly"
+      once: {analyze: true, push: true}
   day_plans:
-    daily:
-      periods: ["daily_delivery"]
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 第 3 步：指定每天用哪个日计划
-  #
-  # 1=周一  2=周二  3=周三  4=周四  5=周五  6=周六  7=周日
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    monday: {periods: ["monday_weekly"]}
+    collect_only: {periods: ["daily_collect"]}
   week_map:
-    1: "daily"
-    2: "daily"
-    3: "daily"
-    4: "daily"
-    5: "daily"
-    6: "daily"
-    7: "daily"
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # 冲突策略（一般不用改）
-  #
-  # 什么是「冲突」？
-  #   如果你的两个时间段有重叠（比如 A 是 08:00-12:00，B 是 10:00-14:00），
-  #   那么 10:00-12:00 这段时间就同时属于 A 和 B，产生了冲突。
-  #   此时程序需要知道：到底听谁的？
-  #
-  # 两种处理方式：
-  #
-  #   error_on_overlap（推荐）
-  #     直接报错，提醒你去修改配置。
-  #     适合大多数人 —— 时间段重叠通常是写错了，报错能及时发现。
-  #
-  #   last_wins
-  #     day_plans 的 periods 列表中，写在后面的优先。
-  #     比如 periods: ["A", "B"]，重叠时 B 生效。
-  #     适合场景：你想用一个大范围时间段打底，再用后面的小范围覆盖。
-  #
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  overlap:
-    policy: "error_on_overlap"
+    1: "monday"
+    2: "collect_only"
+    3: "collect_only"
+    4: "collect_only"
+    5: "collect_only"
+    6: "collect_only"
+    7: "collect_only"

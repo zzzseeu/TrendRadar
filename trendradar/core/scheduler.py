@@ -99,7 +99,11 @@ class Scheduler:
 
         return timeline
 
-    def resolve(self, now: Optional[datetime] = None) -> ResolvedSchedule:
+    def resolve(
+        self,
+        now: Optional[datetime] = None,
+        force_period_key: Optional[str] = None,
+    ) -> ResolvedSchedule:
         """
         解析当前时间对应的调度配置
 
@@ -125,17 +129,25 @@ class Scheduler:
         weekday = now.isoweekday()  # 1=周一 ... 7=周日
         now_hhmm = now.strftime("%H:%M")
 
-        # 查找当天的日计划
-        day_plan_key = self.timeline["week_map"].get(weekday)
-        if day_plan_key is None:
-            raise ValueError(f"week_map 缺少星期映射: {weekday}")
+        if force_period_key is not None:
+            if force_period_key not in self.timeline["periods"]:
+                raise ValueError(f"强制执行引用了不存在的 period: {force_period_key}")
+            day_plan_key = "forced"
+            period_key = force_period_key
+        else:
+            # 查找当天的日计划
+            day_plan_key = self.timeline["week_map"].get(weekday)
+            if day_plan_key is None:
+                raise ValueError(f"week_map 缺少星期映射: {weekday}")
 
-        day_plan = self.timeline["day_plans"].get(day_plan_key)
-        if day_plan is None:
-            raise ValueError(f"week_map[{weekday}] 引用了不存在的 day_plan: {day_plan_key}")
+            day_plan = self.timeline["day_plans"].get(day_plan_key)
+            if day_plan is None:
+                raise ValueError(
+                    f"week_map[{weekday}] 引用了不存在的 day_plan: {day_plan_key}"
+                )
 
-        # 查找当前活跃的时间段
-        period_key = self._find_active_period(now_hhmm, day_plan)
+            # 查找当前活跃的时间段
+            period_key = self._find_active_period(now_hhmm, day_plan)
 
         # 合并默认配置和时间段配置
         merged = self._merge_with_default(period_key)

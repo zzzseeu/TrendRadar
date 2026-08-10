@@ -27,8 +27,8 @@
 #     GitHub Actions users → triggered by the cron in .github/workflows/crawler.yml
 #                           runs once per hour by default (e.g. at minute 33 of each hour)
 #
-#     Docker users         → triggered by CRON_SCHEDULE in docker/.env
-#                           runs every 30 minutes by default
+#     Docker users         → triggered by CRON_SCHEDULES in docker/.env
+#                           defaults to 10:00 daily, plus four Monday retries through 12:00
 #
 #   Each time it's woken, the program runs through three phases in order:
 #
@@ -396,165 +396,42 @@ presets:
 #     Other times use the default config (silent collect)
 
 custom:
-  name: "Custom"
-  description: "Freely define periods, day plans, and the week map."
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # Default config
-  #
-  # Used when the current moment isn't inside any period (block).
-  # Fields not written in a period also fall back here.
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  name: "Weekly Agricultural News PDF"
+  description: "Collect silently every day; generate the previous natural-week PDF on Monday."
   default:
-    collect: true                  # Collect data (crawl hot lists + RSS)
-    analyze: false                 # Run AI analysis
-    ai_mode: "current"            # AI analysis mode:
-                                   #   follow_report → follow report_mode
-                                   #   daily         → force full-day summary
-                                   #   current       → force current ranking
-                                   #   incremental   → force incremental mode
-    push: false                    # Send push notifications
-    report_mode: "current"         # Report mode:
-                                   #   daily       → summary of all news of the day
-                                   #   current     → currently-on-list news
-                                   #   incremental → push only new content
-
-
-    # frequency_file: "general.txt"
-                                   # Keyword file (optional, in config/custom/keyword/)
-                                   # Empty → uses the default config/frequency_words.txt
-                                   # A period can also set this to override the default
-                                   # e.g. the evening summary uses a tech keyword library:
-                                   #   frequency_file: "tech.txt"
-                                   # Note: only effective when filter_method is keyword
-
-    # interests_file: "finance.txt"
-                                   # AI interest description file (optional, in config/custom/ai/)
-                                   # Empty → uses the default config/ai_interests.txt
-                                   # A period can also set this to override the default
-                                   # e.g. the evening summary uses finance interests:
-                                   #   interests_file: "finance.txt"
-                                   # Note: only effective when filter_method is ai
-
-    # filter_method: "keyword"     # Filter strategy (optional: keyword | ai)
-                                   # Empty → uses the global config.yaml filter.method
-                                   # A period can also set this to override
-                                   # e.g. the evening summary uses AI filtering:
-                                   #   filter_method: "ai"
-    once:
-      analyze: true                # Analyze once within the period (saves API cost)
-      push: true                   # Push once within the period (fewer interruptions)
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # Step 1: Define blocks (periods)
-  #
-  # Each period has a unique key (e.g. deep_quiet),
-  # and start / end for its active time range.
-  #
-  # Only write "fields that differ from default"; the rest inherit default.
-  # e.g. weekday_morning doesn't write collect, so it inherits default's collect: true.
-  #
-  # Tip: if start > end (e.g. 22:00 → 07:00),
-  #       it's auto-detected as a cross-midnight period.
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    collect: false
+    analyze: false
+    push: false
+    report_mode: "current"
+    ai_mode: "follow_report"
+    once: {analyze: false, push: false}
   periods:
-
-    deep_quiet:
-      name: "Late-night Quiet"
-      start: "23:00"
-      end: "06:00"                 # 23:00 → 06:00 next day (cross-midnight period)
-      # frequency_file: "xxx.txt"               # Keyword file (optional, in config/custom/keyword/)
-      # interests_file: "xxx.txt"                # AI interest file (optional, in config/custom/ai/)
-      # filter_method: "keyword"                # Filter strategy (optional: keyword | ai; empty → global filter.method)
-      collect: true                # Keep collecting at night
-      analyze: true                # AI analysis can run at night (no push anyway)
-      push: false                  # No push late at night to avoid disturbance
-
-    weekday_morning:
-      name: "Workday Morning"
-      start: "08:00"
-      end: "10:00"                 # 2h span, ample trigger margin
-      # frequency_file: "xxx.txt"               # Keyword file (optional, in config/custom/keyword/)
-      # interests_file: "xxx.txt"                # AI interest file (optional, in config/custom/ai/)
-      # filter_method: "keyword"                # Filter strategy (optional: keyword | ai; empty → global filter.method)
-      push: true                   # One push in the morning
-      report_mode: "incremental"   # Push only new content
-      # once inherits default (push: true) → push once within the window
-
-    weekend_morning:
-      name: "Weekend Morning"
+    daily_collect:
+      name: "Daily Silent Collection"
       start: "10:00"
-      end: "12:00"                 # 2h span
-      # frequency_file: "xxx.txt"               # Keyword file (optional, in config/custom/keyword/)
-      # interests_file: "xxx.txt"                # AI interest file (optional, in config/custom/ai/)
-      # filter_method: "keyword"                # Filter strategy (optional: keyword | ai; empty → global filter.method)
+      end: "10:01"
+      collect: true
+      analyze: false
+      push: false
+      report_mode: "current"
+    monday_weekly:
+      name: "Weekly Agricultural News PDF"
+      start: "10:00"
+      end: "12:01"
+      collect: true
+      analyze: true
       push: true
-      report_mode: "daily"         # Weekend: see the all-day summary
-      # once inherits default (push: true) → push once within the window
-
-    evening_summary:
-      name: "Evening Summary"
-      start: "19:00"
-      end: "21:00"
-      # frequency_file: "xxx.txt"               # Keyword file (optional, in config/custom/keyword/)
-      # interests_file: "xxx.txt"                # AI interest file (optional, in config/custom/ai/)
-      # filter_method: "keyword"                # Filter strategy (optional: keyword | ai; empty → global filter.method)
-      analyze: true                # AI analysis in the evening
-      ai_mode: "daily"             # AI analyzes the whole day
-      push: true                   # Evening push
-      report_mode: "daily"         # All-news-of-the-day summary
-      # once inherits default (analyze: true, push: true) → analyze/push once
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # Step 2: Assemble blocks into day plans
-  #
-  # Combine the periods above into a day's schedule.
-  # You can define multiple day plans (e.g. workday and weekend),
-  # then assign them to different weekdays in the week_map in Step 3.
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      report_mode: "weekly"
+      ai_mode: "weekly"
+      once: {analyze: true, push: true}
   day_plans:
-    workday:                       # Workday plan
-      periods: ["deep_quiet", "weekday_morning", "evening_summary"]
-    weekend:                       # Weekend plan (swap weekday_morning for weekend_morning)
-      periods: ["deep_quiet", "weekend_morning", "evening_summary"]
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # Step 3: Assign which day plan each day uses
-  #
-  # 1=Mon  2=Tue  3=Wed  4=Thu  5=Fri  6=Sat  7=Sun
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    monday: {periods: ["monday_weekly"]}
+    collect_only: {periods: ["daily_collect"]}
   week_map:
-    1: "workday"                   # Mon → workday plan
-    2: "workday"                   # Tue
-    3: "workday"                   # Wed
-    4: "workday"                   # Thu
-    5: "workday"                   # Fri
-    6: "weekend"                   # Sat → weekend plan
-    7: "weekend"                   # Sun
-
-
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  # Overlap policy (usually no need to change)
-  #
-  # What is an "overlap"?
-  #   If two of your periods overlap (e.g. A is 08:00-12:00, B is 10:00-14:00),
-  #   then 10:00-12:00 belongs to both A and B — an overlap.
-  #   The program then needs to know: which one wins?
-  #
-  # Two options:
-  #
-  #   error_on_overlap (recommended)
-  #     Returns an error immediately, prompting you to fix the config.
-  #     For most people — overlapping periods are usually mistakes; an error catches them early.
-  #
-  #   last_wins
-  #     In the day_plans periods list, the later one wins.
-  #     e.g. periods: ["A", "B"] → on overlap, B takes effect.
-  #     For cases: you want a wide period as the base, then a later small one to override.
-  #
-  # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  overlap:
-    policy: "error_on_overlap"
+    1: "monday"
+    2: "collect_only"
+    3: "collect_only"
+    4: "collect_only"
+    5: "collect_only"
+    6: "collect_only"
+    7: "collect_only"

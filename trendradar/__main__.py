@@ -10,6 +10,7 @@ import argparse
 import os
 import webbrowser
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -17,7 +18,7 @@ from trendradar.context import AppContext
 from trendradar import __version__
 from trendradar.core import load_config
 from trendradar.core.analyzer import convert_keyword_stats_to_platform_stats
-from trendradar.crawler import DataFetcher
+from trendradar.crawler import AgroWeatherClient, DataFetcher
 from trendradar.crawler.news_search import (
     AgriculturalNewsSearch,
     GDELTClient,
@@ -134,7 +135,9 @@ class NewsAnalyzer:
         },
     }
 
-    def __init__(self, config: Optional[Dict] = None):
+    def __init__(
+        self, config: Optional[Dict] = None, *, force_weekly: bool = False
+    ):
         # 使用传入的配置或加载新配置
         if config is None:
             print("正在加载配置...")
@@ -151,6 +154,7 @@ class NewsAnalyzer:
         self.frequency_file = None
         self.filter_method = None  # None=使用全局配置 ctx.filter_method
         self.interests_file = None  # None=使用全局配置 ai_filter.interests_file
+        self.force_weekly = force_weekly
         self.rank_threshold = self.ctx.rank_threshold
         self.is_github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
         self.is_docker_container = self._detect_docker_environment()
@@ -173,6 +177,7 @@ class NewsAnalyzer:
         self._rss_ids_authoritative = False
         self._daily_delivery_rss_data = None
         self._report_period_label = ""
+        self._agro_weather_report = None
         # A single run owns one immutable clock snapshot.  Strict storage keys,
         # delivery windows and scheduler decisions must never straddle midnight.
         self._run_at = None
@@ -274,12 +279,58 @@ class NewsAnalyzer:
 
     def _resolve_and_apply_schedule(self) -> ResolvedSchedule:
         """在采集前解析一次调度，并应用本次运行的覆盖配置。"""
-        schedule = self.ctx.create_scheduler().resolve(self._operation_run_at())
+        force_period_key = (
+            "monday_weekly" if getattr(self, "force_weekly", False) else None
+        )
+        scheduler = self.ctx.create_scheduler()
+        if force_period_key:
+            schedule = scheduler.resolve(
+                self._operation_run_at(), force_period_key=force_period_key
+            )
+        else:
+            schedule = scheduler.resolve(self._operation_run_at())
         self.report_mode = schedule.report_mode
         self.frequency_file = schedule.frequency_file
         self.filter_method = schedule.filter_method or self.ctx.filter_method
         self.interests_file = schedule.interests_file
         return schedule
+
+    def _delivery_checkpoint_date(self, report_mode: str) -> str:
+        """返回交付周期稳定的幂等键日期。"""
+        if report_mode == "weekly":
+            timezone = getattr(self.ctx, "timezone", None) or self.ctx.config.get(
+                "TIMEZONE", DEFAULT_TIMEZONE
+            )
+            run_at = getattr(self, "_run_at", None)
+            if not isinstance(run_at, datetime):
+                get_time = getattr(self.ctx, "get_time", None)
+                run_at = get_time() if callable(get_time) else None
+            if not isinstance(run_at, datetime):
+                run_date = self._operation_date()
+                import pytz
+
+                run_at = pytz.timezone(timezone).localize(
+                    datetime.strptime(run_date, "%Y-%m-%d")
+                )
+            window = previous_natural_week(run_at, timezone)
+            return window.end.strftime("%Y-%m-%d")
+        return self._operation_date()
+
+    def _fetch_agro_weather(self):
+        """每次周报尝试都重新抓取官方农业气象周报。"""
+        config = self.ctx.config.get("AGRO_WEATHER", {})
+        if not config.get("ENABLED", True):
+            return None
+        client = AgroWeatherClient(
+            source_url=config.get(
+                "URL", "https://www.nmc.cn/publish/agro/ten-week/index.html"
+            ),
+            timeout=config.get("TIMEOUT", 30),
+            timezone_name=self.ctx.timezone,
+            use_proxy=bool(self.proxy_url),
+            proxy_url=self.proxy_url or "",
+        )
+        return client.fetch_latest(self._operation_run_at())
 
     @staticmethod
     def _should_fallback_ai_filter(mode: str) -> bool:
@@ -307,7 +358,9 @@ class NewsAnalyzer:
         if not schedule.period_key:
             return False
         return self.ctx.create_scheduler().record_execution(
-            schedule.period_key, "push", self._operation_date()
+            schedule.period_key,
+            "push",
+            self._delivery_checkpoint_date(schedule.report_mode),
         )
 
     def _has_notification_configured(self) -> bool:
@@ -480,7 +533,7 @@ class NewsAnalyzer:
 
         if schedule.once_analyze and schedule.period_key:
             scheduler = self.ctx.create_scheduler()
-            date_str = self._operation_date()
+            date_str = self._delivery_checkpoint_date(mode)
             if scheduler.already_executed(schedule.period_key, "analyze", date_str):
                 strict_push_pending = (
                     self._is_strict_delivery_mode(mode)
@@ -602,7 +655,7 @@ class NewsAnalyzer:
                 # 记录 AI 分析
                 if schedule.once_analyze and schedule.period_key:
                     scheduler = self.ctx.create_scheduler()
-                    date_str = self._operation_date()
+                    date_str = self._delivery_checkpoint_date(mode)
                     if not scheduler.record_execution(
                         schedule.period_key, "analyze", date_str
                     ):
@@ -1123,7 +1176,7 @@ class NewsAnalyzer:
 
             if schedule.once_push and schedule.period_key:
                 scheduler = self.ctx.create_scheduler()
-                date_str = self._operation_date()
+                date_str = self._delivery_checkpoint_date(mode)
                 if scheduler.already_executed(schedule.period_key, "push", date_str):
                     print(f"[推送] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天已推送过，跳过")
                     return False
@@ -2119,6 +2172,23 @@ class NewsAnalyzer:
             self._run_date = self._run_at.strftime("%Y-%m-%d")
             self._run_time_filename = self._run_at.strftime("%H-%M")
             schedule = self._resolve_and_apply_schedule()
+
+            if schedule.report_mode == "weekly":
+                checkpoint_date = self._delivery_checkpoint_date("weekly")
+                scheduler = self.ctx.create_scheduler()
+                if (
+                    schedule.once_push
+                    and schedule.period_key
+                    and scheduler.already_executed(
+                        schedule.period_key, "push", checkpoint_date
+                    )
+                ):
+                    print("[周报] 本周 PDF 已成功发送，跳过重试")
+                    return True
+                self._agro_weather_report = self._fetch_agro_weather()
+                if self._agro_weather_report is None:
+                    raise RuntimeError("本期全国农业气象周报尚未发布")
+
             if not self._initialize_and_check_config():
                 return True
             if not schedule.collect:
@@ -2219,6 +2289,7 @@ def main():
         epilog="""
 调度状态命令:
   --show-schedule        显示当前调度状态（时间段、行为开关）
+  --force-weekly         在调度窗口外人工补跑本周农业周报
 诊断命令:
   --doctor               运行环境与配置体检
   --test-notification    发送测试通知到已配置渠道
@@ -2226,6 +2297,7 @@ def main():
 示例:
   python -m trendradar                    # 正常运行
   python -m trendradar --show-schedule    # 查看当前调度状态
+  python -m trendradar --force-weekly     # 人工补跑本周农业周报
   python -m trendradar --doctor           # 运行一键体检
   python -m trendradar --test-notification # 测试通知渠道连通性
 """
@@ -2233,6 +2305,11 @@ def main():
     parser.add_argument("--show-schedule", action="store_true", help="显示当前调度状态")
     parser.add_argument("--doctor", action="store_true", help="运行环境与配置体检")
     parser.add_argument("--test-notification", action="store_true", help="发送测试通知到已配置渠道")
+    parser.add_argument(
+        "--force-weekly",
+        action="store_true",
+        help="在调度窗口外人工补跑本周农业周报",
+    )
 
     args = parser.parse_args()
 
@@ -2264,7 +2341,7 @@ def main():
         if version_url:
             need_update, remote_version = check_all_versions(version_url, configs_version_url)
 
-        analyzer = NewsAnalyzer(config=config)
+        analyzer = NewsAnalyzer(config=config, force_weekly=args.force_weekly)
 
         if analyzer.is_github_actions and need_update and remote_version:
             analyzer.update_info = {
