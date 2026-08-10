@@ -763,10 +763,8 @@ class WeeklyScheduleTests(unittest.TestCase):
             return True
 
         scheduler.record_execution.side_effect = record_execution
-        dispatcher = MagicMock(dispatch_all=MagicMock(side_effect=[
-            {"wework": True, "email": False},
-            {"wework": True, "email": True},
-        ]))
+        dispatcher = MagicMock()
+        dispatcher.dispatch_weekly_pdf.side_effect = [False, True]
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer.ctx = SimpleNamespace(
             config={
@@ -793,6 +791,8 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._rss_source_failed = 0
         analyzer.proxy_url = None
         analyzer.update_info = None
+        analyzer._weekly_pdf_path = "output/weekly.pdf"
+        analyzer._rss_window = previous_natural_week(RUN_AT, "Asia/Shanghai")
         analyzer._has_notification_configured = MagicMock(return_value=True)
         analyzer._has_valid_content = MagicMock(return_value=False)
 
@@ -816,16 +816,16 @@ class WeeklyScheduleTests(unittest.TestCase):
             self.assertFalse(run_attempt())
             self.assertIn("analyze", executed)
             self.assertNotIn("push", executed)
-            self.assertEqual(dispatcher.dispatch_all.call_count, 1)
+            self.assertEqual(dispatcher.dispatch_weekly_pdf.call_count, 1)
 
             self.assertTrue(run_attempt())
             self.assertIn("push", executed)
             self.assertEqual(analyzer_class.return_value.analyze.call_count, 2)
-            self.assertEqual(dispatcher.dispatch_all.call_count, 2)
+            self.assertEqual(dispatcher.dispatch_weekly_pdf.call_count, 2)
 
             self.assertFalse(run_attempt())
             self.assertEqual(analyzer_class.return_value.analyze.call_count, 2)
-            self.assertEqual(dispatcher.dispatch_all.call_count, 2)
+            self.assertEqual(dispatcher.dispatch_weekly_pdf.call_count, 2)
 
         push_records = [
             call for call in scheduler.record_execution.call_args_list
@@ -895,9 +895,8 @@ class WeeklyScheduleTests(unittest.TestCase):
         scheduler = MagicMock()
         scheduler.already_executed.return_value = False
         scheduler.record_execution.return_value = False
-        dispatcher = MagicMock(dispatch_all=MagicMock(
-            return_value={"wework": True}
-        ))
+        dispatcher = MagicMock()
+        dispatcher.dispatch_weekly_pdf.return_value = True
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer.ctx = SimpleNamespace(
             config={
@@ -921,6 +920,9 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._rss_source_failed = 0
         analyzer.proxy_url = None
         analyzer.update_info = None
+        analyzer._run_at = RUN_AT
+        analyzer._weekly_pdf_path = "output/weekly.pdf"
+        analyzer._rss_window = previous_natural_week(RUN_AT, "Asia/Shanghai")
         analyzer._has_notification_configured = MagicMock(return_value=True)
         analyzer._has_valid_content = MagicMock(return_value=False)
 
@@ -930,8 +932,8 @@ class WeeklyScheduleTests(unittest.TestCase):
         )
 
         self.assertFalse(sent)
-        self.assertTrue(
-            dispatcher.dispatch_all.call_args.kwargs["require_all_targets"]
+        dispatcher.dispatch_weekly_pdf.assert_called_once_with(
+            "output/weekly.pdf", None
         )
         scheduler.record_execution.assert_called_once_with(
             "monday_weekly", "push", "2026-08-10"

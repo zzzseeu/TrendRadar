@@ -31,7 +31,6 @@ import requests
 
 from .batch import add_batch_headers, get_max_batch_header_size
 from .formatters import convert_markdown_to_mrkdwn, strip_markdown
-from .wework_pdf import send_wework_pdf_report
 
 
 def _extract_ai_stats(ai_analysis) -> Optional[Dict]:
@@ -362,9 +361,6 @@ def send_to_wework(
     ai_analysis: Any = None,
     display_regions: Optional[Dict] = None,
     standalone_data: Optional[Dict] = None,
-    html_file_path: Optional[str] = None,
-    pdf_enabled: bool = False,
-    pdf_top_n: int = 5,
 ) -> bool:
     """
     发送到企业微信（支持分批发送，支持 markdown 和 text 两种格式，支持热榜+RSS合并+独立展示区）
@@ -402,36 +398,6 @@ def send_to_wework(
         print(f"{log_prefix}使用 text 格式（个人微信模式）[{report_type}]")
     else:
         print(f"{log_prefix}使用 markdown 格式（群机器人模式）[{report_type}]")
-
-    if pdf_enabled and not is_text_mode and html_file_path:
-        try:
-            print(f"{log_prefix}发送简短摘要和 PDF 附件 [{report_type}]")
-            if send_wework_pdf_report(
-                webhook_url=webhook_url,
-                html_file_path=html_file_path,
-                report_data=report_data,
-                rss_items=rss_items,
-                ai_analysis=ai_analysis,
-                report_type=report_type,
-                top_n=pdf_top_n,
-                proxies=proxies,
-            ):
-                return True
-            print(f"{log_prefix}PDF 发送未完成，回退到原有分批消息 [{report_type}]")
-        except Exception as exc:
-            print(
-                f"{log_prefix}PDF 发送失败 ({type(exc).__name__})，"
-                f"回退到原有分批消息 [{report_type}]"
-            )
-    elif pdf_enabled and is_text_mode:
-        print(
-            f"{log_prefix}text 模式不支持群机器人 PDF 附件，"
-            f"回退到原有分批消息 [{report_type}]"
-        )
-    elif pdf_enabled and not html_file_path:
-        print(
-            f"{log_prefix}未生成 HTML 报告，回退到原有分批消息 [{report_type}]"
-        )
 
     # text 模式使用 wework_text，markdown 模式使用 wework
     header_format_type = "wework_text" if is_text_mode else "wework"

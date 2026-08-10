@@ -520,18 +520,6 @@ def _load_webhook_config(config_data: Dict) -> Dict:
     bark = channels.get("bark", {})
     slack = channels.get("slack", {})
     generic = channels.get("generic_webhook", {})
-    wework_pdf_enabled_env = _get_env_bool("WEWORK_PDF_ENABLED")
-    wework_pdf_top_n_env = _get_env_int_or_none("WEWORK_PDF_TOP_N")
-    wework_pdf_top_n = (
-        wework_pdf_top_n_env
-        if wework_pdf_top_n_env is not None
-        else wework.get("pdf_top_n", 5)
-    )
-    try:
-        wework_pdf_top_n = int(wework_pdf_top_n)
-    except (TypeError, ValueError):
-        wework_pdf_top_n = 5
-
     return {
         # 飞书
         "FEISHU_WEBHOOK_URL": _get_env_str("FEISHU_WEBHOOK_URL") or feishu.get("webhook_url", ""),
@@ -540,12 +528,6 @@ def _load_webhook_config(config_data: Dict) -> Dict:
         # 企业微信
         "WEWORK_WEBHOOK_URL": _get_env_str("WEWORK_WEBHOOK_URL") or wework.get("webhook_url", ""),
         "WEWORK_MSG_TYPE": _get_env_str("WEWORK_MSG_TYPE") or wework.get("msg_type", "markdown"),
-        "WEWORK_PDF_ENABLED": (
-            wework_pdf_enabled_env
-            if wework_pdf_enabled_env is not None
-            else wework.get("pdf_enabled", False)
-        ),
-        "WEWORK_PDF_TOP_N": max(1, min(10, wework_pdf_top_n)),
         # Telegram
         "TELEGRAM_BOT_TOKEN": _get_env_str("TELEGRAM_BOT_TOKEN") or telegram.get("bot_token", ""),
         "TELEGRAM_CHAT_ID": _get_env_str("TELEGRAM_CHAT_ID") or telegram.get("chat_id", ""),

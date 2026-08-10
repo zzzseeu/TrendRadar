@@ -470,8 +470,6 @@ notification:
     wework:
       webhook_url: ""                 # 企业微信机器人 webhook URL
       msg_type: "text"                # 消息类型：markdown(群机器人) | text(个人微信应用)
-      pdf_enabled: false              # 群机器人模式：发送简短摘要和完整 PDF 附件
-      pdf_top_n: 5                    # 摘要中展示的重点新闻数量（1-10）
 
     telegram:
       bot_token: ""                   # Telegram Bot Token

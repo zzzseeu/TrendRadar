@@ -384,6 +384,38 @@ class NewsAnalyzer:
             self._delivery_checkpoint_date(schedule.report_mode),
         )
 
+    def _deliver_weekly_pdf(self, schedule: ResolvedSchedule) -> bool:
+        """Send the dedicated weekly PDF to WeCom and then persist once-push."""
+        if not getattr(self, "_weekly_pdf_path", None):
+            print("[周报] 未生成有效 PDF，取消投递")
+            return False
+        window = getattr(self, "_rss_window", None)
+        checkpoint_date = (
+            window.end.strftime("%Y-%m-%d")
+            if window is not None
+            else self._delivery_checkpoint_date("weekly")
+        )
+        scheduler = self.ctx.create_scheduler()
+        if (
+            schedule.once_push
+            and schedule.period_key
+            and scheduler.already_executed(
+                schedule.period_key, "push", checkpoint_date
+            )
+        ):
+            print("[周报] 本周 PDF 已成功发送，跳过重试")
+            return False
+        dispatcher = self.ctx.create_notification_dispatcher(
+            operation_at=self._operation_run_at()
+        )
+        if not dispatcher.dispatch_weekly_pdf(
+            self._weekly_pdf_path, self.proxy_url
+        ):
+            return False
+        return scheduler.record_execution(
+            schedule.period_key, "push", checkpoint_date
+        )
+
     def _has_notification_configured(self) -> bool:
         """检查是否配置了任何通知渠道"""
         cfg = self.ctx.config
@@ -1217,6 +1249,15 @@ class NewsAnalyzer:
         """统一的通知发送逻辑，包含所有判断条件，支持热榜+RSS合并推送+AI分析+独立展示区"""
         has_notification = self._has_notification_configured()
         cfg = self.ctx.config
+
+        if mode == "weekly":
+            if not cfg["ENABLE_NOTIFICATION"]:
+                print(f"跳过{report_type}通知：通知功能已禁用")
+                return False
+            if not schedule or not schedule.push:
+                print("[周报] 调度器: 当前时间段不执行推送")
+                return False
+            return self._deliver_weekly_pdf(schedule)
 
         # 检查是否有有效内容（热榜或RSS）
         has_news_content = self._has_valid_content(stats, new_titles)

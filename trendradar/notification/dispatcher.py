@@ -33,6 +33,7 @@ from .senders import (
     send_to_wework,
     send_to_generic_webhook,
 )
+from .wework_pdf import send_wework_pdf_file
 
 
 # 类型检查时导入，运行时不导入（避免循环导入）
@@ -69,6 +70,32 @@ class NotificationDispatcher:
         self.split_content_func = split_content_func
         self.max_accounts = config.get("MAX_ACCOUNTS_PER_CHANNEL", 3)
         self.translator = translator
+
+    def dispatch_weekly_pdf(
+        self, pdf_file_path: str, proxy_url: str = ""
+    ) -> bool:
+        """向每个企业微信机器人发送唯一的周报 PDF 文件消息。"""
+        urls = limit_accounts(
+            parse_multi_account_config(
+                self.config.get("WEWORK_WEBHOOK_URL", "")
+            ),
+            self.max_accounts,
+            "企业微信",
+        )
+        if not urls:
+            print("[周报] 未配置企业微信 Webhook")
+            return False
+        proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+        results = []
+        for url in urls:
+            try:
+                results.append(send_wework_pdf_file(
+                    url, pdf_file_path, proxies=proxies
+                ))
+            except Exception as exc:
+                print(f"[周报] 企业微信 PDF 发送失败: {type(exc).__name__}")
+                results.append(False)
+        return bool(results) and all(results)
 
     def translate_content(
         self,
@@ -330,7 +357,7 @@ class NotificationDispatcher:
         if self.config.get("WEWORK_WEBHOOK_URL"):
             results["wework"] = self._send_wework(
                 report_data, report_type, update_info, proxy_url, mode, rss_items, rss_new_items,
-                ai_analysis, display_regions, standalone_data, html_file_path,
+                ai_analysis, display_regions, standalone_data,
                 require_all_targets,
             )
 
@@ -551,7 +578,6 @@ class NotificationDispatcher:
         ai_analysis: Optional[AIAnalysisResult] = None,
         display_regions: Optional[Dict] = None,
         standalone_data: Optional[Dict] = None,
-        html_file_path: Optional[str] = None,
         require_all_targets: bool = False,
     ) -> bool:
         """发送到企业微信（多账号，支持热榜+RSS合并+AI分析+独立展示区）"""
@@ -580,9 +606,6 @@ class NotificationDispatcher:
                 ai_analysis=ai,
                 display_regions=display_regions or {},
                 standalone_data=sd,
-                html_file_path=html_file_path,
-                pdf_enabled=self.config.get("WEWORK_PDF_ENABLED", False),
-                pdf_top_n=self.config.get("WEWORK_PDF_TOP_N", 5),
             ),
         )
 
