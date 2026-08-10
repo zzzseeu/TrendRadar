@@ -109,24 +109,10 @@ platforms:
 # Stored separately from hot-list data and shown as a time stream.
 # Each feed: id (unique), name (display), url (subscription URL)
 # enabled: optional, defaults to true
-# max_age_days: optional, overrides global freshness_filter.max_age_days
 # ===============================================================
 rss:
   enabled: true                       # Enable RSS crawling (true=on, false=off)
 
-  # Article freshness filter (filters out stale articles to avoid duplicate pushes)
-  # Filtering happens only at push time; all articles are still stored in the database.
-  freshness_filter:
-    enabled: true                     # Enable freshness filter (true=on, false=off)
-
-    max_age_days: 1                   # Max article age (days)
-                                      # - Positive integer: push only articles within N days
-                                      # - 0: disable filtering, push all articles
-
-  # A single feed may set max_age_days to override the global setting:
-  # - Not set: use global freshness_filter.max_age_days (default 3 days)
-  # - Positive integer: override the global setting, push only articles within this many days
-  # - 0: disable freshness filtering for this feed, push all articles
   feeds:
     - id: "hacker-news"
       name: "Hacker News"
@@ -136,7 +122,6 @@ rss:
       name: "Ruan Yi Feng's Blog"
       url: "http://www.ruanyifeng.com/blog/atom.xml"
       enabled: false                  # Disabled
-      # max_age_days: 3               # Example: push articles within 3 days (slower-updating blogs)
 
     - id: "yahoo-finance"
       name: "Yahoo Finance"
@@ -147,7 +132,6 @@ rss:
     #   name: "Custom Feed"
     #   url: "https://example.com/feed.xml"
     #   enabled: false
-    #   max_age_days: 0               # Example: disable filtering, push all articles
 
 
 # ===============================================================

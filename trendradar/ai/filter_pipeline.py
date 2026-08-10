@@ -19,7 +19,6 @@ from trendradar.utils.time import (
     DEFAULT_TIMEZONE,
     convert_time_for_display,
     format_iso_time_friendly,
-    is_within_days,
 )
 
 SEARCH_FEED_ID = "agri-breeding-search"
@@ -79,9 +78,6 @@ class AIFilterPipeline:
         except (TypeError, ValueError):
             self._max_search_hotspots = 5
 
-        freshness_config = rss_config.get("FRESHNESS_FILTER", {})
-        self._freshness_enabled = freshness_config.get("ENABLED", True)
-        self._default_max_age_days = freshness_config.get("MAX_AGE_DAYS", 3)
         self._timezone = config.get("TIMEZONE", DEFAULT_TIMEZONE)
         self._rss_window = rss_window
         self._allowed_rss_ids = (
@@ -97,49 +93,12 @@ class AIFilterPipeline:
         self._rank_threshold = config.get("RANK_THRESHOLD", 50)
         self._max_news = config.get("MAX_NEWS_PER_KEYWORD", 0)
 
-        self._feed_max_age_map = self._build_feed_max_age_map()
-
-    def _build_feed_max_age_map(self) -> Dict[str, int]:
-        result = {}
-        for feed_cfg in self._rss_feeds:
-            feed_id = feed_cfg.get("id", "")
-            max_age = feed_cfg.get("max_age_days")
-            if max_age is not None:
-                try:
-                    result[feed_id] = int(max_age)
-                except (ValueError, TypeError):
-                    pass
-        return result
-
-    def _is_rss_item_fresh(self, feed_id: str, published_at: str) -> bool:
-        """按来源的新鲜度策略判断 RSS 条目是否可进入筛选和报告。"""
-        if not self._freshness_enabled:
-            return True
-
-        max_days = self._feed_max_age_map.get(
-            feed_id,
-            self._default_max_age_days,
-        )
-        if max_days <= 0:
-            return True
-
-        return is_within_days(published_at, max_days, self._timezone)
-
-    def _is_rss_item_in_scope(
-        self,
-        feed_id: str,
-        published_at: str,
-        news_item_id: Optional[int] = None,
-    ) -> bool:
+    def _is_rss_item_in_scope(self, item: dict) -> bool:
         if self._allowed_rss_ids is not None:
-            allowed = news_item_id in self._allowed_rss_ids
-            if self._rss_ids_authoritative:
-                return allowed
-            if not allowed:
-                return False
+            return item.get("id") in self._allowed_rss_ids
         if self._rss_window is not None:
-            return self._rss_window.contains(published_at)
-        return self._is_rss_item_fresh(feed_id, published_at)
+            return self._rss_window.contains(str(item.get("published_at") or item.get("first_time") or ""))
+        return True
 
     def run(self, interests_file: Optional[str] = None) -> Optional[AIFilterResult]:
         """
@@ -265,7 +224,7 @@ class AIFilterPipeline:
 
         # 4. 收集待分类新闻。严格模式下存储读取失败不能降级成空集合。
         try:
-            pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, freshness_filtered_rss = self._collect_pending_news(effective_interests_file)
+            pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, scope_filtered_rss = self._collect_pending_news(effective_interests_file)
         except Exception as exc:
             cleanup_exc = self._end_batch_after_storage_error()
             error = (
@@ -279,7 +238,7 @@ class AIFilterPipeline:
 
         self._print_pending_stats(
             all_news, analyzed_hotlist, pending_news,
-            all_rss, analyzed_rss, pending_rss, freshness_filtered_rss,
+            all_rss, analyzed_rss, pending_rss, scope_filtered_rss,
         )
 
         total_pending = len(pending_news) + len(pending_rss)
@@ -400,11 +359,7 @@ class AIFilterPipeline:
             )
             and (
                 result.get("source_type") != "rss"
-                or self._is_rss_item_in_scope(
-                    result.get("source_id", ""),
-                    result.get("first_time", ""),
-                    result.get("news_item_id"),
-                )
+                or self._is_rss_item_in_scope(result)
             )
         ]
 
@@ -627,7 +582,7 @@ class AIFilterPipeline:
             ]
 
         pending_rss = []
-        freshness_filtered_rss = 0
+        scope_filtered_rss = 0
         all_rss = []
         analyzed_rss = set()
 
@@ -639,16 +594,12 @@ class AIFilterPipeline:
             else:
                 all_rss = self.storage.get_all_rss_ids()
 
-            fresh_rss = []
+            scoped_rss = []
             for n in all_rss:
-                published_at = n.get("published_at", "")
-                feed_id = n.get("source_id", "")
-                if not self._is_rss_item_in_scope(
-                    feed_id, published_at, n.get("id")
-                ):
-                    freshness_filtered_rss += 1
+                if not self._is_rss_item_in_scope(n):
+                    scope_filtered_rss += 1
                     continue
-                fresh_rss.append(n)
+                scoped_rss.append(n)
 
             if self._strict and self._rss_ids_authoritative:
                 # 即使严格模式不复用缓存，也必须证明 analyzed 表可读。
@@ -657,19 +608,19 @@ class AIFilterPipeline:
                     date=self._operation_date,
                     interests_file=effective_interests_file,
                 )
-                pending_rss = fresh_rss
+                pending_rss = scoped_rss
                 analyzed_rss = set()
             else:
                 analyzed_rss = self.storage.get_analyzed_news_ids(
                     "rss", interests_file=effective_interests_file
                 )
                 pending_rss = [
-                    n for n in fresh_rss if n["id"] not in analyzed_rss
+                    n for n in scoped_rss if n["id"] not in analyzed_rss
                 ]
 
-        return pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, freshness_filtered_rss
+        return pending_news, pending_rss, all_news, analyzed_hotlist, all_rss, analyzed_rss, scope_filtered_rss
 
-    def _print_pending_stats(self, all_news, analyzed_hotlist, pending_news, all_rss, analyzed_rss, pending_rss, freshness_filtered_rss):
+    def _print_pending_stats(self, all_news, analyzed_hotlist, pending_news, all_rss, analyzed_rss, pending_rss, scope_filtered_rss):
         hotlist_total = len(all_news)
         hotlist_skipped = len(analyzed_hotlist)
         hotlist_pending = len(pending_news)
@@ -678,8 +629,8 @@ class AIFilterPipeline:
             rss_total = len(all_rss)
             rss_skipped = len(analyzed_rss)
             rss_pending = len(pending_rss)
-            freshness_info = f", 新鲜度过滤 {freshness_filtered_rss} 条" if freshness_filtered_rss > 0 else ""
-            print(f"[AI筛选] RSS: 总计 {rss_total} 条{freshness_info}, 已分析跳过 {rss_skipped} 条, 本次发送AI分析 {rss_pending} 条")
+            scope_info = f", 范围过滤 {scope_filtered_rss} 条" if scope_filtered_rss > 0 else ""
+            print(f"[AI筛选] RSS: 总计 {rss_total} 条{scope_info}, 已分析跳过 {rss_skipped} 条, 本次发送AI分析 {rss_pending} 条")
 
     def _classify_batches(self, ai_filter, pending_news, pending_rss, active_tags, interests_content, filter_config):
         batch_size = filter_config.get("BATCH_SIZE", 200)
@@ -931,6 +882,7 @@ class AIFilterPipeline:
             seen_titles[tag_name].add(title)
 
             tag_groups[tag_name]["items"].append({
+                "id": r.get("news_item_id"),
                 "news_item_id": r.get("news_item_id"),
                 "title": title,
                 "source_id": r.get("source_id", ""),
@@ -973,12 +925,7 @@ class AIFilterPipeline:
                 if float(item.get("relevance_score", 0) or 0) < min_score:
                     continue
                 if item.get("source_type") == "rss":
-                    feed_id = item.get("source_id", "")
-                    if not self._is_rss_item_in_scope(
-                        feed_id,
-                        item.get("first_time", ""),
-                        item.get("news_item_id"),
-                    ):
+                    if not self._is_rss_item_in_scope(item):
                         continue
                 all_items.append(item)
         ranked_items = sorted(
@@ -1065,11 +1012,7 @@ class AIFilterPipeline:
                     continue
                 if self._score_value(item.get("relevance_score")) < min_score:
                     continue
-                if not self._is_rss_item_in_scope(
-                    item.get("source_id", ""),
-                    item.get("first_time", ""),
-                    item.get("news_item_id"),
-                ):
+                if not self._is_rss_item_in_scope(item):
                     continue
 
                 final_hot_score = round(
@@ -1210,10 +1153,7 @@ class AIFilterPipeline:
                 first_time = item.get("first_time", "")
                 last_time = item.get("last_time", "")
                 if source_type == "rss":
-                    feed_id = item.get("source_id", "")
-                    if not self._is_rss_item_in_scope(
-                        feed_id, first_time, item.get("news_item_id")
-                    ):
+                    if not self._is_rss_item_in_scope(item):
                         continue
                     time_display = format_iso_time_friendly(first_time, self._timezone, include_date=True) if first_time else ""
                 else:

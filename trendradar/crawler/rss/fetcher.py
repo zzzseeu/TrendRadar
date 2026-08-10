@@ -16,7 +16,7 @@ import requests
 from trendradar.crawler.http import DirectFirstSession
 from .parser import RSSParser
 from trendradar.storage.base import RSSItem, RSSData
-from trendradar.utils.time import get_configured_time, is_within_days, DEFAULT_TIMEZONE
+from trendradar.utils.time import get_configured_time, DEFAULT_TIMEZONE
 
 
 @dataclass
@@ -27,7 +27,6 @@ class RSSFeedConfig:
     url: str                    # RSS URL
     max_items: int = 0          # 最大条目数（0=不限制）
     enabled: bool = True        # 是否启用
-    max_age_days: Optional[int] = None  # 文章最大年龄（天），覆盖全局设置；None=使用全局，0=禁用过滤
     source_type: str = "rss"    # 来源类型：rss | irri_news | web_news | corteva_news
     fetch_url: str = ""         # 可选抓取地址，对外链接仍使用 url
 
@@ -43,8 +42,6 @@ class RSSFetcher:
         use_proxy: bool = False,
         proxy_url: str = "",
         timezone: str = DEFAULT_TIMEZONE,
-        freshness_enabled: bool = True,
-        default_max_age_days: int = 3,
         get_time_func: Optional[Callable[[], datetime]] = None,
     ):
         """
@@ -57,8 +54,6 @@ class RSSFetcher:
             use_proxy: 是否使用代理
             proxy_url: 代理 URL
             timezone: 时区配置（如 'Asia/Shanghai'）
-            freshness_enabled: 是否启用新鲜度过滤
-            default_max_age_days: 默认最大文章年龄（天）
         """
         self.feeds = [f for f in feeds if f.enabled]
         self.request_interval = request_interval
@@ -66,8 +61,6 @@ class RSSFetcher:
         self.use_proxy = use_proxy
         self.proxy_url = proxy_url
         self.timezone = timezone
-        self.freshness_enabled = freshness_enabled
-        self.default_max_age_days = default_max_age_days
         self.get_time = get_time_func or (
             lambda: get_configured_time(self.timezone)
         )
@@ -85,27 +78,6 @@ class RSSFetcher:
             },
             use_proxy=self.use_proxy,
             proxy_url=self.proxy_url,
-        )
-
-    def _is_item_fresh(
-        self,
-        feed: RSSFeedConfig,
-        published_at: Optional[str],
-        run_at: Optional[datetime] = None,
-    ) -> bool:
-        """判断条目是否满足当前来源的新鲜度要求。"""
-        max_days = (
-            feed.max_age_days
-            if feed.max_age_days is not None
-            else self.default_max_age_days
-        )
-        if not self.freshness_enabled or max_days <= 0:
-            return True
-        return is_within_days(
-            published_at or "",
-            max_days,
-            self.timezone,
-            reference_time=run_at,
         )
 
     def fetch_feed(
@@ -145,19 +117,6 @@ class RSSFetcher:
             # 限制条目数量（0=不限制）
             if feed.max_items > 0:
                 parsed_items = parsed_items[:feed.max_items]
-
-            before_freshness_count = len(parsed_items)
-            parsed_items = [
-                parsed
-                for parsed in parsed_items
-                if self._is_item_fresh(feed, parsed.published_at, now)
-            ]
-            freshness_filtered_count = before_freshness_count - len(parsed_items)
-            if freshness_filtered_count:
-                print(
-                    f"[RSS] {feed.name}: 新鲜度过滤 "
-                    f"{freshness_filtered_count} 条"
-                )
 
             # IRRI 列表页会截断长标题，仅对被截断的条目读取详情页补全。
             if feed.source_type == "irri_news":
@@ -279,47 +238,22 @@ class RSSFetcher:
                 {
                     "enabled": true,
                     "request_interval": 2000,
-                    "freshness_filter": {
-                        "enabled": true,
-                        "max_age_days": 3
-                    },
                     "feeds": [
-                        {"id": "hacker-news", "name": "Hacker News", "url": "...", "max_age_days": 1}
+                        {"id": "hacker-news", "name": "Hacker News", "url": "..."}
                     ]
                 }
 
         Returns:
             RSSFetcher 实例
         """
-        # 读取新鲜度过滤配置
-        freshness_config = config.get("freshness_filter", {})
-        freshness_enabled = freshness_config.get("enabled", True)  # 默认启用
-        default_max_age_days = freshness_config.get("max_age_days", 3)  # 默认3天
-
         feeds = []
         for feed_config in config.get("feeds", []):
-            # 读取并验证单个 feed 的 max_age_days（可选）
-            max_age_days_raw = feed_config.get("max_age_days")
-            max_age_days = None
-            if max_age_days_raw is not None:
-                try:
-                    max_age_days = int(max_age_days_raw)
-                    if max_age_days < 0:
-                        feed_id = feed_config.get("id", "unknown")
-                        print(f"[警告] RSS feed '{feed_id}' 的 max_age_days 为负数，将使用全局默认值")
-                        max_age_days = None
-                except (ValueError, TypeError):
-                    feed_id = feed_config.get("id", "unknown")
-                    print(f"[警告] RSS feed '{feed_id}' 的 max_age_days 格式错误：{max_age_days_raw}")
-                    max_age_days = None
-
             feed = RSSFeedConfig(
                 id=feed_config.get("id", ""),
                 name=feed_config.get("name", ""),
                 url=feed_config.get("url", ""),
                 max_items=feed_config.get("max_items", 0),  # 0=不限制
                 enabled=feed_config.get("enabled", True),
-                max_age_days=max_age_days,  # None=使用全局，0=禁用，>0=覆盖
                 source_type=feed_config.get("source_type", "rss"),
                 fetch_url=feed_config.get("fetch_url", ""),
             )
@@ -333,6 +267,4 @@ class RSSFetcher:
             use_proxy=config.get("use_proxy", False),
             proxy_url=config.get("proxy_url", ""),
             timezone=config.get("timezone", DEFAULT_TIMEZONE),
-            freshness_enabled=freshness_enabled,
-            default_max_age_days=default_max_age_days,
         )

@@ -28,7 +28,7 @@ from trendradar.crawler.news_search import (
 from trendradar.storage import convert_crawl_results_to_news_data
 from trendradar.storage.base import RSSItem
 from trendradar.utils.article_links import build_reader_url
-from trendradar.utils.time import DEFAULT_TIMEZONE, is_within_days, calculate_days_old
+from trendradar.utils.time import DEFAULT_TIMEZONE
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.core.daily_delivery import DailyDeliveryAggregator
 from trendradar.core.scheduler import ResolvedSchedule
@@ -1277,28 +1277,12 @@ class NewsAnalyzer:
             # 构建 RSS 源配置
             feeds = []
             for feed_config in rss_feeds:
-                # 读取并验证单个 feed 的 max_age_days（可选）
-                max_age_days_raw = feed_config.get("max_age_days")
-                max_age_days = None
-                if max_age_days_raw is not None:
-                    try:
-                        max_age_days = int(max_age_days_raw)
-                        if max_age_days < 0:
-                            feed_id = feed_config.get("id", "unknown")
-                            print(f"[警告] RSS feed '{feed_id}' 的 max_age_days 为负数，将使用全局默认值")
-                            max_age_days = None
-                    except (ValueError, TypeError):
-                        feed_id = feed_config.get("id", "unknown")
-                        print(f"[警告] RSS feed '{feed_id}' 的 max_age_days 格式错误：{max_age_days_raw}")
-                        max_age_days = None
-
                 feed = RSSFeedConfig(
                     id=feed_config.get("id", ""),
                     name=feed_config.get("name", ""),
                     url=feed_config.get("url", ""),
                     max_items=feed_config.get("max_items", 50),
                     enabled=feed_config.get("enabled", True),
-                    max_age_days=max_age_days,  # None=使用全局，0=禁用，>0=覆盖
                     source_type=feed_config.get("source_type", "rss"),
                     fetch_url=feed_config.get("fetch_url", ""),
                 )
@@ -1315,11 +1299,6 @@ class NewsAnalyzer:
             rss_proxy_url = rss_config.get("PROXY_URL", "") or self.proxy_url or ""
             # 获取配置的时区
             timezone = self.ctx.config.get("TIMEZONE", DEFAULT_TIMEZONE)
-            # 获取新鲜度过滤配置
-            freshness_config = rss_config.get("FRESHNESS_FILTER", {})
-            freshness_enabled = freshness_config.get("ENABLED", True)
-            default_max_age_days = freshness_config.get("MAX_AGE_DAYS", 3)
-
             fetcher = RSSFetcher(
                 feeds=feeds,
                 request_interval=rss_config.get("REQUEST_INTERVAL", 2000),
@@ -1327,8 +1306,6 @@ class NewsAnalyzer:
                 use_proxy=rss_config.get("USE_PROXY", False),
                 proxy_url=rss_proxy_url,
                 timezone=timezone,
-                freshness_enabled=freshness_enabled,
-                default_max_age_days=default_max_age_days,
                 get_time_func=lambda: self._operation_run_at(),
             )
 
@@ -1516,7 +1493,6 @@ class NewsAnalyzer:
                 self._convert_rss_items_to_list(
                     snapshot.data.items,
                     snapshot.data.id_to_name,
-                    apply_freshness=False,
                 )
                 if snapshot.data
                 else []
@@ -1563,7 +1539,6 @@ class NewsAnalyzer:
             raw_rss_items = self._convert_rss_items_to_list(
                 snapshot.data.items,
                 snapshot.data.id_to_name,
-                apply_freshness=False,
             )
             if not rss_display_enabled:
                 return None, None, raw_rss_items, set()
@@ -1716,59 +1691,13 @@ class NewsAnalyzer:
         return rss_stats, rss_new_stats, raw_rss_items, rss_new_urls
 
     def _convert_rss_items_to_list(
-        self, items_dict: Dict, id_to_name: Dict, apply_freshness: bool = True,
+        self, items_dict: Dict, id_to_name: Dict,
     ) -> List[Dict]:
-        """将 RSS 条目字典转换为列表格式，并应用新鲜度过滤（用于推送）"""
+        """将 RSS 条目字典转换为推送列表格式。"""
         rss_items = []
-        filtered_count = 0
-        filtered_details = []  # 用于 DEBUG 模式下的详细日志
-
-        # 获取新鲜度过滤配置
-        rss_config = self.ctx.rss_config
-        freshness_config = rss_config.get("FRESHNESS_FILTER", {})
-        freshness_enabled = freshness_config.get("ENABLED", True)
-        default_max_age_days = freshness_config.get("MAX_AGE_DAYS", 3)
-        timezone = self.ctx.config.get("TIMEZONE", DEFAULT_TIMEZONE)
-        debug_mode = self.ctx.config.get("DEBUG", False)
-
-        # 构建 feed_id -> max_age_days 的映射
-        feed_max_age_map = {}
-        for feed_cfg in self.ctx.rss_feeds:
-            feed_id = feed_cfg.get("id", "")
-            max_age = feed_cfg.get("max_age_days")
-            if max_age is not None:
-                try:
-                    feed_max_age_map[feed_id] = int(max_age)
-                except (ValueError, TypeError):
-                    pass
 
         for feed_id, items in items_dict.items():
-            # 确定此 feed 的 max_age_days
-            max_days = feed_max_age_map.get(feed_id)
-            if max_days is None:
-                max_days = default_max_age_days
-
             for item in items:
-                # 应用新鲜度过滤（仅在启用时）
-                if apply_freshness and freshness_enabled and max_days > 0:
-                    if not is_within_days(
-                        item.published_at,
-                        max_days,
-                        timezone,
-                    ):
-                        filtered_count += 1
-                        # 记录详细信息用于 DEBUG 模式
-                        if debug_mode:
-                            days_old = calculate_days_old(item.published_at, timezone)
-                            feed_name = id_to_name.get(feed_id, feed_id)
-                            filtered_details.append({
-                                "title": item.title[:50] + "..." if len(item.title) > 50 else item.title,
-                                "feed": feed_name,
-                                "days_old": days_old,
-                                "max_days": max_days,
-                            })
-                        continue  # 跳过超过指定天数的文章
-
                 rss_items.append({
                     "title": item.title,
                     "feed_id": feed_id,
@@ -1779,18 +1708,6 @@ class NewsAnalyzer:
                     "summary": item.summary,
                     "author": item.author,
                 })
-
-        # 输出过滤统计
-        if filtered_count > 0:
-            print(f"[RSS] 新鲜度过滤：跳过 {filtered_count} 篇超过指定天数的旧文章（仍保留在数据库中）")
-            # DEBUG 模式下显示详细信息
-            if debug_mode and filtered_details:
-                print(f"[RSS] 被过滤的文章详情（共 {len(filtered_details)} 篇）：")
-                for detail in filtered_details[:10]:  # 最多显示 10 条
-                    days_str = f"{detail['days_old']:.1f}" if detail['days_old'] else "未知"
-                    print(f"  - [{days_str}天前] [{detail['feed']}] {detail['title']} (限制: {detail['max_days']}天)")
-                if len(filtered_details) > 10:
-                    print(f"  ... 还有 {len(filtered_details) - 10} 篇被过滤")
 
         return rss_items
 

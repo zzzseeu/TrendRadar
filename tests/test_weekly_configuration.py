@@ -19,9 +19,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
 
         self.assertTrue(config["schedule"]["enabled"])
         self.assertEqual(config["schedule"]["preset"], "custom")
-        self.assertEqual(
-            config["rss"]["freshness_filter"]["max_age_days"], 2
-        )
+        self.assertNotIn("freshness_filter", config["rss"])
         feeds = {feed["id"]: feed for feed in config["rss"]["feeds"]}
         disabled_ids = {"hacker-news", "ruanyifeng", "yahoo-finance"}
         self.assertEqual(
@@ -30,14 +28,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
             disabled_ids,
         )
         self.assertTrue(
-            all(feeds[feed_id]["max_age_days"] == 1 for feed_id in disabled_ids)
-        )
-        self.assertTrue(
-            all(
-                feed["max_age_days"] == 2
-                for feed in feeds.values()
-                if feed.get("enabled", True)
-            )
+            all("max_age_days" not in feed for feed in feeds.values())
         )
 
     def test_custom_timeline_collects_and_pushes_daily_delivery_every_day(self):

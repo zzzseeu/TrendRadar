@@ -218,13 +218,6 @@ def _load_rss_config(config_data: Dict) -> Dict:
         or advanced_crawler.get("default_proxy", "")
     )
 
-    # 新鲜度过滤配置
-    freshness_filter_value = rss.get("freshness_filter", {})
-    freshness_filter = (
-        freshness_filter_value
-        if isinstance(freshness_filter_value, Mapping)
-        else {}
-    )
     news_search_value = rss.get("news_search", {})
     news_search = (
         news_search_value if isinstance(news_search_value, Mapping) else {}
@@ -284,17 +277,6 @@ def _load_rss_config(config_data: Dict) -> Dict:
         "TOPICS": topics,
     }
 
-    # 验证并设置 max_age_days 默认值
-    raw_max_age = freshness_filter.get("max_age_days", 3)
-    try:
-        max_age_days = int(raw_max_age)
-        if max_age_days < 0:
-            print(f"[警告] RSS freshness_filter.max_age_days 为负数 ({max_age_days})，使用默认值 3")
-            max_age_days = 3
-    except (ValueError, TypeError):
-        print(f"[警告] RSS freshness_filter.max_age_days 格式错误 ({raw_max_age})，使用默认值 3")
-        max_age_days = 3
-
     return {
         "ENABLED": rss.get("enabled", False),
         "REQUEST_INTERVAL": advanced_rss.get("request_interval", 2000),
@@ -302,10 +284,6 @@ def _load_rss_config(config_data: Dict) -> Dict:
         "USE_PROXY": advanced_rss.get("use_proxy", False),
         "PROXY_URL": rss_proxy_url,
         "FEEDS": feeds,
-        "FRESHNESS_FILTER": {
-            "ENABLED": freshness_filter.get("enabled", True),  # 默认启用
-            "MAX_AGE_DAYS": max_age_days,
-        },
         "NEWS_SEARCH": runtime_news_search,
     }
 

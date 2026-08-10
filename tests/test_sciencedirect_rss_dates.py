@@ -56,18 +56,12 @@ def _pipeline(storage=None) -> AIFilterPipeline:
                             "https://rss.sciencedirect.com/publication/"
                             "science/16726308"
                         ),
-                        "max_age_days": 1,
                     },
                     {
                         "id": "example-rss",
                         "url": "https://example.org/feed.xml",
-                        "max_age_days": 1,
                     },
                 ],
-                "FRESHNESS_FILTER": {
-                    "ENABLED": True,
-                    "MAX_AGE_DAYS": 1,
-                },
             },
             "AI_FILTER": {"MIN_SCORE": 0.7},
         },
@@ -87,7 +81,22 @@ class ScienceDirectRSSDateTests(unittest.TestCase):
         )
 
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0].published_at, "2026-07-01T00:00:00")
+        self.assertEqual(items[0].published_at, "2026-07-01")
+
+    def test_sciencedirect_fallback_preserves_date_only(self):
+        items = RSSParser().parse(
+            _rss_item("Available online 9 August 2026"),
+            "https://rss.sciencedirect.com/publication/science/22145141",
+        )
+
+        self.assertEqual(items[0].published_at, "2026-08-09")
+
+    def test_standard_rss_struct_time_is_explicit_utc(self):
+        value = RSSParser()._parse_date({
+            "published_parsed": (2026, 8, 9, 1, 2, 3, 0, 0, 0),
+        })
+
+        self.assertEqual(value, "2026-08-09T01:02:03+00:00")
 
     def test_sciencedirect_item_without_publication_date_is_rejected(self):
         items = RSSParser().parse(
@@ -106,15 +115,15 @@ class ScienceDirectRSSDateTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertIsNone(items[0].published_at)
 
-    def test_historical_undated_items_from_all_feeds_are_not_pending(self):
+    def test_undated_items_from_all_feeds_remain_pending_without_scope(self):
         pending = _pipeline()._collect_pending_news("ai_interests.txt")
 
         pending_rss = pending[1]
-        freshness_filtered_rss = pending[-1]
-        self.assertEqual(pending_rss, [])
-        self.assertEqual(freshness_filtered_rss, 2)
+        scope_filtered_rss = pending[-1]
+        self.assertEqual([item["id"] for item in pending_rss], [1, 2])
+        self.assertEqual(scope_filtered_rss, 0)
 
-    def test_historical_sciencedirect_item_without_date_is_not_reported(self):
+    def test_undated_sciencedirect_item_is_reported_without_scope(self):
         result = AIFilterResult(
             success=True,
             tags=[
@@ -139,7 +148,7 @@ class ScienceDirectRSSDateTests(unittest.TestCase):
 
         _, rss_stats, _ = _pipeline().convert_to_report_data(result)
 
-        self.assertEqual(rss_stats, [])
+        self.assertEqual(rss_stats[0]["count"], 1)
 
 
 if __name__ == "__main__":

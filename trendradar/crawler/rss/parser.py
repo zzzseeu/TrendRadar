@@ -9,7 +9,7 @@ import re
 import html
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
@@ -192,11 +192,7 @@ class RSSParser:
             return None
 
         try:
-            # 处理常见的 ISO 8601 格式
-            # 替换 Z 为 +00:00
-            date_str = date_str.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(date_str)
-            return dt.isoformat()
+            return self._normalize_iso_source_date(date_str)
         except (ValueError, TypeError):
             pass
 
@@ -283,7 +279,7 @@ class RSSParser:
         raw_summary = entry.get("summary") or entry.get("description", "")
         summary = self._clean_text(raw_summary)
         match = re.search(
-            r"Publication date:\s*(?:Available online\s*)?"
+            r"(?:Publication date:\s*)?(?:Available online\s*)?"
             r"(\d{1,2}\s+[A-Za-z]+\s+\d{4})",
             summary,
             flags=re.IGNORECASE,
@@ -293,7 +289,7 @@ class RSSParser:
 
         for date_format in ("%d %B %Y", "%d %b %Y"):
             try:
-                return datetime.strptime(match.group(1), date_format).isoformat()
+                return datetime.strptime(match.group(1), date_format).date().isoformat()
             except ValueError:
                 continue
 
@@ -322,8 +318,7 @@ class RSSParser:
 
         if date_struct:
             try:
-                dt = datetime(*date_struct[:6])
-                return dt.isoformat()
+                return self._format_struct_time_utc(date_struct)
             except (ValueError, TypeError):
                 pass
 
@@ -332,18 +327,34 @@ class RSSParser:
         if date_str:
             try:
                 dt = parsedate_to_datetime(date_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
                 return dt.isoformat()
             except (ValueError, TypeError):
                 pass
 
             # 尝试 ISO 格式
             try:
-                dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                return dt.isoformat()
+                return self._normalize_iso_source_date(date_str)
             except (ValueError, TypeError):
                 pass
 
         return None
+
+    @staticmethod
+    def _format_struct_time_utc(value) -> str:
+        parsed = datetime(*value[:6], tzinfo=timezone.utc)
+        return parsed.isoformat()
+
+    @staticmethod
+    def _normalize_iso_source_date(value: str) -> str:
+        text = str(value or "").strip()
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return text
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.isoformat()
 
     def _parse_summary(self, entry: Any) -> Optional[str]:
         """解析摘要"""
