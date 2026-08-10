@@ -97,7 +97,7 @@ class AIFilterPipeline:
         if self._allowed_rss_ids is not None:
             return item.get("id") in self._allowed_rss_ids
         if self._rss_window is not None:
-            return self._rss_window.contains(str(item.get("published_at") or item.get("first_time") or ""))
+            return self._rss_window.contains(str(item.get("published_at") or ""))
         return True
 
     def run(self, interests_file: Optional[str] = None) -> Optional[AIFilterResult]:
@@ -898,6 +898,7 @@ class AIFilterPipeline:
                 "ranks": r.get("ranks", []),
                 "first_time": r.get("first_time", ""),
                 "last_time": r.get("last_time", ""),
+                "published_at": r.get("published_at", ""),
                 "count": r.get("count", 1),
                 "relevance_score": r.get("relevance_score", 0),
                 "source_type": r.get("source_type", "hotlist"),

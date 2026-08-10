@@ -50,7 +50,11 @@ class DailyDeliveryReportTests(unittest.TestCase):
         config = yaml.safe_load(
             (ROOT / "config/config.yaml").read_text(encoding="utf-8")
         )
-        self.assertEqual(config["rss"]["freshness_filter"]["max_age_days"], 2)
+        self.assertNotIn("freshness_filter", config["rss"])
+        self.assertTrue(all(
+            "max_age_days" not in feed
+            for feed in config["rss"].get("feeds", [])
+        ))
         self.assertEqual(
             GDELTClient().build_params("rice breeding", 10)["timespan"],
             "48h",

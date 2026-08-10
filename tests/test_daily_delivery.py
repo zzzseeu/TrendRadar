@@ -140,7 +140,7 @@ class DailyDeliveryWindowTests(unittest.TestCase):
             url="https://example.org/feed.xml",
         )
         fetcher = RSSFetcher(
-            [feed], request_interval=0, freshness_enabled=False,
+            [feed], request_interval=0,
             timezone="Asia/Shanghai",
         )
         response = MagicMock(text="<rss/>")
@@ -689,14 +689,13 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
             self.assertIs(call_args.kwargs["allowed_rss_ids"], allowed_ids)
             self.assertTrue(call_args.kwargs["rss_ids_authoritative"])
 
-    def test_authoritative_snapshot_ids_override_publication_freshness(self):
+    def test_authoritative_snapshot_ids_control_scope(self):
         pipeline = AIFilterPipeline(
             config={
                 "TIMEZONE": "Asia/Shanghai",
                 "RSS": {
                     "ENABLED": True,
                     "FEEDS": [],
-                    "FRESHNESS_FILTER": {"ENABLED": True, "MAX_AGE_DAYS": 2},
                 },
                 "AI": {},
                 "AI_FILTER": {},
@@ -708,12 +707,14 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
             rss_ids_authoritative=True,
         )
 
-        self.assertTrue(pipeline._is_rss_item_in_scope(
-            "search", "2026-07-01T00:00:00Z", 7
-        ))
-        self.assertFalse(pipeline._is_rss_item_in_scope(
-            "search", "2026-08-09T01:00:00Z", 8
-        ))
+        self.assertTrue(pipeline._is_rss_item_in_scope({
+            "id": 7,
+            "published_at": "2026-07-01T00:00:00Z",
+        }))
+        self.assertFalse(pipeline._is_rss_item_in_scope({
+            "id": 8,
+            "published_at": "2026-08-09T01:00:00Z",
+        }))
 
     def test_authoritative_scope_collects_only_approved_ids(self):
         storage = MagicMock()

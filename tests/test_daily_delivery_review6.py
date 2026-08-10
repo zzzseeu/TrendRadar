@@ -82,15 +82,13 @@ def two_feeds():
 
 
 class RSSFetcherFrozenRunClockTests(unittest.TestCase):
-    def test_two_feeds_reuse_fetch_all_clock_for_freshness_and_discovery(self):
+    def test_two_feeds_reuse_fetch_all_clock_for_discovery(self):
         run_at = shanghai(2026, 8, 9, 23, 59)
         after_midnight = shanghai(2026, 8, 10, 0, 1)
         fetcher = RSSFetcher(
             two_feeds(),
             request_interval=0,
             timezone=TIMEZONE,
-            freshness_enabled=True,
-            default_max_age_days=2,
         )
         fetcher.session = _TwoFeedSession()
 
@@ -146,10 +144,6 @@ class RSSFetcherFrozenRunClockTests(unittest.TestCase):
                     "REQUEST_INTERVAL": 0,
                     "TIMEOUT": 1,
                     "USE_PROXY": False,
-                    "FRESHNESS_FILTER": {
-                        "ENABLED": False,
-                        "MAX_AGE_DAYS": 2,
-                    },
                 },
                 config={"TIMEZONE": TIMEZONE, "DEBUG": False},
                 timezone=TIMEZONE,
