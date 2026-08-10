@@ -95,7 +95,10 @@ class AIFilterPipeline:
 
     def _is_rss_item_in_scope(self, item: dict) -> bool:
         if self._allowed_rss_ids is not None:
-            return item.get("id") in self._allowed_rss_ids
+            item_id = item.get("news_item_id")
+            if item_id is None:
+                item_id = item.get("id")
+            return item_id in self._allowed_rss_ids
         if self._rss_window is not None:
             return self._rss_window.contains(str(item.get("published_at") or ""))
         return True

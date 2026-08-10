@@ -716,6 +716,30 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
             "published_at": "2026-08-09T01:00:00Z",
         }))
 
+    def test_authoritative_scope_accepts_persisted_result_news_item_id(self):
+        pipeline = AIFilterPipeline(
+            config={
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {"ENABLED": True, "FEEDS": []},
+                "AI": {},
+                "AI_FILTER": {},
+                "FILTER": {},
+            },
+            storage_manager=MagicMock(),
+            get_time_func=lambda: shanghai(2026, 8, 9, 10, 0),
+            allowed_rss_ids={7},
+            rss_ids_authoritative=True,
+        )
+
+        self.assertTrue(pipeline._is_rss_item_in_scope({
+            "news_item_id": 7,
+            "published_at": "2026-07-01T00:00:00Z",
+        }))
+        self.assertFalse(pipeline._is_rss_item_in_scope({
+            "news_item_id": 8,
+            "published_at": "2026-08-09T01:00:00Z",
+        }))
+
     def test_authoritative_scope_collects_only_approved_ids(self):
         storage = MagicMock()
         storage.get_all_news_ids.return_value = []
