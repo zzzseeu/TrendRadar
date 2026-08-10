@@ -56,6 +56,56 @@ class AgroWeatherClientTests(unittest.TestCase):
         self.assertEqual(report.risk_crops, ("农田",))
         session.get.assert_called_once_with(client.source_url, timeout=30)
 
+    def test_parses_current_official_div_title_and_text_container(self):
+        official_structure = """
+        <html><body>
+        <div id="text">
+          <div class="title"> 全国农业气象周报 </div>
+          <div class="author">
+            预报：李轩&nbsp;&nbsp;签发：郑昌玲&nbsp;&nbsp;
+            <b>2026</b>&nbsp;年&nbsp;<b>08</b>&nbsp;月&nbsp;<b>10</b>&nbsp;日
+          </div>
+          <div class="writing">
+            <p><span><b>一、本周</b></span><span><b>天气特点</b></span>
+              <span><b>及农业影响分析</b></span></p>
+            <p>本周（2026年8月2日-2026年8月8日），东北农区水稻长势良好。</p>
+            <p><span><b>二、</b></span>
+              <span><b>未来天气对农业生产影响预估及建议</b></span></p>
+            <p>未来10天，黄淮等地有强降雨，低洼农田渍涝风险高。</p>
+            <p>建议：及时排涝散墒，做好病虫害监测。</p>
+            <p><b>附一、作物生长发育状况监测</b></p>
+          </div>
+        </div>
+        </body></html>
+        """
+
+        report = AgroWeatherClient(
+            session=self.make_session(official_structure)
+        ).fetch_latest(self.run_at())
+
+        self.assertIsNotNone(report)
+        self.assertEqual(report.title, "全国农业气象周报")
+        self.assertEqual(report.report_date.isoformat(), "2026-08-10")
+        self.assertEqual(report.reviewed_end.isoformat(), "2026-08-08")
+        self.assertIn("低洼农田渍涝风险高", report.outlook)
+        self.assertIn("排涝散墒", report.recommendations)
+        self.assertNotIn("附一、", report.outlook)
+
+    def test_uses_detected_utf8_when_official_page_omits_charset(self):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = HTML.encode("utf-8")
+        response.headers["content-type"] = "text/html"
+        response.encoding = "ISO-8859-1"
+        session = MagicMock()
+        session.get.return_value = response
+
+        report = AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+        self.assertIsNotNone(report)
+        self.assertEqual(report.title, "全国农业气象周报")
+        self.assertEqual(response.encoding.lower(), "utf-8")
+
     def test_accepts_sunday_early_report_for_just_ended_cycle(self):
         early = HTML.replace("08 月 10 日", "08 月 09 日")
         session = self.make_session(early)

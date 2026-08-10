@@ -31,7 +31,7 @@ _REVIEW_RANGE_PATTERN = re.compile(
 )
 _SECTION_ONE = re.compile(r"^一、\s*本周天气特点及农业影响分析")
 _SECTION_TWO = re.compile(r"^二、\s*未来天气对农业生产影响预估及建议")
-_SECTION_HEADING = re.compile(r"^[一二三四五六七八九十]+、")
+_SECTION_HEADING = re.compile(r"^(?:附)?[一二三四五六七八九十]+、")
 _OUTLOOK = re.compile(r"未来\s*10\s*天")
 _RECOMMENDATION = re.compile(r"建议\s*[：:]")
 _RISK_SIGNAL = re.compile(r"风险|渍涝|干旱|冻害|低温|高温|病虫害|强降雨")
@@ -184,6 +184,14 @@ class AgroWeatherClient:
         try:
             response = self.session.get(self.source_url, timeout=self.timeout)
             response.raise_for_status()
+            response_encoding = getattr(response, "encoding", None)
+            if (
+                isinstance(response_encoding, str)
+                and response_encoding.lower() in {"iso-8859-1", "latin-1"}
+            ):
+                detected_encoding = getattr(response, "apparent_encoding", None)
+                if isinstance(detected_encoding, str) and detected_encoding.strip():
+                    response.encoding = detected_encoding
         except Exception as exc:
             raise AgroWeatherFetchError(
                 f"农业气象周报请求失败: {self.source_url} ({type(exc).__name__})"
@@ -220,7 +228,7 @@ class AgroWeatherClient:
             (
                 index
                 for index, block in enumerate(blocks)
-                if block.tag == "h1"
+                if block.tag in {"h1", "div"}
                 and self._normalize_title(block.text) == "全国农业气象周报"
                 and self._body_container(block) is not None
             ),
@@ -238,16 +246,24 @@ class AgroWeatherClient:
         title_index = next(
             index
             for index, block in enumerate(blocks)
-            if block.tag == "h1"
+            if block.tag in {"h1", "div"}
             and self._normalize_title(block.text) == "全国农业气象周报"
         )
 
         first_section = next(
-            (index for index, block in enumerate(blocks) if _SECTION_ONE.match(block.text)),
+            (
+                index
+                for index, block in enumerate(blocks)
+                if _SECTION_ONE.match(self._normalize_title(block.text))
+            ),
             None,
         )
         second_section = next(
-            (index for index, block in enumerate(blocks) if _SECTION_TWO.match(block.text)),
+            (
+                index
+                for index, block in enumerate(blocks)
+                if _SECTION_TWO.match(self._normalize_title(block.text))
+            ),
             None,
         )
         if first_section is None or second_section is None or first_section >= second_section:
@@ -279,7 +295,9 @@ class AgroWeatherClient:
                 for index in range(second_section + 1, len(blocks))
                 if (
                     blocks[index].tag in {"h1", "h2", "h3", "h4", "h5", "h6"}
-                    or _SECTION_HEADING.match(blocks[index].text)
+                    or _SECTION_HEADING.match(
+                        self._normalize_title(blocks[index].text)
+                    )
                     or self._section_container(blocks[index])
                     not in {None, second_section_container}
                 )
@@ -344,6 +362,8 @@ class AgroWeatherClient:
                 return element
             if element.tag == "div":
                 attributes = dict(element.attributes)
+                if str(attributes.get("id") or "").strip().lower() == "text":
+                    return element
                 marker = " ".join(
                     str(attributes.get(name) or "") for name in ("id", "class")
                 )
