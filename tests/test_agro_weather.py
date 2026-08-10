@@ -111,6 +111,19 @@ class AgroWeatherClientTests(unittest.TestCase):
         with self.assertRaisesRegex(AgroWeatherFetchError, "签发日期"):
             AgroWeatherClient(session=session).fetch_latest(self.run_at())
 
+    def test_rejects_comma_or_newline_separated_page_update_date(self):
+        for invalid_signing in (
+            "签发：郑昌玲，页面更新时间 2026 年 08 月 10 日",
+            "签发：郑昌玲\n页面更新时间\n2026 年 08 月 10 日",
+        ):
+            with self.subTest(invalid_signing=invalid_signing):
+                session = self.make_session(
+                    HTML.replace("签发：郑昌玲　2026 年 08 月 10 日", invalid_signing)
+                )
+
+                with self.assertRaisesRegex(AgroWeatherFetchError, "签发日期"):
+                    AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
     def test_rejects_impact_section_that_contains_only_review_dates(self):
         dates_only = HTML.replace(
             "本周（2026年8月2日-2026年8月8日），东北农区光温适宜。",
@@ -152,6 +165,24 @@ class AgroWeatherClientTests(unittest.TestCase):
         with self.assertRaisesRegex(AgroWeatherFetchError, "未来10天"):
             AgroWeatherClient(session=session).fetch_latest(self.run_at())
 
+    def test_rejects_any_later_heading_when_the_second_section_is_empty(self):
+        later_heading = """
+        <html><body><article class="agro-report">
+        <h1>全国农业气象周报</h1>
+        <p>预报：李轩　签发：郑昌玲　2026 年 08 月 10 日</p>
+        <h3>一、本周天气特点及农业影响分析</h3>
+        <p>本周（2026年8月2日-2026年8月8日），东北农区水稻长势良好。</p>
+        <h3>二、未来天气对农业生产影响预估及建议</h3>
+        <h3>补充信息</h3>
+        <p>未来10天，黄淮农田强降雨风险高。</p>
+        <p>建议：及时排涝。</p>
+        </article></body></html>
+        """
+        session = self.make_session(later_heading)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "未来10天"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
     def test_rejects_recommendation_label_without_text(self):
         label_only = HTML.replace("建议：及时排涝散墒，做好病虫害监测。", "建议：")
         session = self.make_session(label_only)
@@ -168,6 +199,28 @@ class AgroWeatherClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AgroWeatherFetchError, "风险区域或作物"):
             AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_rejects_regions_and_crops_outside_the_risk_sentence(self):
+        unrelated_entities = HTML.replace(
+            "未来10天，黄淮等地有强降雨，低洼农田渍涝风险高。",
+            "未来10天，强降雨风险高。黄淮农田墒情适宜。",
+        )
+        session = self.make_session(unrelated_entities)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "风险区域或作物"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_extracts_regions_and_crops_from_the_risk_sentence(self):
+        bound_entities = HTML.replace(
+            "未来10天，黄淮等地有强降雨，低洼农田渍涝风险高。",
+            "未来10天，黄淮农田强降雨风险高。东北农区水稻长势良好。",
+        )
+        session = self.make_session(bound_entities)
+
+        report = AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+        self.assertEqual(report.risk_regions, ("黄淮",))
+        self.assertEqual(report.risk_crops, ("农田",))
 
     def test_rejects_navigation_title_when_article_title_does_not_match(self):
         navigation_title = HTML.replace(

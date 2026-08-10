@@ -17,7 +17,7 @@ _DATE_PATTERN = re.compile(
 )
 _SIGNING_DATE_PATTERN = re.compile(
     r"签发\s*[：:]\s*"
-    r"(?:(?:[^\d年月日；;。:\s]{1,40})\s+)?"
+    r"(?:(?:[^\d年月日，、；;。:：\s]{1,40})\s+)?"
     r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日"
 )
 _REVIEW_RANGE_PATTERN = re.compile(
@@ -254,12 +254,21 @@ class AgroWeatherClient:
             reviewed_start, reviewed_end, report_date
         )
 
-        impact = review_text.strip()
+        impact_blocks = [
+            block.text for block in blocks[first_section + 1 : second_section]
+        ]
+        impact = " ".join(impact_blocks).strip()
+        second_section_container = self._section_container(blocks[second_section])
         next_section = next(
             (
                 index
                 for index in range(second_section + 1, len(blocks))
-                if _SECTION_HEADING.match(blocks[index].text)
+                if (
+                    blocks[index].tag in {"h1", "h2", "h3", "h4", "h5", "h6"}
+                    or _SECTION_HEADING.match(blocks[index].text)
+                    or self._section_container(blocks[index])
+                    not in {None, second_section_container}
+                )
             ),
             len(blocks),
         )
@@ -277,7 +286,7 @@ class AgroWeatherClient:
             " ，。；;"
         )
         risk_text = " ".join(
-            text for text in (impact, outlook) if _RISK_SIGNAL.search(text)
+            self._risk_fragments([*impact_blocks, *outlook_blocks])
         )
         risk_regions = self._unique_matches(_RISK_REGION, risk_text)
         risk_crops = self._unique_matches(_RISK_CROP, risk_text)
@@ -327,6 +336,29 @@ class AgroWeatherClient:
                 if _CONTENT_DIV_MARKER.search(marker):
                     return element
         return None
+
+    @staticmethod
+    def _section_container(block: _VisibleBlock) -> _HtmlElement | None:
+        for element in reversed(block.ancestors):
+            if element.tag == "section":
+                return element
+            if element.tag == "div":
+                attributes = dict(element.attributes)
+                marker = " ".join(
+                    str(attributes.get(name) or "") for name in ("id", "class")
+                )
+                if re.search(r"section|chapter", marker, re.IGNORECASE):
+                    return element
+        return None
+
+    @staticmethod
+    def _risk_fragments(blocks: list[str]) -> list[str]:
+        fragments: list[str] = []
+        for block in blocks:
+            for sentence in re.split(r"(?<=[。！？；;])", block):
+                if _RISK_SIGNAL.search(sentence):
+                    fragments.append(sentence)
+        return fragments
 
     @staticmethod
     def _unique_matches(pattern: re.Pattern[str], value: str) -> tuple[str, ...]:
