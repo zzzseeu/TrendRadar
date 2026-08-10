@@ -184,6 +184,7 @@ class NewsAnalyzer:
         self._report_period_label = ""
         self._agro_weather_report = None
         self._weekly_pdf_path = None
+        self._weekly_ai_filter_succeeded = False
         # A single run owns one immutable clock snapshot.  Strict storage keys,
         # delivery windows and scheduler decisions must never straddle midnight.
         self._run_at = None
@@ -933,6 +934,14 @@ class NewsAnalyzer:
     ) -> Tuple[List[Dict], Optional[str], Optional[AIAnalysisResult], Optional[List[Dict]], Optional[Dict], Optional[List[Dict]]]:
         """统一的分析流水线：数据处理 → 统计计算（关键词/AI筛选）→ AI分析 → HTML生成"""
 
+        if mode == "weekly":
+            self._weekly_ai_filter_succeeded = False
+
+        # 周报普通新闻只允许权威自然周快照经过严格 AI filter；不允许
+        # keyword 或其他未筛选路径把普通新闻带入 select_weekly_news/PDF。
+        if mode == "weekly" and rss_items and self.filter_method != "ai":
+            raise RuntimeError("周报普通新闻仅支持严格 AI 筛选")
+
         # 根据筛选策略选择数据处理方式
         if self.filter_method == "ai":
             # === AI 筛选策略 ===
@@ -944,7 +953,7 @@ class NewsAnalyzer:
                 rss_ids_authoritative=getattr(
                     self, "_rss_ids_authoritative", False
                 ),
-                strict=mode == "daily_delivery",
+                strict=mode in {"daily_delivery", "weekly"},
                 operation_date=(
                     self._operation_date()
                     if mode == "daily_delivery"
@@ -979,6 +988,8 @@ class NewsAnalyzer:
                 # 不因 AI 命中为空而回退到关键词结果）
                 rss_items = ai_rss_stats
                 rss_new_items = ai_rss_new_stats
+                if mode == "weekly":
+                    self._weekly_ai_filter_succeeded = True
             else:
                 error_msg = ai_filter_result.error if ai_filter_result else "未知错误"
                 if not self._should_fallback_ai_filter(mode):
@@ -1164,8 +1175,10 @@ class NewsAnalyzer:
         weather = self._agro_weather_report
         if not selected_news and weather is None:
             raise RuntimeError("周报没有入选新闻和农业气象报告，无法生成 PDF")
-        if selected_news and not getattr(ai_result, "success", False):
-            raise RuntimeError("周报普通新闻缺少成功的 AI 摘要，无法生成 PDF")
+        if selected_news and not getattr(
+            self, "_weekly_ai_filter_succeeded", False
+        ):
+            raise RuntimeError("周报普通新闻缺少成功的严格 AI 筛选，无法生成 PDF")
 
         window = self._rss_window
         if window is None:
@@ -2251,6 +2264,8 @@ class NewsAnalyzer:
                     print("[周报] 本周 PDF 已成功发送，跳过重试")
                     return True
                 self._agro_weather_report = self._fetch_agro_weather()
+                if self._agro_weather_report is None:
+                    raise RuntimeError("本期全国农业气象周报尚未发布")
 
             if not self._initialize_and_check_config():
                 return True

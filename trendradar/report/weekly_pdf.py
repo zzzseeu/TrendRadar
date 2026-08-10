@@ -173,6 +173,8 @@ def render_weekly_pdf_html(
 * {{ box-sizing: border-box; }}
 body {{ font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; color: #172554; font-size: 10.5pt; line-height: 1.58; }}
 .page-header {{ position: running(weekly-header); color: #475569; font-size: 8.5pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 2mm; margin-bottom: 5mm; }}
+.page-footer {{ position: fixed; bottom: -14mm; left: 0; right: 0; text-align: center; color: #475569; font-size: 8.5pt; }}
+.page-footer::after {{ content: "第 " counter(page) " 页"; }}
 .cover {{ border-left: 6px solid #0f766e; padding: 6mm 7mm; background: #f0fdfa; margin-bottom: 6mm; }}
 h1 {{ margin: 0 0 3mm; color: #134e4a; font-size: 25pt; }}
 h2 {{ color: #0f766e; font-size: 15pt; border-bottom: 1px solid #99f6e4; padding-bottom: 2mm; margin-top: 8mm; }}
@@ -194,6 +196,7 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
 </head>
 <body>
 <header class="page-header">农业育种新闻周报　周期：{_text(period_label)}</header>
+<footer class="page-footer"></footer>
 <main>
   <section class="cover">
     <h1>农业育种新闻周报</h1>
