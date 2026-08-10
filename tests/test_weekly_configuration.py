@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import yaml
 
+from trendradar.core.loader import _load_agro_weather_config
 from trendradar.core.scheduler import Scheduler
 
 
@@ -100,3 +101,31 @@ class WeeklyConfigurationTests(unittest.TestCase):
             '0,30 11 * * 1;0 12 * * 1"',
             text,
         )
+
+    def test_weather_config_only_exposes_operational_settings(self):
+        for relative_path in ("config/config.yaml", "config/config.en.yaml"):
+            weather = yaml.safe_load(
+                (ROOT / relative_path).read_text(encoding="utf-8")
+            )["agro_weather"]
+            self.assertEqual(set(weather), {"enabled", "url", "timeout"})
+        self.assertEqual(
+            set(_load_agro_weather_config({"agro_weather": {}})),
+            {"ENABLED", "URL", "TIMEOUT"},
+        )
+
+    def test_readmes_link_to_supported_compatibility_surfaces(self):
+        expectations = {
+            "README.md": (
+                "current", "daily", "docs/index.html",
+                "README-MCP-FAQ.md", "notification",
+            ),
+            "README-EN.md": (
+                "current", "daily", "docs/index.html",
+                "README-MCP-FAQ-EN.md", "notification",
+            ),
+        }
+        for filename, required in expectations.items():
+            text = (ROOT / filename).read_text(encoding="utf-8")
+            for token in required:
+                with self.subTest(filename=filename, token=token):
+                    self.assertIn(token, text)

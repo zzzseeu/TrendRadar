@@ -207,13 +207,17 @@ class WeeklyRSSAggregator:
         duplicate_count = 0
 
         for date in window.storage_dates:
-            daily_data = self.storage.get_rss_data(date)
+            daily_data = self.storage.get_rss_data_strict(date)
             if daily_data is None:
-                missing_dates.append(date)
-                continue
+                raise RuntimeError(
+                    f"周快照构建失败：RSS 日库缺失或没有抓取记录: {date}"
+                )
 
             if daily_data.failed_ids:
-                failed_sources[date] = list(daily_data.failed_ids)
+                failed = ", ".join(sorted(daily_data.failed_ids))
+                raise RuntimeError(
+                    f"周快照构建失败：{date} RSS 来源失败: {failed}"
+                )
 
             for feed_id, name in daily_data.id_to_name.items():
                 if name:
@@ -281,9 +285,6 @@ class WeeklyRSSAggregator:
                     )
                     merged.search_providers = ",".join(sorted(providers))
 
-        if len(missing_dates) == len(window.storage_dates):
-            raise RuntimeError("周快照构建失败：八个日库全部缺失")
-
         snapshot = WeeklyRSSSnapshot(
             window=window,
             data=None,
@@ -307,7 +308,7 @@ class WeeklyRSSAggregator:
         )
         grouped_items: dict[str, list[RSSItem]] = {}
         id_to_name: dict[str, str] = {}
-        existing_rows = self.storage.get_all_rss_ids(
+        existing_rows = self.storage.get_all_rss_ids_strict(
             window.end.strftime("%Y-%m-%d")
         )
         existing_anchors = {
@@ -353,7 +354,7 @@ class WeeklyRSSAggregator:
         }
         resolved_ids: set[int] = set()
         resolved_identities: set[tuple[str, str, str]] = set()
-        for row in self.storage.get_all_rss_ids(data.date):
+        for row in self.storage.get_all_rss_ids_strict(data.date):
             identity = (
                 row.get("source_id", ""),
                 canonicalize_url(row.get("url", "")),

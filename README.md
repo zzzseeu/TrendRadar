@@ -37,3 +37,12 @@ rss:
 ```
 
 容器部署与环境变量示例见 `docker/` 目录。
+
+## 兼容功能入口
+
+专用周报链路不会移除 TrendRadar 原有的普通运行能力：
+
+- `current` 当前榜单和 `daily` 当日汇总模式仍由 [config/config.yaml](config/config.yaml) 的 `report.mode` 配置。
+- 完整安装与部署入口见 [项目文档](docs/index.html) 和 [Docker 目录](docker/)。
+- MCP 客户端与工具用法见 [MCP 常见问题](README-MCP-FAQ.md)。
+- 普通模式的多渠道通知仍使用 [config/config.yaml](config/config.yaml) 的 `notification` 配置；本页的 PDF-only 规则只适用于专用周报交付。

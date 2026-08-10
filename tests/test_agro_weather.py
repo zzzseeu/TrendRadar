@@ -362,7 +362,6 @@ class AgroWeatherConfigTests(unittest.TestCase):
                     "enabled": True,
                     "url": "https://www.nmc.cn/publish/agro/ten-week/index.html",
                     "timeout": 30,
-                    "required_for_weekly": True,
                 }
             }
         )
@@ -373,7 +372,6 @@ class AgroWeatherConfigTests(unittest.TestCase):
                 "ENABLED": True,
                 "URL": "https://www.nmc.cn/publish/agro/ten-week/index.html",
                 "TIMEOUT": 30,
-                "REQUIRED_FOR_WEEKLY": True,
             },
         )
 

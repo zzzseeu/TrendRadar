@@ -7,6 +7,7 @@ TrendRadar 主程序
 """
 
 import argparse
+import hashlib
 import os
 import webbrowser
 from collections.abc import Mapping
@@ -45,6 +46,7 @@ from trendradar.report.weekly_pdf import (
     build_weekly_pdf,
     flatten_unique_news,
     render_weekly_pdf_html,
+    weekly_pdf_output_path,
 )
 from trendradar.commands import check_all_versions, run_doctor, run_test_notification, handle_status_commands
 from trendradar.commands.version import _fetch_remote_version, _parse_version
@@ -384,10 +386,27 @@ class NewsAnalyzer:
             self._delivery_checkpoint_date(schedule.report_mode),
         )
 
+    @staticmethod
+    def _weekly_pdf_digest(pdf_file_path: str) -> str:
+        digest = hashlib.sha256()
+        with Path(pdf_file_path).open("rb") as pdf_file:
+            for chunk in iter(lambda: pdf_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _weekly_account_delivery_action(
+        pdf_digest: str, account_hash: str
+    ) -> str:
+        return f"weekly-pdf:{pdf_digest}:{account_hash}"
+
     def _deliver_weekly_pdf(self, schedule: ResolvedSchedule) -> bool:
         """Send the dedicated weekly PDF to WeCom and then persist once-push."""
         if not getattr(self, "_weekly_pdf_path", None):
             print("[周报] 未生成有效 PDF，取消投递")
+            return False
+        if not schedule.period_key:
+            print("[周报] 调度周期缺失，取消投递")
             return False
         window = getattr(self, "_rss_window", None)
         checkpoint_date = (
@@ -408,13 +427,77 @@ class NewsAnalyzer:
         dispatcher = self.ctx.create_notification_dispatcher(
             operation_at=self._operation_run_at()
         )
+        try:
+            pdf_digest = self._weekly_pdf_digest(self._weekly_pdf_path)
+        except Exception as exc:
+            print(f"[周报] PDF 摘要计算失败: {type(exc).__name__}")
+            return False
+
+        def account_action(account_hash: str) -> str:
+            return self._weekly_account_delivery_action(
+                pdf_digest, account_hash
+            )
+
         if not dispatcher.dispatch_weekly_pdf(
-            self._weekly_pdf_path, self.proxy_url
+            self._weekly_pdf_path,
+            self.proxy_url,
+            is_delivered=lambda account_hash: scheduler.already_executed(
+                schedule.period_key,
+                account_action(account_hash),
+                checkpoint_date,
+            ),
+            record_delivery=lambda account_hash: scheduler.record_execution(
+                schedule.period_key,
+                account_action(account_hash),
+                checkpoint_date,
+            ),
         ):
             return False
         return scheduler.record_execution(
             schedule.period_key, "push", checkpoint_date
         )
+
+    def _resume_weekly_pdf_delivery(
+        self, schedule: ResolvedSchedule
+    ) -> Optional[bool]:
+        """Resume a durable partial delivery without regenerating its PDF."""
+        if not schedule.period_key:
+            return None
+        window = previous_natural_week(
+            self._operation_run_at(), self.ctx.timezone
+        )
+        pdf_path = weekly_pdf_output_path(
+            "output", window.start.date(), window.end.date()
+        )
+        if not pdf_path.is_file():
+            return None
+
+        dispatcher = self.ctx.create_notification_dispatcher(
+            operation_at=self._operation_run_at()
+        )
+        account_hashes = dispatcher.weekly_pdf_account_hashes()
+        if not account_hashes:
+            return None
+        pdf_digest = self._weekly_pdf_digest(str(pdf_path))
+        checkpoint_date = window.end.strftime("%Y-%m-%d")
+        scheduler = self.ctx.create_scheduler()
+        delivered = [
+            scheduler.already_executed(
+                schedule.period_key,
+                self._weekly_account_delivery_action(
+                    pdf_digest, account_hash
+                ),
+                checkpoint_date,
+            )
+            for account_hash in account_hashes
+        ]
+        if not any(delivered):
+            return None
+
+        self._rss_window = window
+        self._weekly_pdf_path = str(pdf_path)
+        print("[周报] 检测到部分账号成功账本，复用现有 PDF 继续投递")
+        return self._deliver_weekly_pdf(schedule)
 
     def _has_notification_configured(self) -> bool:
         """检查是否配置了任何通知渠道"""
@@ -618,12 +701,13 @@ class NewsAnalyzer:
 
             # 确定 AI 分析使用的模式
             ai_mode_config = analysis_config.get("MODE", "follow_report")
-            if mode == "daily_delivery":
-                # 每日交付的公开 AI_ANALYSIS.MODE 不能绕过权威 RSS
+            if mode in {"daily_delivery", "weekly"}:
+                # 严格交付的公开 AI_ANALYSIS.MODE 不能绕过权威 RSS
                 # 快照去读取 daily/current/incremental 热榜历史。
-                if ai_mode_config not in ("follow_report", "daily_delivery"):
+                if ai_mode_config not in ("follow_report", mode):
+                    label = "周报" if mode == "weekly" else "每日交付"
                     print(
-                        f"[AI] 每日交付忽略独立分析模式 {ai_mode_config}，"
+                        f"[AI] {label}忽略独立分析模式 {ai_mode_config}，"
                         "强制使用权威 RSS 快照"
                     )
                 ai_mode = mode
@@ -693,7 +777,7 @@ class NewsAnalyzer:
                 platforms=platforms,
                 keywords=keywords,
                 standalone_data=ai_standalone,
-                strict=mode == "daily_delivery",
+                strict=mode in {"daily_delivery", "weekly"},
             )
 
             # 设置 AI 分析使用的模式
@@ -969,6 +1053,12 @@ class NewsAnalyzer:
         if mode == "weekly":
             self._weekly_ai_filter_succeeded = False
 
+        strict_operation_date = None
+        if mode == "daily_delivery":
+            strict_operation_date = self._operation_date()
+        elif mode == "weekly" and self._rss_window is not None:
+            strict_operation_date = self._rss_window.end.strftime("%Y-%m-%d")
+
         # 周报普通新闻只允许权威自然周快照经过严格 AI filter；不允许
         # keyword 或其他未筛选路径把普通新闻带入 select_weekly_news/PDF。
         if mode == "weekly" and rss_items and self.filter_method != "ai":
@@ -986,11 +1076,7 @@ class NewsAnalyzer:
                     self, "_rss_ids_authoritative", False
                 ),
                 strict=mode in {"daily_delivery", "weekly"},
-                operation_date=(
-                    self._operation_date()
-                    if mode == "daily_delivery"
-                    else None
-                ),
+                operation_date=strict_operation_date,
             )
 
             if ai_filter_result and ai_filter_result.success:
@@ -1004,11 +1090,7 @@ class NewsAnalyzer:
                     rss_ids_authoritative=getattr(
                         self, "_rss_ids_authoritative", False
                     ),
-                    operation_date=(
-                        self._operation_date()
-                        if mode == "daily_delivery"
-                        else None
-                    ),
+                    operation_date=strict_operation_date,
                 )
                 total_titles = (
                     0
@@ -1600,26 +1682,41 @@ class NewsAnalyzer:
                     if search_result.failed_providers:
                         failed = ", ".join(search_result.failed_providers)
                         print(f"[新闻搜索] 部分来源失败: {failed}")
-                        if self.report_mode == "daily_delivery":
+                        if self._is_strict_delivery_mode(self.report_mode):
+                            label = (
+                                "每日交付"
+                                if self.report_mode == "daily_delivery"
+                                else "周报"
+                            )
                             search_failure = (
-                                f"每日交付新闻搜索来源失败: {failed}"
+                                f"{label}新闻搜索来源失败: {failed}"
                             )
                     merge_news_search_into_rss(rss_data, search_result)
                 except Exception as e:
                     print(f"[新闻搜索] 搜索失败，继续使用固定 RSS: {e}")
-                    if self.report_mode == "daily_delivery":
-                        search_failure = f"每日交付新闻搜索失败: {e}"
+                    if self._is_strict_delivery_mode(self.report_mode):
+                        label = (
+                            "每日交付"
+                            if self.report_mode == "daily_delivery"
+                            else "周报"
+                        )
+                        search_failure = f"{label}新闻搜索失败: {e}"
 
             # 保存到存储后端
             if self.storage_manager.save_rss_data(rss_data):
                 print(f"[RSS] 数据已保存到存储后端")
 
                 if (
-                    self.report_mode == "daily_delivery"
+                    self._is_strict_delivery_mode(self.report_mode)
                     and rss_data.failed_ids
                 ):
                     failed = ", ".join(rss_data.failed_ids)
-                    raise RuntimeError(f"每日交付 RSS 来源失败: {failed}")
+                    label = (
+                        "每日交付"
+                        if self.report_mode == "daily_delivery"
+                        else "周报"
+                    )
+                    raise RuntimeError(f"{label} RSS 来源失败: {failed}")
                 if search_failure:
                     raise RuntimeError(search_failure)
 
@@ -1733,13 +1830,15 @@ class NewsAnalyzer:
             snapshot = WeeklyRSSAggregator(
                 self.storage_manager, self.ctx.timezone,
             ).build(self._operation_run_at())
-            if not snapshot.data:
-                print("[周报] 上一自然周没有可用数据，不生成空周报")
-                return None, None, None, set()
-
             self._rss_window = snapshot.window
             self._allowed_rss_ids = snapshot.allowed_rss_ids
+            self._rss_ids_authoritative = True
             self._report_period_label = snapshot.window.label
+            if not snapshot.data:
+                print("[周报] 上一自然周没有可用数据，不生成空周报")
+                self._rss_total_count = 0
+                return None, None, [], set()
+
             self._rss_total_count = sum(
                 len(items) for items in snapshot.data.items.values()
             )
@@ -2303,6 +2402,9 @@ class NewsAnalyzer:
                 ):
                     print("[周报] 本周 PDF 已成功发送，跳过重试")
                     return True
+                resumed = self._resume_weekly_pdf_delivery(schedule)
+                if resumed is not None:
+                    return resumed
                 self._agro_weather_report = self._fetch_agro_weather()
                 if self._agro_weather_report is None:
                     raise RuntimeError("本期全国农业气象周报尚未发布")

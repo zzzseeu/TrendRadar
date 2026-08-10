@@ -984,3 +984,274 @@ failure value。GREEN：三项 `Ran 3 in 16.007s, OK`，exit 0。
 
 补充后的第八次最终计数：聚焦 163、兼容 93、全量 518；三套最终命令合计执行 774 个测试
 （聚焦与兼容也包含于全量发现），全部明确 exit 0。未合并 main、未部署、未真实推送。
+
+---
+
+# 每周 PDF 最终整分支审查 A–F 修复
+
+日期：2026-08-10
+待审基线：`0d703bcd`
+工作树：`previous-day-window`
+范围：`.superpowers/sdd/final-fix-brief.md` 的 A–F 全部项。
+
+本轮只修改代码、测试和文档；未部署，未读取或改写真实
+`docker/.env`，未移动 `output`，未真实调用企业微信，未修改 `uv.lock`
+或本地 `.venv`，未改写历史。
+
+## 执行方法与验证环境
+
+- 依次沿 `run -> 采集 -> weekly snapshot -> strict AI -> PDF -> dispatcher -> Scheduler/storage`
+  生产调用链核对 A→B→C→D→E→F，每项先取得有效 RED，再做最小 GREEN。
+- 从当前未变更的 `docker/Dockerfile` 新建临时验证镜像
+  `trendradar-final-fix:0d703bcd`，构建 exit 0。
+- 所有 Python 测试均由镜像内 `/app/.venv/bin/python` 执行，测试容器使用
+  `--network none`。最终全量另加 `PYTHONDONTWRITEBYTECODE=1` 和工作树只读挂载。
+- LiteLLM 断网下下载价格表失败后使用本地备份的 warning 符合预期，不是测试失败。
+
+公共 Python 前缀：
+
+```bash
+docker run --rm --network none \
+  --entrypoint /app/.venv/bin/python \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -v /mnt/d/project/trendradar/.worktrees/previous-day-window:/workspace:ro \
+  -w /workspace trendradar-final-fix:0d703bcd
+```
+
+## A. 权威 weekly 快照
+
+### 根因
+
+`_process_rss_data_by_mode()` 在空周时早退，未设置 `_rss_window`、空的
+`_allowed_rss_ids` 和 `_rss_ids_authoritative=True`；后续 AI 还会解释当天无界 RSS ID。
+另一处为 weekly 严格 AI 过滤和结果转换未显式传 `operation_date`，补跑时
+默认落到 wall-clock 日库，会丢失或串用周一快照的本地整数 ID/分类结果。
+
+### RED
+
+- 增强 `test_weekly_snapshot_scope_flows_from_aggregator_to_both_ai_steps` 和
+  `test_empty_week_does_not_fall_back_to_current_rss`；首跑两项均失败：空周早退丢失
+  authority，weekly filter/conversion 的 `operation_date` 为 `None`，exit 1。
+- 补入真实 Local SQLite 生产链用例：运行日有窗口外 RSS 的空周 + 气象 PDF；
+  同周失败重试与周三 `--force-weekly` 重建的 snapshot ID 一致性。
+
+### GREEN
+
+- 聚合完立即先写入 window/allowed IDs/authority/period label，空周返回权威空列表。
+- weekly filter 和 conversion 均使用 `window.end.strftime("%Y-%m-%d")`。
+- 两项实库链测试：`Ran 2 in 80.801s, OK`，exit 0。
+
+文件：`trendradar/__main__.py`、`tests/test_weekly_schedule.py`。
+
+## B. 严格 weekly 摘要
+
+### 根因
+
+`_run_ai_analysis()` 仍允许公开 `AI_ANALYSIS.MODE=daily/current/incremental` 切换到历史热榜，
+并且 `AIAnalyzer` 只在 daily delivery 传 `strict=True`。因此 weekly 可绕过已选快照，
+且 JSON 修复失败、缺叙事或 grounding 失败可继续到 PDF/checkpoint。
+
+### RED / GREEN
+
+- RED：`test_weekly_summary_ignores_public_mode_and_runs_strict_on_selected_data`
+  的 3 个公开 mode 子场景均进入错误数据源；
+  `test_weekly_summary_failure_aborts_before_pdf_and_checkpoints` 也未在 PDF 前按严格失败终止，exit 1。
+- GREEN：weekly 与 daily delivery 共用唯一严格分支，强制使用调用方传入的 selected
+  stats/RSS，不调用历史热榜准备；两项全部 `OK`。
+- 复用严格 AI engine 的 JSON 修复、grounding 和空 JSON 用例：`Ran 3, OK`。
+
+文件：`trendradar/__main__.py`、`tests/test_weekly_schedule.py`。
+
+## C. 按账号 PDF 幂等投递
+
+### 根因与存储契约
+
+原 dispatcher 每次都向全部企业微信账号重发，只有最后的全局 `push`
+检查点；A 成功/B 失败或全账号成功后全局 checkpoint 写失败，都会确定性重发。
+
+现有 `period_executions` 支持 `(execution_date, period_key, action)` 唯一键与 strict
+Scheduler 读写，与需求无冲突，因此未建第二个 DB。账号 action 为：
+
+```text
+execution_date = weekly window end
+period_key     = monday_weekly
+action         = weekly-pdf:<PDF SHA256>:<namespaced webhook SHA256>
+```
+
+Webhook 原文只在内存中用于计算命名空间化 SHA256 和真实外呼，不写账本、
+不写 action、不输出日志。
+
+### RED
+
+- 新增部分成功、全局 checkpoint 失败、账本读失败 3 项；首跑观察到 A/B 都重发、
+  外呼总数 4 且 dispatcher 无 ledger callback，3 项失败，exit 1。
+- 真实 `run()` 部分投递恢复用例首跑因不存在恢复入口而 RED，exit 1。
+
+### GREEN
+
+- dispatcher 先完成全部账本读再做第一次外呼；只发未成功账号，每个成功外呼后
+  立即写对应 action，任一读/写失败均 fail-closed。
+- 专用 PDF 路径变为可确定计算；`run()` 在气象和采集前检测部分账本，
+  复用同一份已投递 PDF 的 digest 续投。
+- 新增 4 项全部 GREEN；`tests.test_weekly_pdf_delivery` 及两个受影响 schedule 用例
+  合跑 `Ran 20 in 0.144s, OK`。
+
+文件：`trendradar/__main__.py`、`trendradar/notification/dispatcher.py`、
+`trendradar/report/weekly_pdf.py`、`tests/test_weekly_pdf_delivery.py`、`tests/test_weekly_schedule.py`。
+
+## D. weekly 来源/历史存储失败关闭
+
+### 根因与空日库契约
+
+- 当前固定 RSS 和 news-search 部分失败只对 daily delivery 严格，weekly 会带着不完整当日记录继续。
+- `WeeklyRSSAggregator` 使用弱 `get_rss_data`，把缺库、坏库与读取异常吞成 `None`，
+  并且只记录历史 `failed_ids` 而不终止。
+- 真实 SQLite 存储已有可用区分：“保存过的成功空抓取”含 `rss_crawl_records`，
+  `get_rss_data_strict()` 返回空 `RSSData`；缺库或无 crawl record 返回 `None`，坏库严格
+  读取抛错。weekly 聚合器必须解释这个既有契约，而不能把 daily 依赖的 `None` 语义改掉。
+
+### RED
+
+- 真实 SQLite 三项：8 个已保存空日首跑已通过；缺失/坏库两个子场景和历史
+  failed source 均未抛错，形成有效 RED，exit 1。
+- 当前固定 RSS 失败和 news-search 部分失败两项均未在 snapshot 前抛错，exit 1。
+
+### GREEN
+
+- weekly aggregator 对全部 8 个 expected storage date 使用 strict data/ID 读取；任一
+  `None`、strict 异常或最新 `failed_ids` 立即失败，合法空 `RSSData` 继续。
+- 最终全量首轮暴露：若在 Local backend 全局把 strict 缺库改成直接抛错，会破坏 daily
+  aggregator 的既有职责边界。该 overbroad 改动已撤回；fail-closed 只留在 weekly
+  aggregator。daily、weekly strict 三状态与进程锁组合补验 `Ran 26 in 269.511s, OK`。
+- 当前固定/news-search 两项：`Ran 2 in 0.081s, OK`。
+- 历史 strict 真库三项：`Ran 3 in 110.919s, OK`。
+- 整个 `tests.test_weekly_digest` 将旧的“未保存日=可忽略”夹具迁移为显式完整空日；
+  `Ran 42 in 378.072s, OK`。
+
+文件：`trendradar/__main__.py`、`trendradar/core/weekly.py`、
+`tests/test_news_search_pipeline.py`、`tests/test_weekly_digest.py`。
+
+## E. 本地 cron 对齐
+
+### RED / GREEN
+
+- RED：`tests/test_portable_deployment.sh` 改为解析活动 cron 行并校验精确数量/时刻/force 数；
+  首跑“期望 5，实际 1”，exit 1。
+- GREEN：`config/daily.crontab` 保留每天 10:00，新增周一 10:30、11:00、11:30、12:00
+  四个 `--force-weekly` 短任务；portable 输出
+  `PASS: 本地部署路径可移植性检查通过`，exit 0。
+
+文件：`config/daily.crontab`、`tests/test_portable_deployment.sh`。
+
+## F. 清理和 README 可发现性
+
+### RED / GREEN
+
+- RED：天气 config/loader 精确集合与 README 链接用例首跑 `Ran 3`，共 9 个失败断言，
+  exit 1：旧 optional 字段仍在 loader/YAML/计划/测试，README 没有兼容入口。
+- GREEN：从 loader、中英文 YAML、实现计划和旧测试契约完全移除 optional 字段；
+  天气仍是 weekly 生产路径中固定必须项。
+- README/README-EN 增加简短链接式兼容章节，恢复 `current`/`daily`、安装、MCP 和普通
+  `notification` 的入口；未恢复旧 freshness、rolling-time、PDF preview 或 text fallback 周报路径。
+- 聚焦复跑：`Ran 3 in 0.051s, OK`。产品树静态搜索旧 optional 字段为 0。
+
+文件：`trendradar/core/loader.py`、`config/config.yaml`、`config/config.en.yaml`、
+`docs/superpowers/plans/2026-08-10-weekly-pdf-delivery.md`、`README.md`、`README-EN.md`、
+`tests/test_agro_weather.py`、`tests/test_weekly_configuration.py`。
+
+## 最终验证
+
+### 聚焦组合
+
+```bash
+<公共 Python 前缀> -m unittest \
+  tests.test_weekly_time_rule \
+  tests.test_sciencedirect_rss_dates \
+  tests.test_news_search \
+  tests.test_news_search_pipeline \
+  tests.test_weekly_digest \
+  tests.test_agro_weather \
+  tests.test_weekly_schedule \
+  tests.test_weekly_pdf_report \
+  tests.test_wework_pdf \
+  tests.test_weekly_pdf_delivery -q
+```
+
+首跑：`Ran 253 in 421.652s`，1 failure，exit 1。唯一失败是旧
+`test_weekly_snapshot_exception_is_not_swallowed` 夹具本身带 `fixed-failure`；D 的新契约正确在
+snapshot 前失败，使用例无法到达其原本要验证的 snapshot 异常。将该用例的“当前抓取”
+明确设为成功后，定向 `Ran 1 in 0.062s, OK`，exit 0。根据审查协调不再重复运行
+253 项；随后唯一次全量 discovery 覆盖修正后的全部聚焦用例。
+
+### 普通模式兼容
+
+```bash
+<公共 Python 前缀> -m unittest \
+  tests.test_elsevier_full_text \
+  tests.test_direct_first_proxy \
+  tests.test_email_delivery -q
+```
+
+结果：`Ran 36 in 0.033s, OK`，exit 0。
+
+### 全量、真实 PDF 与静态
+
+第一次 full discovery 为 `Ran 618 in 1082.742s`，5 failures + 12 errors，exit 1。
+其中 16 项同源于上述 Local strict overbroad 改动；另 1 项为 multiprocessing SemLock
+单次启动异常。撤回该改动后，daily aggregator 全类、review6 真实双 feed、weekly strict
+三项及 nonblocking attempt lock 合跑 `Ran 26 in 269.511s, OK`，exit 0，既验证契约兼容，
+也确认 SemLock 为一次性测试环境异常。
+
+修复后的 full discovery：
+
+```bash
+<公共 Python 前缀> -m unittest discover -s tests -q
+```
+
+结果为 `Ran 618 in 1097.090s`，无 failure、1 error，exit 1。唯一 error 是测试
+`test_html_generator_forwards_period_metadata` 尝试写仓库根 `index.html`，而最终 full
+刻意使用只读源码挂载，触发 `OSError: [Errno 30] Read-only file system`；其余 617 项无
+FAIL/ERROR。这不是产品代码或断言失败。按最终验证协调没有第三次重复全量，而是保留只读
+仓库，并把唯一目标文件覆盖到 `/tmp` 可写隔离文件后补验该单项：
+`Ran 1 in 0.030s, OK`，exit 0。
+
+真实 Chromium PDF：
+
+```bash
+<公共 Python 前缀> -m unittest \
+  tests.test_weekly_pdf_report.WeeklyPdfGenerationValidationTests.test_actual_chromium_output_is_a4_multipage_with_repeated_chinese_furniture -q
+```
+
+结果：`Ran 1 in 11.810s, OK`，exit 0；覆盖真实 A4、多页、中文字体和重复页眉页脚。
+
+静态/便携验证：
+
+- 镜像内 `bash -n docker/entrypoint.sh`：exit 0。
+- 镜像内 `bash -n config/daily.crontab`：exit 0。
+- 镜像内 `bash tests/test_portable_deployment.sh`：
+  `PASS: 本地部署路径可移植性检查通过`，exit 0。
+- 产品树 `required_for_weekly` 静态搜索：0 命中；weekly 主线的 preview、text fallback、
+  rolling、freshness 静态搜索：0 命中。
+- `git diff --check`：exit 0。
+
+## Diff 自审
+
+- weekly 普通新闻仍只在 `NaturalWeekWindow.contains(item.published_at)` 以
+  `[previous Monday 00:00, current Monday 00:00)` 判定；first/crawl 时间只用于保存元数据。
+- 气象仍是唯一产品周期例外且为强制专栏；未发布、结构错误或周期不符均失败关闭。
+- 空 weekly snapshot 也携带权威 window/ID 集；AI filter、conversion、summary、20 条选择和
+  PDF 沿同一条 weekly 主线，无第二个 hotlist/文字回退分支。
+- 按账号账本复用 strict period store，不存 webhook 原文；已关闭部分成功和全局
+  checkpoint 失败的所有确定性重发路径。
+- strict 历史读取保留了“已保存成功空日”，不会把合法空日与缺失/坏库一律处理。
+- 当前固定 RSS、news-search、任一历史日库、strict AI、PDF、账号 ledger、
+  企业微信文件和全局 checkpoint 任一失败均不将本周标为成功。
+- 没有 `.env`、Webhook/API key、`output`、cache、`uv.lock` 或 `.venv` 进入 diff；
+  不部署、不真实发送。
+
+## 已知边界/疑虑
+
+外部企业微信文件调用与本地/远端 period ledger 无法参与同一个分布式事务。
+若进程在企业微信已成功、但对应账号 ledger 写成功前崩溃（或 ledger 写确定失败），
+重试时该账号仍可能收到一次重复 PDF。这是无企业微信幂等键/查询回执 API 时不可避免的
+外部调用/崩溃歧义；本轮已关闭其他所有可确定恢复的部分成功和全局 checkpoint 失败路径。

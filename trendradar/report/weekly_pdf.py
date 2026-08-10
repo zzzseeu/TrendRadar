@@ -251,13 +251,30 @@ def build_weekly_pdf(
     html: str,
 ) -> str:
     """Persist the dedicated template and produce its precisely named PDF."""
+    html_path = weekly_pdf_output_path(
+        output_dir, period_start, period_end, suffix=".html"
+    )
+    pdf_path = weekly_pdf_output_path(
+        output_dir, period_start, period_end, suffix=".pdf"
+    )
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html, encoding="utf-8")
+    return generate_pdf_from_html(str(html_path), str(pdf_path))
+
+
+def weekly_pdf_output_path(
+    output_dir: str,
+    period_start: date,
+    period_end: date,
+    *,
+    suffix: str = ".pdf",
+) -> Path:
+    """Return the deterministic artifact path for one weekly window."""
+    if suffix not in {".html", ".pdf"}:
+        raise ValueError(f"unsupported weekly report suffix: {suffix}")
     folder = Path(output_dir) / "pdf" / period_end.isoformat()
-    folder.mkdir(parents=True, exist_ok=True)
     stem = (
         f"农业育种新闻周报_{period_start:%Y-%m-%d}至"
         f"{period_end - timedelta(days=1):%Y-%m-%d}"
     )
-    html_path = folder / f"{stem}.html"
-    pdf_path = folder / f"{stem}.pdf"
-    html_path.write_text(html, encoding="utf-8")
-    return generate_pdf_from_html(str(html_path), str(pdf_path))
+    return folder / f"{stem}{suffix}"

@@ -56,6 +56,16 @@ assert_contains "${CRONTAB}" '"$PROJECT_DIR"'
 assert_contains "${CRONTAB}" '"$UV_BIN"'
 assert_contains "${CRONTAB}" '0 10 * * *'
 assert_contains "${CRONTAB}" '每天静默采集，周一生成上一自然周 PDF；周一 10:30—12:00 为气象周报重试'
+active_cron_count="$(awk '$1 ~ /^[0-9]/ { count++ } END { print count + 0 }' "${CRONTAB}")"
+active_cron_times="$(awk '$1 ~ /^[0-9]/ { print $1, $2, $3, $4, $5 }' "${CRONTAB}")"
+forced_cron_count="$(awk '$1 ~ /^[0-9]/ && /--force-weekly/ { count++ } END { print count + 0 }' "${CRONTAB}")"
+assert_equal "${active_cron_count}" '5'
+assert_equal "${active_cron_times}" '0 10 * * *
+30 10 * * 1
+0 11 * * 1
+30 11 * * 1
+0 12 * * 1'
+assert_equal "${forced_cron_count}" '4'
 assert_contains "${SCHEDULER}" '每天 10:00'
 assert_contains "${COMPOSE}" 'dockerfile: docker/Dockerfile'
 assert_contains "${COMPOSE}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-}'

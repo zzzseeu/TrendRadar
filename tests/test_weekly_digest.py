@@ -294,6 +294,31 @@ class NaturalWeekWindowTests(unittest.TestCase):
 
 
 class WeeklyRSSAggregatorTests(unittest.TestCase):
+    @staticmethod
+    def _configure_complete_mock_week(storage):
+        """Treat unspecified mock dates as explicitly saved successful empties."""
+        weak_reader = storage.get_rss_data
+        weak_id_reader = storage.get_all_rss_ids
+        storage.get_rss_data_strict.side_effect = lambda date: (
+            weak_reader(date) or rss_data(date)
+        )
+        storage.get_all_rss_ids_strict.side_effect = weak_id_reader
+
+    def _save_complete_week(self, storage, now, by_date=None):
+        by_date = by_date or {}
+        for date in previous_natural_week(
+            now, "Asia/Shanghai"
+        ).storage_dates:
+            self.assertTrue(storage.save_rss_data(
+                by_date.get(date) or RSSData(
+                    date=date,
+                    crawl_time=f"{date} 10:00:00",
+                    items={},
+                    id_to_name={"journal": "Journal"},
+                    failed_ids=[],
+                )
+            ))
+
     def test_snapshot_crawl_time_uses_frozen_run_at(self):
         storage = MagicMock()
         storage.get_rss_data.side_effect = lambda date: (
@@ -312,6 +337,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             "id": 1, "source_id": "journal", "title": "Weekly item",
             "url": "https://example.org/weekly",
         }]
+        self._configure_complete_mock_week(storage)
         run_at = SHANGHAI.localize(datetime(2026, 8, 10, 10, 0))
 
         WeeklyRSSAggregator(storage, "Asia/Shanghai").build(run_at)
@@ -473,19 +499,20 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             {"id": 13, "source_id": "journal", "title": "This Monday",
              "url": "https://example.org/monday"},
         ]
+        self._configure_complete_mock_week(storage)
 
         result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
             tz.localize(datetime(2026, 8, 10, 10, 0))
         )
 
-        self.assertEqual(storage.get_rss_data.call_count, 8)
+        self.assertEqual(storage.get_rss_data_strict.call_count, 8)
         self.assertEqual(
             [item.title for item in result.iter_items()],
             ["Week start", "Sunday night"],
         )
         self.assertEqual(result.allowed_rss_ids, {11, 12})
         self.assertEqual(result.filtered_out, 1)
-        self.assertEqual(len(result.missing_dates), 6)
+        self.assertEqual(result.missing_dates, [])
 
     def test_canonical_url_dedup_keeps_richer_search_record(self):
         storage = MagicMock()
@@ -510,6 +537,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             "id": 21, "source_id": "agri-news-search",
             "title": "Breeding result", "url": "https://example.org/story",
         }]
+        self._configure_complete_mock_week(storage)
 
         result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
             pytz.timezone("Asia/Shanghai").localize(
@@ -542,6 +570,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             "id": 31, "source_id": "journal",
             "title": "Breeding: a breakthrough", "url": "",
         }]
+        self._configure_complete_mock_week(storage)
 
         result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
             pytz.timezone("Asia/Shanghai").localize(
@@ -576,6 +605,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             {"id": 43, "source_id": "alpha", "title": "Last alpha",
              "url": "https://example.org/last-alpha"},
         ]
+        self._configure_complete_mock_week(storage)
 
         result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
             pytz.timezone("Asia/Shanghai").localize(
@@ -590,9 +620,9 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
 
     def test_all_eight_missing_databases_raise_clear_error(self):
         storage = MagicMock()
-        storage.get_rss_data.return_value = None
+        storage.get_rss_data_strict.return_value = None
 
-        with self.assertRaisesRegex(RuntimeError, "八个日库全部缺失"):
+        with self.assertRaisesRegex(RuntimeError, "2026-08-03"):
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
                 pytz.timezone("Asia/Shanghai").localize(
                     datetime(2026, 8, 10, 10, 0)
@@ -631,7 +661,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             self.assertEqual(restored.failed_ids, [])
             storage.cleanup()
 
-    def test_empty_successful_sqlite_day_makes_an_empty_week_legal(self):
+    def test_one_empty_sqlite_day_does_not_hide_other_missing_days(self):
         from tempfile import TemporaryDirectory
         from trendradar.storage.local import LocalStorageBackend
 
@@ -651,16 +681,112 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 failed_ids=[],
             ))
 
-            try:
-                snapshot = WeeklyRSSAggregator(
+            with self.assertRaisesRegex(RuntimeError, "2026-08-03"):
+                WeeklyRSSAggregator(
                     storage, "Asia/Shanghai"
                 ).build(tz.localize(datetime(2026, 8, 10, 10, 0)))
-            except RuntimeError as exc:
-                self.fail(f"合法空日库被误判为全缺失: {exc}")
+            storage.cleanup()
+
+    def test_all_saved_empty_sqlite_days_make_an_empty_week_legal(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        now = SHANGHAI.localize(datetime(2026, 8, 10, 10, 0))
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            for date_str in previous_natural_week(
+                now, "Asia/Shanghai"
+            ).storage_dates:
+                self.assertTrue(storage.save_rss_data(RSSData(
+                    date=date_str,
+                    crawl_time=f"{date_str} 10:00:00",
+                    items={},
+                    id_to_name={"journal": "Journal"},
+                    failed_ids=[],
+                )))
+
+            snapshot = WeeklyRSSAggregator(
+                storage, "Asia/Shanghai"
+            ).build(now)
 
             self.assertIsNone(snapshot.data)
-            self.assertNotIn("2026-08-05", snapshot.missing_dates)
-            self.assertEqual(len(snapshot.missing_dates), 7)
+            self.assertEqual(snapshot.missing_dates, [])
+            storage.cleanup()
+
+    def test_missing_or_corrupt_sqlite_day_fails_weekly_strict_read(self):
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        now = SHANGHAI.localize(datetime(2026, 8, 10, 10, 0))
+        dates = previous_natural_week(now, "Asia/Shanghai").storage_dates
+        for broken_kind in ("missing", "corrupt"):
+            with self.subTest(broken_kind=broken_kind), TemporaryDirectory() as data_dir:
+                storage = LocalStorageBackend(
+                    data_dir=data_dir,
+                    enable_txt=False,
+                    enable_html=False,
+                    timezone="Asia/Shanghai",
+                )
+                for date_str in dates:
+                    if broken_kind == "missing" and date_str == "2026-08-06":
+                        continue
+                    self.assertTrue(storage.save_rss_data(RSSData(
+                        date=date_str,
+                        crawl_time=f"{date_str} 10:00:00",
+                        items={},
+                        id_to_name={"journal": "Journal"},
+                        failed_ids=[],
+                    )))
+                storage.cleanup()
+                if broken_kind == "corrupt":
+                    Path(data_dir, "rss", "2026-08-06.db").write_bytes(
+                        b"not sqlite"
+                    )
+
+                with self.assertRaisesRegex(
+                    (RuntimeError, Exception), "2026-08-06|database|SQLite|file"
+                ):
+                    WeeklyRSSAggregator(
+                        storage, "Asia/Shanghai"
+                    ).build(now)
+
+    def test_historical_failed_source_status_fails_weekly(self):
+        from tempfile import TemporaryDirectory
+        from trendradar.storage.local import LocalStorageBackend
+
+        now = SHANGHAI.localize(datetime(2026, 8, 10, 10, 0))
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            for date_str in previous_natural_week(
+                now, "Asia/Shanghai"
+            ).storage_dates:
+                self.assertTrue(storage.save_rss_data(RSSData(
+                    date=date_str,
+                    crawl_time=f"{date_str} 10:00:00",
+                    items={},
+                    id_to_name={"journal": "Journal"},
+                    failed_ids=(
+                        ["unavailable-feed"]
+                        if date_str == "2026-08-06"
+                        else []
+                    ),
+                )))
+
+            with self.assertRaisesRegex(
+                RuntimeError, "2026-08-06.*unavailable-feed"
+            ):
+                WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
             storage.cleanup()
 
     def test_existing_daily_database_with_no_in_window_items_is_empty_week(self):
@@ -672,6 +798,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 published_at="2026-08-02T23:59:59+08:00",
             )) if date == "2026-08-03" else None
         )
+        self._configure_complete_mock_week(storage)
 
         result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
             pytz.timezone("Asia/Shanghai").localize(
@@ -683,7 +810,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
         self.assertEqual(result.filtered_out, 1)
         storage.save_rss_data.assert_not_called()
 
-    def test_records_failed_sources_by_storage_date(self):
+    def test_failed_source_by_storage_date_fails_closed(self):
         storage = MagicMock()
         data = rss_data("2026-08-05", RSSItem(
             title="Available", feed_id="journal", url="https://example.org/item",
@@ -698,19 +825,16 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             "id": 22, "source_id": "journal", "title": "Available",
             "url": "https://example.org/item",
         }]
+        self._configure_complete_mock_week(storage)
 
-        result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
-            pytz.timezone("Asia/Shanghai").localize(
-                datetime(2026, 8, 10, 10, 0)
+        with self.assertRaisesRegex(
+            RuntimeError, "2026-08-05.*unavailable-feed"
+        ):
+            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
+                pytz.timezone("Asia/Shanghai").localize(
+                    datetime(2026, 8, 10, 10, 0)
+                )
             )
-        )
-
-        self.assertEqual(result.data.failed_ids, [])
-        self.assertEqual(result.failed_ids, ["unavailable-feed"])
-        self.assertEqual(
-            result.failed_sources,
-            {"2026-08-05": ["unavailable-feed"]},
-        )
 
     def test_nonempty_snapshot_requires_resolved_database_ids(self):
         storage = MagicMock()
@@ -723,6 +847,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
         )
         storage.save_rss_data.return_value = True
         storage.get_all_rss_ids.return_value = []
+        self._configure_complete_mock_week(storage)
 
         with self.assertRaisesRegex(RuntimeError, "周快照 ID 解析失败"):
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
@@ -753,6 +878,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             "id": 51, "source_id": "journal", "title": "Resolved",
             "url": "https://example.org/resolved",
         }]
+        self._configure_complete_mock_week(storage)
 
         with self.assertRaisesRegex(RuntimeError, "周快照 ID 解析失败"):
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
@@ -771,6 +897,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             )) if date == "2026-08-05" else None
         )
         storage.save_rss_data.return_value = False
+        self._configure_complete_mock_week(storage)
 
         with self.assertRaisesRegex(RuntimeError, "周快照保存失败"):
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
@@ -792,11 +919,14 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 enable_html=False,
                 timezone="Asia/Shanghai",
             )
-            storage.save_rss_data(rss_data("2026-08-05", RSSItem(
+            source = rss_data("2026-08-05", RSSItem(
                 title="Stable item", feed_id="journal",
                 url="https://example.org/stable",
                 published_at="2026-08-05T08:00:00+08:00",
-            )))
+            ))
+            self._save_complete_week(
+                storage, now, {"2026-08-05": source}
+            )
 
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
@@ -821,10 +951,13 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 enable_html=False,
                 timezone="Asia/Shanghai",
             )
-            storage.save_rss_data(rss_data("2026-08-05", RSSItem(
+            source = rss_data("2026-08-05", RSSItem(
                 title="GUID only", feed_id="journal", guid="stable-guid",
                 published_at="2026-08-05T08:00:00+08:00",
-            )))
+            ))
+            self._save_complete_week(
+                storage, now, {"2026-08-05": source}
+            )
 
             first = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
             second = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
@@ -866,12 +999,18 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                     published_at="2026-08-05T09:00:00+08:00",
                 ),
             )
+            self._save_complete_week(backend, now)
 
             class SnapshotStorage:
                 def get_rss_data(self, date):
                     if date == "2026-08-05":
                         return source_data
                     return backend.get_rss_data(date)
+
+                def get_rss_data_strict(self, date):
+                    if date == "2026-08-05":
+                        return source_data
+                    return backend.get_rss_data_strict(date)
 
                 def __getattr__(self, name):
                     return getattr(backend, name)
@@ -908,12 +1047,15 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 enable_html=False,
                 timezone="Asia/Shanghai",
             )
-            storage.save_rss_data(rss_data("2026-08-05", RSSItem(
+            source = rss_data("2026-08-05", RSSItem(
                 title="Canonical story", feed_id="journal",
                 url="https://example.org/story?utm_source=newsletter",
                 summary="short",
                 published_at="2026-08-05T08:00:00+08:00",
-            )))
+            ))
+            self._save_complete_week(
+                storage, now, {"2026-08-05": source}
+            )
 
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
 
@@ -934,7 +1076,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             self.assertEqual(len(result.allowed_rss_ids), 1)
             storage.cleanup()
 
-    def test_rebuild_keeps_failed_sources_at_their_original_dates(self):
+    def test_rebuild_aborts_on_failed_source_at_its_original_date(self):
         from tempfile import TemporaryDirectory
         from trendradar.storage.local import LocalStorageBackend
 
@@ -953,15 +1095,14 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 published_at="2026-08-05T08:00:00+08:00",
             ))
             daily.failed_ids = ["unavailable-feed"]
-            storage.save_rss_data(daily)
-
-            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
-            rebuilt = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
-
-            self.assertEqual(
-                rebuilt.failed_sources,
-                {"2026-08-05": ["unavailable-feed"]},
+            self._save_complete_week(
+                storage, now, {"2026-08-05": daily}
             )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "2026-08-05.*unavailable-feed"
+            ):
+                WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
             storage.cleanup()
 
     def test_cross_feed_canonical_url_reuses_existing_snapshot_row(self):
@@ -975,11 +1116,14 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 data_dir=data_dir, enable_txt=False, enable_html=False,
                 timezone="Asia/Shanghai",
             )
-            storage.save_rss_data(rss_data("2026-08-05", RSSItem(
+            source = rss_data("2026-08-05", RSSItem(
                 title="Shared story", feed_id="feed-a",
                 url="https://example.org/story?utm_source=feed-a",
                 summary="short", published_at="2026-08-05T08:00:00+08:00",
-            )))
+            ))
+            self._save_complete_week(
+                storage, now, {"2026-08-05": source}
+            )
             WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
 
             storage.save_rss_data(rss_data("2026-08-06", RSSItem(
@@ -997,7 +1141,7 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             self.assertEqual(len(result.allowed_rss_ids), 1)
             storage.cleanup()
 
-    def test_failed_day_without_items_is_not_missing(self):
+    def test_failed_day_without_items_is_not_treated_as_legal_empty(self):
         from tempfile import TemporaryDirectory
         from trendradar.storage.local import LocalStorageBackend
 
@@ -1008,20 +1152,20 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
                 data_dir=data_dir, enable_txt=False, enable_html=False,
                 timezone="Asia/Shanghai",
             )
-            storage.save_rss_data(RSSData(
+            failed = RSSData(
                 date="2026-08-05", crawl_time="10-00", items={},
                 failed_ids=["unavailable-feed"],
-            ))
+            )
+            self._save_complete_week(
+                storage, now, {"2026-08-05": failed}
+            )
 
             daily = storage.get_rss_data("2026-08-05")
-            result = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
+            with self.assertRaisesRegex(
+                RuntimeError, "2026-08-05.*unavailable-feed"
+            ):
+                WeeklyRSSAggregator(storage, "Asia/Shanghai").build(now)
 
             self.assertEqual(daily.items, {})
             self.assertEqual(daily.failed_ids, ["unavailable-feed"])
-            self.assertIsNone(result.data)
-            self.assertNotIn("2026-08-05", result.missing_dates)
-            self.assertEqual(
-                result.failed_sources,
-                {"2026-08-05": ["unavailable-feed"]},
-            )
             storage.cleanup()

@@ -3,6 +3,7 @@
 
 import tempfile
 import unittest
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -245,12 +246,189 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         analyzer._weekly_pdf_path = str(self._pdf())
 
         self.assertTrue(analyzer._deliver_weekly_pdf(self.schedule))
-        dispatcher.dispatch_weekly_pdf.assert_called_once_with(
-            str(self._pdf()), ""
-        )
+        dispatcher.dispatch_weekly_pdf.assert_called_once()
+        dispatch_call = dispatcher.dispatch_weekly_pdf.call_args
+        self.assertEqual(dispatch_call.args, (str(self._pdf()), ""))
+        self.assertTrue(callable(dispatch_call.kwargs["is_delivered"]))
+        self.assertTrue(callable(dispatch_call.kwargs["record_delivery"]))
         scheduler.record_execution.assert_called_once_with(
             "monday_weekly", "push", "2026-08-10"
         )
+
+    def test_partial_account_retry_sends_only_the_failed_account(self):
+        first_webhook = f"{WEBHOOK}-account-a"
+        second_webhook = f"{WEBHOOK}-account-b"
+        dispatcher = self._dispatcher(f"{first_webhook};{second_webhook}")
+        scheduler = MagicMock()
+        recorded_actions = set()
+
+        def already_executed(_period_key, action, _date_str):
+            return action in recorded_actions
+
+        def record_execution(_period_key, action, _date_str):
+            recorded_actions.add(action)
+            return True
+
+        scheduler.already_executed.side_effect = already_executed
+        scheduler.record_execution.side_effect = record_execution
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            create_scheduler=MagicMock(return_value=scheduler),
+            create_notification_dispatcher=MagicMock(return_value=dispatcher),
+            timezone="Asia/Shanghai",
+            config={},
+        )
+        analyzer.proxy_url = ""
+        analyzer._run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        analyzer._rss_window = previous_natural_week(
+            analyzer._run_at, "Asia/Shanghai"
+        )
+        analyzer._weekly_pdf_path = str(self._pdf())
+
+        with patch(
+            "trendradar.notification.dispatcher.send_wework_pdf_file",
+            side_effect=[True, False, True],
+        ) as send:
+            self.assertFalse(analyzer._deliver_weekly_pdf(self.schedule))
+            self.assertTrue(analyzer._deliver_weekly_pdf(self.schedule))
+
+        self.assertEqual(
+            [call.args[0] for call in send.call_args_list],
+            [first_webhook, second_webhook, second_webhook],
+        )
+        account_actions = recorded_actions - {"push"}
+        self.assertEqual(len(account_actions), 2)
+        pdf_digest = hashlib.sha256(
+            Path(analyzer._weekly_pdf_path).read_bytes()
+        ).hexdigest()
+        self.assertTrue(all(pdf_digest in action for action in account_actions))
+        self.assertTrue(all("webhook" not in action for action in account_actions))
+        self.assertTrue(all("key=" not in action for action in account_actions))
+
+    def test_global_checkpoint_failure_retries_only_checkpoint_aggregation(self):
+        dispatcher = self._dispatcher(f"{WEBHOOK}-a;{WEBHOOK}-b")
+        scheduler = MagicMock()
+        recorded_actions = set()
+        global_attempts = 0
+
+        def already_executed(_period_key, action, _date_str):
+            return action in recorded_actions
+
+        def record_execution(_period_key, action, _date_str):
+            nonlocal global_attempts
+            if action == "push":
+                global_attempts += 1
+                if global_attempts == 1:
+                    return False
+            recorded_actions.add(action)
+            return True
+
+        scheduler.already_executed.side_effect = already_executed
+        scheduler.record_execution.side_effect = record_execution
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            create_scheduler=MagicMock(return_value=scheduler),
+            create_notification_dispatcher=MagicMock(return_value=dispatcher),
+            timezone="Asia/Shanghai",
+            config={},
+        )
+        analyzer.proxy_url = ""
+        analyzer._run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        analyzer._rss_window = previous_natural_week(
+            analyzer._run_at, "Asia/Shanghai"
+        )
+        analyzer._weekly_pdf_path = str(self._pdf())
+
+        with patch(
+            "trendradar.notification.dispatcher.send_wework_pdf_file",
+            return_value=True,
+        ) as send:
+            self.assertFalse(analyzer._deliver_weekly_pdf(self.schedule))
+            self.assertTrue(analyzer._deliver_weekly_pdf(self.schedule))
+
+        self.assertEqual(send.call_count, 2)
+        self.assertEqual(global_attempts, 2)
+        self.assertIn("push", recorded_actions)
+
+    def test_account_ledger_read_error_fails_before_any_external_send(self):
+        dispatcher = self._dispatcher(f"{WEBHOOK}-a;{WEBHOOK}-b")
+        with patch(
+            "trendradar.notification.dispatcher.send_wework_pdf_file"
+        ) as send:
+            result = dispatcher.dispatch_weekly_pdf(
+                str(self._pdf()),
+                is_delivered=MagicMock(side_effect=RuntimeError("ledger bad")),
+                record_delivery=MagicMock(),
+            )
+
+        self.assertFalse(result)
+        send.assert_not_called()
+
+    def test_run_resumes_existing_partial_pdf_before_weather_or_crawl(self):
+        first_webhook = f"{WEBHOOK}-account-a"
+        second_webhook = f"{WEBHOOK}-account-b"
+        dispatcher = self._dispatcher(f"{first_webhook};{second_webhook}")
+        account_hashes = dispatcher.weekly_pdf_account_hashes()
+        pdf_path = self._pdf()
+        pdf_digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        first_action = NewsAnalyzer._weekly_account_delivery_action(
+            pdf_digest, account_hashes[0]
+        )
+        recorded_actions = {first_action}
+        scheduler = MagicMock()
+        scheduler.already_executed.side_effect = (
+            lambda _period, action, _date: action in recorded_actions
+        )
+
+        def record_execution(_period, action, _date):
+            recorded_actions.add(action)
+            return True
+
+        scheduler.record_execution.side_effect = record_execution
+        run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            cleanup=MagicMock(),
+            config={"DEBUG": False},
+            timezone="Asia/Shanghai",
+            get_time=MagicMock(return_value=run_at),
+            create_scheduler=MagicMock(return_value=scheduler),
+            create_notification_dispatcher=MagicMock(return_value=dispatcher),
+        )
+        analyzer.proxy_url = ""
+        analyzer._resolve_and_apply_schedule = MagicMock(
+            return_value=self.schedule
+        )
+        lock = MagicMock()
+        lock.acquire.return_value = True
+        analyzer._create_weekly_attempt_lock = MagicMock(return_value=lock)
+        analyzer._fetch_agro_weather = MagicMock()
+        analyzer._initialize_and_check_config = MagicMock()
+        analyzer._crawl_data = MagicMock()
+        analyzer._crawl_rss_data = MagicMock()
+
+        with patch(
+            "trendradar.__main__.weekly_pdf_output_path",
+            return_value=pdf_path,
+        ), patch(
+            "trendradar.notification.dispatcher.send_wework_pdf_file",
+            return_value=True,
+        ) as send:
+            self.assertTrue(analyzer.run())
+
+        send.assert_called_once()
+        self.assertEqual(send.call_args.args[0], second_webhook)
+        analyzer._fetch_agro_weather.assert_not_called()
+        analyzer._initialize_and_check_config.assert_not_called()
+        analyzer._crawl_data.assert_not_called()
+        analyzer._crawl_rss_data.assert_not_called()
+        self.assertIn("push", recorded_actions)
 
     def test_same_week_checkpoint_prevents_a_second_dispatch(self):
         scheduler = MagicMock()

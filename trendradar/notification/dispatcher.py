@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -71,10 +72,15 @@ class NotificationDispatcher:
         self.max_accounts = config.get("MAX_ACCOUNTS_PER_CHANNEL", 3)
         self.translator = translator
 
-    def dispatch_weekly_pdf(
-        self, pdf_file_path: str, proxy_url: str = ""
-    ) -> bool:
-        """向每个企业微信机器人发送唯一的周报 PDF 文件消息。"""
+    @staticmethod
+    def _weekly_pdf_account_hash(webhook_url: str) -> str:
+        """Return a stable opaque account ID without exposing webhook text."""
+        return hashlib.sha256(
+            b"trendradar:weekly-pdf:wework:v1\0"
+            + webhook_url.strip().encode("utf-8")
+        ).hexdigest()
+
+    def _weekly_pdf_targets(self) -> list[tuple[str, str]]:
         urls = limit_accounts(
             parse_multi_account_config(
                 self.config.get("WEWORK_WEBHOOK_URL", "")
@@ -82,16 +88,68 @@ class NotificationDispatcher:
             self.max_accounts,
             "企业微信",
         )
+        targets: dict[str, str] = {}
+        for url in urls:
+            if not url:
+                continue
+            account_hash = self._weekly_pdf_account_hash(url)
+            targets.setdefault(account_hash, url)
+        return [(url, account_hash) for account_hash, url in targets.items()]
+
+    def weekly_pdf_account_hashes(self) -> list[str]:
+        """List stable opaque account IDs in dispatch order."""
+        return [account_hash for _, account_hash in self._weekly_pdf_targets()]
+
+    def dispatch_weekly_pdf(
+        self,
+        pdf_file_path: str,
+        proxy_url: str = "",
+        *,
+        is_delivered: Optional[Callable[[str], bool]] = None,
+        record_delivery: Optional[Callable[[str], bool]] = None,
+    ) -> bool:
+        """Send the PDF only to accounts without a durable success record."""
+        targets = self._weekly_pdf_targets()
+        urls = [url for url, _ in targets]
         if not urls:
             print("[周报] 未配置企业微信 Webhook")
             return False
+
+        delivered: dict[str, bool] = {}
+        if is_delivered is not None:
+            try:
+                # Resolve every ledger read before the first external call.
+                delivered = {
+                    account_hash: bool(is_delivered(account_hash))
+                    for _, account_hash in targets
+                }
+            except Exception as exc:
+                print(f"[周报] 账号投递账本读取失败: {type(exc).__name__}")
+                return False
+
         proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
         results = []
-        for url in urls:
+        for url, account_hash in targets:
+            if delivered.get(account_hash, False):
+                results.append(True)
+                continue
             try:
-                results.append(send_wework_pdf_file(
+                sent = send_wework_pdf_file(
                     url, pdf_file_path, proxies=proxies
-                ))
+                )
+                if sent and record_delivery is not None:
+                    try:
+                        sent = bool(record_delivery(account_hash))
+                    except Exception as exc:
+                        print(
+                            "[周报] 账号投递账本写入失败: "
+                            f"{type(exc).__name__}"
+                        )
+                        sent = False
+                    if not sent:
+                        results.append(False)
+                        break
+                results.append(sent)
             except Exception as exc:
                 print(f"[周报] 企业微信 PDF 发送失败: {type(exc).__name__}")
                 results.append(False)

@@ -133,6 +133,64 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._execute_mode_strategy = MagicMock(return_value=True)
         return analyzer
 
+    def make_snapshot_analyzer(self, storage, run_at=RUN_AT):
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={
+                "DISPLAY": {"REGIONS": {"RSS": True}},
+                "AI_ANALYSIS": {"ENABLED": False},
+                "AI_TRANSLATION": {"ENABLED": False},
+                "STORAGE": {"FORMATS": {"HTML": False}},
+            },
+            timezone="Asia/Shanghai",
+            load_frequency_words=MagicMock(return_value=([], [], [])),
+            count_frequency=MagicMock(return_value=([], 0)),
+            display_mode="keyword",
+            run_ai_filter=MagicMock(
+                return_value=AIFilterResult(success=True, tags=[])
+            ),
+            convert_ai_filter_to_report_data=MagicMock(
+                return_value=([], [], [])
+            ),
+        )
+        analyzer.storage_manager = storage
+        analyzer.report_mode = "weekly"
+        analyzer.frequency_file = None
+        analyzer.filter_method = "ai"
+        analyzer.interests_file = None
+        analyzer.rank_threshold = 5
+        analyzer._run_at = run_at
+        analyzer._rss_window = None
+        analyzer._allowed_rss_ids = None
+        analyzer._rss_ids_authoritative = False
+        analyzer._weekly_ai_filter_succeeded = False
+        analyzer._agro_weather_report = CURRENT_WEATHER
+        analyzer._rss_total_count = 0
+        analyzer._rss_source_total = 0
+        analyzer._rss_source_failed = 0
+        analyzer._hotlist_total_count = 0
+        return analyzer
+
+    @staticmethod
+    def save_weekly_days(storage, *, monday_items=None, wednesday_items=None):
+        for date_str in previous_natural_week(
+            RUN_AT, "Asia/Shanghai"
+        ).storage_dates:
+            items = {}
+            if date_str == "2026-08-05" and wednesday_items:
+                items = {"journal": list(wednesday_items)}
+            if date_str == "2026-08-10" and monday_items:
+                items = {"journal": list(monday_items)}
+            saved = storage.save_rss_data(RSSData(
+                date=date_str,
+                crawl_time=f"{date_str} 10:00:00",
+                items=items,
+                id_to_name={"journal": "Journal"},
+                failed_ids=[],
+            ))
+            if not saved:
+                raise AssertionError(f"failed to save fixture day {date_str}")
+
     def test_scheduler_module_import_on_windows_does_not_require_fcntl(self):
         module_name = "_trendradar_scheduler_without_fcntl"
         module_path = ROOT / "trendradar" / "core" / "scheduler.py"
@@ -514,7 +572,10 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._execute_mode_strategy.assert_not_called()
 
     def test_weekly_snapshot_scope_flows_from_aggregator_to_both_ai_steps(self):
-        window = SimpleNamespace(label="唯一自然周")
+        window = SimpleNamespace(
+            label="唯一自然周",
+            end=at(2026, 8, 10, 0, 0),
+        )
         allowed_ids = {101, 202}
         snapshot = SimpleNamespace(
             window=window,
@@ -577,6 +638,10 @@ class WeeklyScheduleTests(unittest.TestCase):
         self.assertIs(conversion_kwargs["rss_window"], window)
         self.assertIs(filter_kwargs["allowed_rss_ids"], allowed_ids)
         self.assertIs(conversion_kwargs["allowed_rss_ids"], allowed_ids)
+        self.assertTrue(filter_kwargs["rss_ids_authoritative"])
+        self.assertTrue(conversion_kwargs["rss_ids_authoritative"])
+        self.assertEqual(filter_kwargs["operation_date"], "2026-08-10")
+        self.assertEqual(conversion_kwargs["operation_date"], "2026-08-10")
         log_lines = "\n".join(str(call.args[0]) for call in printed.call_args_list)
         self.assertIn("total_read=8", log_lines)
         self.assertIn("filtered_out=2", log_lines)
@@ -696,11 +761,127 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.frequency_file = None
         analyzer.rank_threshold = 5
 
+        window = previous_natural_week(RUN_AT, "Asia/Shanghai")
         with patch("trendradar.__main__.WeeklyRSSAggregator") as aggregator:
-            aggregator.return_value.build.return_value = SimpleNamespace(data=None)
+            aggregator.return_value.build.return_value = SimpleNamespace(
+                data=None,
+                window=window,
+                allowed_rss_ids=set(),
+            )
             result = analyzer._process_rss_data_by_mode(MagicMock())
 
-        self.assertEqual(result, (None, None, None, set()))
+        self.assertEqual(result, (None, None, [], set()))
+        self.assertIs(analyzer._rss_window, window)
+        self.assertEqual(analyzer._allowed_rss_ids, set())
+        self.assertTrue(analyzer._rss_ids_authoritative)
+        self.assertEqual(analyzer._report_period_label, window.label)
+
+    def test_empty_week_ignores_run_day_rss_and_builds_weather_pdf(self):
+        from trendradar.storage.local import LocalStorageBackend
+
+        current_monday_item = RSSItem(
+            title="Current Monday item",
+            feed_id="journal",
+            url="https://example.org/current-monday",
+            published_at="2026-08-10T08:00:00+08:00",
+        )
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            self.save_weekly_days(
+                storage, monday_items=[current_monday_item]
+            )
+            analyzer = self.make_snapshot_analyzer(storage)
+
+            rss_items, rss_new_items, raw_items, rss_new_urls = (
+                analyzer._process_rss_data_by_mode(
+                    storage.get_rss_data("2026-08-10")
+                )
+            )
+            with patch(
+                "trendradar.__main__.render_weekly_pdf_html",
+                return_value="<html />",
+            ), patch(
+                "trendradar.__main__.build_weekly_pdf",
+                return_value="output/weather-only.pdf",
+            ) as build:
+                analyzer._run_analysis_pipeline(
+                    {}, "weekly", {}, {}, [], [], {},
+                    rss_items=rss_items,
+                    rss_new_items=rss_new_items,
+                    rss_new_urls=rss_new_urls,
+                    schedule=schedule(),
+                )
+
+            self.assertEqual(raw_items, [])
+            self.assertEqual(analyzer._allowed_rss_ids, set())
+            self.assertTrue(analyzer._rss_ids_authoritative)
+            filter_kwargs = analyzer.ctx.run_ai_filter.call_args.kwargs
+            self.assertEqual(filter_kwargs["operation_date"], "2026-08-10")
+            build.assert_called_once()
+            storage.cleanup()
+
+    def test_failed_delivery_retry_and_post_monday_force_replay_snapshot_ids(self):
+        from trendradar.storage.local import LocalStorageBackend
+
+        weekly_item = RSSItem(
+            title="Previous week item",
+            feed_id="journal",
+            url="https://example.org/previous-week",
+            published_at="2026-08-05T08:00:00+08:00",
+        )
+        current_monday_item = RSSItem(
+            title="Current Monday item",
+            feed_id="journal",
+            url="https://example.org/current-monday",
+            published_at="2026-08-10T08:00:00+08:00",
+        )
+        with TemporaryDirectory() as data_dir:
+            storage = LocalStorageBackend(
+                data_dir=data_dir,
+                enable_txt=False,
+                enable_html=False,
+                timezone="Asia/Shanghai",
+            )
+            self.save_weekly_days(
+                storage,
+                monday_items=[current_monday_item],
+                wednesday_items=[weekly_item],
+            )
+
+            first = self.make_snapshot_analyzer(storage)
+            first._process_rss_data_by_mode(
+                storage.get_rss_data("2026-08-10")
+            )
+            retry = self.make_snapshot_analyzer(storage)
+            retry._process_rss_data_by_mode(
+                storage.get_rss_data("2026-08-10")
+            )
+            forced = self.make_snapshot_analyzer(
+                storage, at(2026, 8, 12, 15, 0)
+            )
+            forced._process_rss_data_by_mode(
+                storage.get_rss_data("2026-08-12")
+            )
+
+            self.assertEqual(len(first._allowed_rss_ids), 1)
+            self.assertEqual(
+                first._allowed_rss_ids, retry._allowed_rss_ids
+            )
+            self.assertEqual(
+                first._allowed_rss_ids, forced._allowed_rss_ids
+            )
+            self.assertEqual(
+                forced._rss_window.end.strftime("%Y-%m-%d"), "2026-08-10"
+            )
+            self.assertTrue(first._rss_ids_authoritative)
+            self.assertTrue(retry._rss_ids_authoritative)
+            self.assertTrue(forced._rss_ids_authoritative)
+            storage.cleanup()
 
     def test_weekly_failures_do_not_fall_back_or_mark_partial_delivery(self):
         self.assertFalse(NewsAnalyzer._should_fallback_ai_filter("weekly"))
@@ -792,6 +973,7 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.proxy_url = None
         analyzer.update_info = None
         analyzer._weekly_pdf_path = "output/weekly.pdf"
+        analyzer._weekly_pdf_digest = MagicMock(return_value="a" * 64)
         analyzer._rss_window = previous_natural_week(RUN_AT, "Asia/Shanghai")
         analyzer._has_notification_configured = MagicMock(return_value=True)
         analyzer._has_valid_content = MagicMock(return_value=False)
@@ -922,6 +1104,7 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.update_info = None
         analyzer._run_at = RUN_AT
         analyzer._weekly_pdf_path = "output/weekly.pdf"
+        analyzer._weekly_pdf_digest = MagicMock(return_value="a" * 64)
         analyzer._rss_window = previous_natural_week(RUN_AT, "Asia/Shanghai")
         analyzer._has_notification_configured = MagicMock(return_value=True)
         analyzer._has_valid_content = MagicMock(return_value=False)
@@ -932,9 +1115,11 @@ class WeeklyScheduleTests(unittest.TestCase):
         )
 
         self.assertFalse(sent)
-        dispatcher.dispatch_weekly_pdf.assert_called_once_with(
-            "output/weekly.pdf", None
-        )
+        dispatcher.dispatch_weekly_pdf.assert_called_once()
+        dispatch_call = dispatcher.dispatch_weekly_pdf.call_args
+        self.assertEqual(dispatch_call.args, ("output/weekly.pdf", None))
+        self.assertTrue(callable(dispatch_call.kwargs["is_delivered"]))
+        self.assertTrue(callable(dispatch_call.kwargs["record_delivery"]))
         scheduler.record_execution.assert_called_once_with(
             "monday_weekly", "push", "2026-08-10"
         )
@@ -966,6 +1151,98 @@ class WeeklyScheduleTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertIn("once_analyze", result.error)
+
+    def test_weekly_summary_ignores_public_mode_and_runs_strict_on_selected_data(self):
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = False
+        scheduler.record_execution.return_value = True
+        selected_stats = [{"word": "育种", "count": 1}]
+        selected_rss = [{"word": "种质资源", "count": 1}]
+
+        for configured_mode in ("daily", "current", "incremental"):
+            with self.subTest(configured_mode=configured_mode):
+                analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+                analyzer.ctx = SimpleNamespace(
+                    config={
+                        "AI": {},
+                        "AI_ANALYSIS": {
+                            "ENABLED": True,
+                            "MODE": configured_mode,
+                        },
+                        "DEBUG": False,
+                    },
+                    create_scheduler=MagicMock(return_value=scheduler),
+                )
+                analyzer._run_at = RUN_AT
+                analyzer._rss_window = previous_natural_week(
+                    RUN_AT, "Asia/Shanghai"
+                )
+                analyzer._prepare_ai_analysis_data = MagicMock()
+
+                with patch("trendradar.__main__.AIAnalyzer") as analyzer_class:
+                    analyzer_class.return_value.analyze.return_value = (
+                        AIAnalysisResult(success=True, core_trends="本周趋势")
+                    )
+                    result = analyzer._run_ai_analysis(
+                        selected_stats,
+                        selected_rss,
+                        "weekly",
+                        "自然周周报",
+                        {"journal": "Journal"},
+                        current_results={"current-hotlist": {}},
+                        schedule=schedule(once_analyze=False),
+                    )
+
+                self.assertTrue(result.success)
+                analyzer._prepare_ai_analysis_data.assert_not_called()
+                kwargs = analyzer_class.return_value.analyze.call_args.kwargs
+                self.assertIs(kwargs["stats"], selected_stats)
+                self.assertIs(kwargs["rss_stats"], selected_rss)
+                self.assertEqual(kwargs["report_mode"], "weekly")
+                self.assertTrue(kwargs["strict"])
+
+    def test_weekly_summary_failure_aborts_before_pdf_and_checkpoints(self):
+        analyzer = self.make_snapshot_analyzer(MagicMock())
+        analyzer._rss_window = previous_natural_week(
+            RUN_AT, "Asia/Shanghai"
+        )
+        analyzer._allowed_rss_ids = {7}
+        analyzer._rss_ids_authoritative = True
+        analyzer.ctx.config["AI_ANALYSIS"] = {
+            "ENABLED": True,
+            "MODE": "current",
+        }
+        analyzer.ctx.config["AI"] = {}
+        analyzer.ctx.config["DEBUG"] = False
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = False
+        analyzer.ctx.create_scheduler = MagicMock(return_value=scheduler)
+        analyzer.ctx.convert_ai_filter_to_report_data.return_value = (
+            [],
+            [{"word": "育种", "count": 1, "titles": [{
+                "id": 7,
+                "title": "Selected weekly item",
+                "url": "https://example.org/selected",
+                "published_at": "2026-08-05T08:00:00+08:00",
+            }]}],
+            [],
+        )
+
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class, patch(
+            "trendradar.__main__.build_weekly_pdf"
+        ) as build:
+            analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+                success=False,
+                error="严格 JSON 修复失败",
+            )
+            with self.assertRaisesRegex(RuntimeError, "周报 AI 摘要失败"):
+                analyzer._run_analysis_pipeline(
+                    {}, "weekly", {}, {}, [], [], {},
+                    schedule=schedule(),
+                )
+
+        build.assert_not_called()
+        scheduler.record_execution.assert_not_called()
 
     def test_scheduler_record_execution_returns_storage_result(self):
         storage = MagicMock()

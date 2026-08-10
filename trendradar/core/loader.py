@@ -301,11 +301,6 @@ def _load_agro_weather_config(config_data: Dict) -> Dict:
             "url", "https://www.nmc.cn/publish/agro/ten-week/index.html"
         ),
         "TIMEOUT": agro_weather.get("timeout", 30),
-        "REQUIRED_FOR_WEEKLY": _parse_config_bool(
-            agro_weather.get("required_for_weekly", True),
-            True,
-            "agro_weather.required_for_weekly",
-        ),
     }
 
 

@@ -37,3 +37,12 @@ The schedule is defined in `config/daily.crontab`. Run the project with its virt
 ```
 
 Container deployment and environment examples are in `docker/`.
+
+## Compatibility entry points
+
+The dedicated weekly path does not remove TrendRadar's ordinary runtime features:
+
+- The `current` ranking and `daily` summary modes remain available through `report.mode` in [config/config.en.yaml](config/config.en.yaml).
+- For installation and deployment, see the [project documentation](docs/index.html) and the [Docker directory](docker/).
+- MCP client and tool guidance remains in the [MCP FAQ](README-MCP-FAQ-EN.md).
+- Multi-channel ordinary-mode notifications remain configured under `notification` in [config/config.en.yaml](config/config.en.yaml); the PDF-only rule on this page applies only to dedicated weekly delivery.

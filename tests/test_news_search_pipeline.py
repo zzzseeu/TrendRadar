@@ -667,7 +667,9 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
     def test_weekly_snapshot_exception_is_not_swallowed(self, fetcher_class):
         analyzer = self._analyzer(enabled=False)
         analyzer.report_mode = "weekly"
-        fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
+        current = self._fixed_rss_data()
+        current.failed_ids = []
+        fetcher_class.return_value.fetch_all.return_value = current
         analyzer._process_rss_data_by_mode.side_effect = RuntimeError(
             "周快照 ID 解析失败"
         )
@@ -684,6 +686,43 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
 
         with self.assertRaisesRegex(RuntimeError, "RSS 数据保存失败"):
+            analyzer._crawl_rss_data()
+
+        analyzer._process_rss_data_by_mode.assert_not_called()
+
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_weekly_current_fixed_rss_failure_aborts_before_snapshot(
+        self, fetcher_class
+    ):
+        analyzer = self._analyzer(enabled=False)
+        analyzer.report_mode = "weekly"
+        fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
+
+        with self.assertRaisesRegex(
+            RuntimeError, "周报 RSS 来源失败.*fixed-failure"
+        ):
+            analyzer._crawl_rss_data()
+
+        analyzer._process_rss_data_by_mode.assert_not_called()
+
+    @patch("trendradar.__main__.AgriculturalNewsSearch")
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_weekly_current_news_search_partial_failure_aborts_before_snapshot(
+        self, fetcher_class, search_class
+    ):
+        analyzer = self._analyzer(enabled=True)
+        analyzer.report_mode = "weekly"
+        current = self._fixed_rss_data()
+        current.failed_ids = []
+        fetcher_class.return_value.fetch_all.return_value = current
+        search_class.return_value.search.return_value = NewsSearchResult(
+            items=[SEARCH_HOTSPOT],
+            failed_providers=["gdelt"],
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError, "周报新闻搜索来源失败.*gdelt"
+        ):
             analyzer._crawl_rss_data()
 
         analyzer._process_rss_data_by_mode.assert_not_called()

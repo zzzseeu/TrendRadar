@@ -579,10 +579,9 @@ agro_weather:
   enabled: true
   url: "https://www.nmc.cn/publish/agro/ten-week/index.html"
   timeout: 30
-  required_for_weekly: true
 ```
 
-`_load_agro_weather_config()` 映射为 `AGRO_WEATHER`，保留 URL、timeout、enabled、required。运行步骤 2，预期全部 `OK`。
+`_load_agro_weather_config()` 映射为 `AGRO_WEATHER`，保留 URL、timeout 和 enabled；周报气象专栏固定为必须项。运行步骤 2，预期全部 `OK`。
 
 - [ ] **步骤 5：提交农业气象监控**
 
