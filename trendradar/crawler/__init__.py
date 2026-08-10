@@ -4,5 +4,6 @@
 """
 
 from trendradar.crawler.fetcher import DataFetcher
+from trendradar.crawler.agro_weather import AgroWeatherClient, AgroWeatherFetchError, AgroWeatherReport
 
-__all__ = ["DataFetcher"]
+__all__ = ["AgroWeatherClient", "AgroWeatherFetchError", "AgroWeatherReport", "DataFetcher"]

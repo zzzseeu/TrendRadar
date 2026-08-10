@@ -288,6 +288,27 @@ def _load_rss_config(config_data: Dict) -> Dict:
     }
 
 
+def _load_agro_weather_config(config_data: Dict) -> Dict:
+    """加载中央气象台全国农业气象周报配置。"""
+    config_data = config_data if isinstance(config_data, Mapping) else {}
+    value = config_data.get("agro_weather", {})
+    agro_weather = value if isinstance(value, Mapping) else {}
+    return {
+        "ENABLED": _parse_config_bool(
+            agro_weather.get("enabled", True), True, "agro_weather.enabled"
+        ),
+        "URL": agro_weather.get(
+            "url", "https://www.nmc.cn/publish/agro/ten-week/index.html"
+        ),
+        "TIMEOUT": agro_weather.get("timeout", 30),
+        "REQUIRED_FOR_WEEKLY": _parse_config_bool(
+            agro_weather.get("required_for_weekly", True),
+            True,
+            "agro_weather.required_for_weekly",
+        ),
+    }
+
+
 def _load_display_config(config_data: Dict) -> Dict:
     """加载推送内容显示配置"""
     display = config_data.get("display", {})
@@ -688,6 +709,9 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
     # RSS 配置
     config["RSS"] = _load_rss_config(config_data)
+
+    # 中央气象台农业气象周报配置（调度接入由后续任务完成）
+    config["AGRO_WEATHER"] = _load_agro_weather_config(config_data)
 
     # AI 模型共享配置
     config["AI"] = _load_ai_config(config_data)

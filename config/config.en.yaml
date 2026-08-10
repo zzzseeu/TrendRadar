@@ -135,6 +135,16 @@ rss:
 
 
 # ===============================================================
+# 3.5 China Meteorological Administration weekly agro-weather report
+# ===============================================================
+agro_weather:
+  enabled: true
+  url: "https://www.nmc.cn/publish/agro/ten-week/index.html"
+  timeout: 30
+  required_for_weekly: true
+
+
+# ===============================================================
 # 4. Report Mode
 # ===============================================================
 report:
