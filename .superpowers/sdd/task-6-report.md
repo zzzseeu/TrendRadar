@@ -38,3 +38,34 @@ docker run --rm --network none --entrypoint /app/.venv/bin/python \
 ## 变更范围
 
 未改动 `docker/.env`、`uv.lock`、本地 `.venv` 或 `output`。
+
+## 审查修复：weekly 失败传播
+
+正式审查发现 `_execute_mode_strategy()` 曾仅在有普通新闻、通知总开关开启且
+存在任意普通通知渠道时，才将 weekly 交付失败返回给 `run()`。这会让气象-only
+周报在无企业微信 Webhook、PDF 上传或文件发送失败、PDF 缺失/无效，以及通知总
+开关关闭时错误返回成功。
+
+现已将 weekly 主线收敛为：当 `schedule.push` 为真且专用 PDF 交付返回失败时，
+无条件返回 `False`。成功交付仍返回 `True` 并仅以 `window.end` 写入 checkpoint；
+daily/current 分支未改变。
+
+新增生产链 RED 测试覆盖：
+
+- 气象-only 周报无企业微信 Webhook；
+- 气象-only 周报企业微信文件投递失败；
+- `ENABLE_NOTIFICATION=false` 的计划周报；
+- 气象-only 周报文件投递成功并写入 `window.end` checkpoint。
+
+修复前前三项均稳定失败（`run` 链末端错误返回 `True`）；修复后执行以下扩展
+回归全部通过，共 77 项：
+
+```bash
+docker run --rm --network none --entrypoint /app/.venv/bin/python \
+  -e PYTHONPATH=/workspace \
+  -v /mnt/d/project/trendradar/.worktrees/previous-day-window:/workspace:ro \
+  -w /tmp docker-trendradar \
+  -m unittest tests.test_wework_pdf tests.test_weekly_pdf_delivery \
+  tests.test_weekly_schedule tests.test_weekly_pdf_report \
+  tests.test_weekly_report_output -v
+```

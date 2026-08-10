@@ -2259,14 +2259,13 @@ class NewsAnalyzer:
             )
             if self.report_mode == "daily_delivery" and not delivered:
                 return False
-            if self.report_mode == "weekly":
-                if (
-                    has_content
-                    and self.ctx.config["ENABLE_NOTIFICATION"]
-                    and self._has_notification_configured()
-                    and not delivered
-                ):
-                    return False
+            if (
+                self.report_mode == "weekly"
+                and schedule
+                and schedule.push
+                and not delivered
+            ):
+                return False
 
         # 打开浏览器（仅在非容器环境）
         if self._should_open_browser() and html_file:

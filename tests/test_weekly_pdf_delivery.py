@@ -60,6 +60,70 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
             MagicMock(),
         )
 
+    def _weekly_execution_analyzer(
+        self,
+        *,
+        notification_enabled=True,
+        dispatcher=None,
+    ):
+        run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = False
+        scheduler.record_execution.return_value = True
+        notification_config = {
+            "ENABLE_NOTIFICATION": notification_enabled,
+            "FEISHU_WEBHOOK_URL": "",
+            "DINGTALK_WEBHOOK_URL": "",
+            "WEWORK_WEBHOOK_URL": "",
+            "TELEGRAM_BOT_TOKEN": "",
+            "TELEGRAM_CHAT_ID": "",
+            "EMAIL_FROM": "",
+            "EMAIL_PASSWORD": "",
+            "EMAIL_TO": "",
+            "NTFY_SERVER_URL": "",
+            "NTFY_TOPIC": "",
+            "BARK_URL": "",
+            "SLACK_WEBHOOK_URL": "",
+            "GENERIC_WEBHOOK_URL": "",
+        }
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config=notification_config,
+            platform_ids=[],
+            detect_new_titles=MagicMock(return_value={}),
+            load_frequency_words=MagicMock(return_value=([], [], [])),
+            create_scheduler=MagicMock(return_value=scheduler),
+            create_notification_dispatcher=MagicMock(return_value=dispatcher),
+        )
+        analyzer.report_mode = "weekly"
+        analyzer.frequency_file = None
+        analyzer.proxy_url = ""
+        analyzer._run_at = run_at
+        analyzer._run_time_filename = "15-00"
+        analyzer._rss_window = previous_natural_week(run_at, "Asia/Shanghai")
+        analyzer._weekly_pdf_path = str(self._pdf())
+        analyzer._prepare_current_title_info = MagicMock(return_value={})
+        analyzer._prepare_standalone_data = MagicMock(return_value={})
+        analyzer._run_analysis_pipeline = MagicMock(
+            return_value=([], None, None, None, {}, None)
+        )
+        analyzer._has_valid_content = MagicMock(return_value=False)
+        analyzer._should_open_browser = MagicMock(return_value=False)
+        analyzer.is_docker_container = False
+        return analyzer, scheduler
+
+    def _execute_weather_only_weekly(self, analyzer):
+        return analyzer._execute_mode_strategy(
+            NewsAnalyzer.MODE_STRATEGIES["weekly"], {}, {}, [],
+            rss_items=None,
+            rss_new_items=None,
+            raw_rss_items=None,
+            rss_new_urls=set(),
+            schedule=self.schedule,
+        )
+
     def test_weekly_delivery_uploads_and_sends_only_one_file_message(self):
         pdf_path = self._pdf()
         responses = [
@@ -211,6 +275,48 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         self.assertTrue(analyzer.run())
         analyzer._fetch_agro_weather.assert_not_called()
         analyzer.ctx.create_notification_dispatcher.assert_not_called()
+
+    def test_weather_only_weekly_with_no_wework_webhook_fails_the_run(self):
+        dispatcher = self._dispatcher("")
+        analyzer, scheduler = self._weekly_execution_analyzer(
+            dispatcher=dispatcher
+        )
+
+        self.assertFalse(self._execute_weather_only_weekly(analyzer))
+        scheduler.record_execution.assert_not_called()
+
+    def test_weather_only_weekly_file_delivery_failure_fails_the_run(self):
+        dispatcher = MagicMock()
+        dispatcher.dispatch_weekly_pdf.return_value = False
+        analyzer, scheduler = self._weekly_execution_analyzer(
+            dispatcher=dispatcher
+        )
+
+        self.assertFalse(self._execute_weather_only_weekly(analyzer))
+        scheduler.record_execution.assert_not_called()
+
+    def test_disabled_notifications_fail_a_scheduled_weekly_delivery(self):
+        dispatcher = MagicMock()
+        analyzer, scheduler = self._weekly_execution_analyzer(
+            notification_enabled=False,
+            dispatcher=dispatcher,
+        )
+
+        self.assertFalse(self._execute_weather_only_weekly(analyzer))
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+
+    def test_weather_only_weekly_file_delivery_records_checkpoint_on_success(self):
+        dispatcher = MagicMock()
+        dispatcher.dispatch_weekly_pdf.return_value = True
+        analyzer, scheduler = self._weekly_execution_analyzer(
+            dispatcher=dispatcher
+        )
+
+        self.assertTrue(self._execute_weather_only_weekly(analyzer))
+        scheduler.record_execution.assert_called_once_with(
+            "monday_weekly", "push", "2026-08-10"
+        )
 
 
 if __name__ == "__main__":
