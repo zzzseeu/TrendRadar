@@ -1,23 +1,26 @@
 import inspect
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytz
 import yaml
 
 from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.loader import _load_rss_config
-from trendradar.core.weekly import NaturalWeekWindow
+from trendradar.core.weekly import NaturalWeekWindow, previous_natural_week
 from trendradar.crawler.rss.fetcher import RSSFeedConfig, RSSFetcher
+from trendradar.storage.base import RSSData, RSSItem
+from trendradar.storage.local import LocalStorageBackend
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class WeeklyTimeRuleRemovalTests(unittest.TestCase):
-    def _pipeline_for_previous_week(self):
+    def _pipeline_for_previous_week(self, storage=None):
         timezone = "Asia/Shanghai"
         local_tz = pytz.timezone(timezone)
         window = NaturalWeekWindow(
@@ -27,7 +30,7 @@ class WeeklyTimeRuleRemovalTests(unittest.TestCase):
         )
         return AIFilterPipeline(
             {"TIMEZONE": timezone, "RSS": {"ENABLED": True}, "AI_FILTER": {}},
-            MagicMock(),
+            storage or MagicMock(),
             lambda: window.end,
             rss_window=window,
         )
@@ -98,3 +101,95 @@ class WeeklyTimeRuleRemovalTests(unittest.TestCase):
 
         _, rss_stats, _ = pipeline.convert_to_report_data(result)
         self.assertEqual(rss_stats, [])
+
+    def test_active_rss_results_keep_published_at_for_weekly_scope(self):
+        timezone = "Asia/Shanghai"
+        local_tz = pytz.timezone(timezone)
+        now = local_tz.localize(datetime(2026, 8, 9, 10))
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = LocalStorageBackend(
+                data_dir=tmp,
+                enable_txt=False,
+                enable_html=False,
+                timezone=timezone,
+            )
+            try:
+                with patch.object(
+                    storage, "_get_configured_time", return_value=now
+                ):
+                    self.assertTrue(storage.save_rss_data(RSSData(
+                        date="2026-08-09",
+                        crawl_time="09:30",
+                        items={"journal": [
+                            RSSItem(
+                                title="Published this week",
+                                feed_id="journal",
+                                feed_name="Journal",
+                                url="https://example.org/published",
+                                published_at="2026-08-05T08:00:00+08:00",
+                            ),
+                            RSSItem(
+                                title="Missing publication date",
+                                feed_id="journal",
+                                feed_name="Journal",
+                                url="https://example.org/missing",
+                            ),
+                        ]},
+                        id_to_name={"journal": "Journal"},
+                    )))
+                    self.assertEqual(storage.save_ai_filter_tags(
+                        [{"tag": "水稻育种", "priority": 1}],
+                        version=1,
+                        prompt_hash="weekly-scope",
+                    ), 1)
+                    tag_id = storage._get_connection("2026-08-09").execute(
+                        "SELECT id FROM ai_filter_tags WHERE tag = ?",
+                        ("水稻育种",),
+                    ).fetchone()[0]
+                    rss_ids = {
+                        item["title"]: item["id"]
+                        for item in storage.get_all_rss_ids("2026-08-09")
+                    }
+                    self.assertEqual(storage.save_ai_filter_results([
+                        {
+                            "news_item_id": rss_ids["Published this week"],
+                            "source_type": "rss",
+                            "tag_id": tag_id,
+                            "relevance_score": 0.9,
+                        },
+                        {
+                            "news_item_id": rss_ids["Missing publication date"],
+                            "source_type": "rss",
+                            "tag_id": tag_id,
+                            "relevance_score": 0.9,
+                        },
+                    ]), 2)
+
+                    active = storage.get_active_ai_filter_results()
+
+                published = {
+                    item["title"]: item["published_at"] for item in active
+                }
+                self.assertEqual(
+                    published["Published this week"],
+                    "2026-08-05T08:00:00+08:00",
+                )
+                self.assertEqual(published["Missing publication date"], "")
+
+                window = previous_natural_week(
+                    local_tz.localize(datetime(2026, 8, 10, 10)), timezone
+                )
+                pipeline = self._pipeline_for_previous_week(storage)
+                pipeline._rss_window = window
+                result = pipeline._build_filter_result(
+                    active, [{"tag": "水稻育种", "priority": 1}], 2
+                )
+                _, rss_stats, _ = pipeline.convert_to_report_data(
+                    result, mode="weekly"
+                )
+                self.assertEqual(
+                    [item["title"] for item in rss_stats[0]["titles"]],
+                    ["Published this week"],
+                )
+            finally:
+                storage.cleanup()

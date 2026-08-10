@@ -77,11 +77,11 @@ class WeeklyAIFilterScopeTests(unittest.TestCase):
     def test_report_conversion_rejects_unapproved_duplicate_id(self):
         result = AIFilterResult(success=True, tags=[{
             "tag": "育种", "count": 2, "items": [
-                {"news_item_id": 1, "title": "Allowed", "source_type": "rss",
+                {"id": 1, "news_item_id": 1, "title": "Allowed", "source_type": "rss",
                  "source_id": "journal",
                  "first_time": "2026-08-03T00:00:00+08:00",
                  "relevance_score": 0.9},
-                {"news_item_id": 9, "title": "Duplicate", "source_type": "rss",
+                {"id": 9, "news_item_id": 9, "title": "Duplicate", "source_type": "rss",
                  "source_id": "journal",
                  "first_time": "2026-08-04T00:00:00+08:00",
                  "relevance_score": 0.9},

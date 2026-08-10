@@ -2612,6 +2612,7 @@ class SQLiteStorageMixin:
                                 "mobile_url": "",
                                 "rank": 0,
                                 "ranks": [],
+                                "published_at": info[5] or "",
                                 "first_time": info[5] or "",
                                 "last_time": info[5] or "",
                                 "count": 1,
