@@ -1,6 +1,11 @@
+import builtins
+import errno
+import importlib.util
 import unittest
 import inspect
 import multiprocessing
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -127,6 +132,100 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._crawl_rss_data = MagicMock(return_value=(None, None, [], set()))
         analyzer._execute_mode_strategy = MagicMock(return_value=True)
         return analyzer
+
+    def test_scheduler_module_import_on_windows_does_not_require_fcntl(self):
+        module_name = "_trendradar_scheduler_without_fcntl"
+        module_path = ROOT / "trendradar" / "core" / "scheduler.py"
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        module = importlib.util.module_from_spec(spec)
+        real_import = builtins.__import__
+
+        def import_without_fcntl(name, *args, **kwargs):
+            if name == "fcntl":
+                raise ModuleNotFoundError("fcntl is unavailable on Windows")
+            return real_import(name, *args, **kwargs)
+
+        sys.modules[module_name] = module
+        try:
+            with patch.object(os, "name", "nt"), patch(
+                "builtins.__import__", side_effect=import_without_fcntl
+            ):
+                spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        self.assertTrue(hasattr(module, "WeeklyAttemptLock"))
+
+    def test_windows_weekly_lock_calls_msvcrt_lock_and_unlock(self):
+        fake_msvcrt = SimpleNamespace(
+            LK_NBLCK=10,
+            LK_UNLCK=20,
+            locking=MagicMock(),
+        )
+        imported = []
+
+        def import_module(name):
+            imported.append(name)
+            if name == "msvcrt":
+                return fake_msvcrt
+            raise AssertionError(f"unexpected platform import: {name}")
+
+        backend = scheduler_module._create_file_lock_backend(
+            platform_name="nt", import_module=import_module
+        )
+        with TemporaryDirectory() as data_dir:
+            lock = scheduler_module.WeeklyAttemptLock(
+                data_dir, "2026-08-10", backend=backend
+            )
+            self.assertTrue(lock.acquire())
+            handle_fd = lock._handle.fileno()
+            lock.release()
+
+        self.assertEqual(imported, ["msvcrt"])
+        self.assertEqual(
+            fake_msvcrt.locking.call_args_list,
+            [
+                unittest.mock.call(handle_fd, fake_msvcrt.LK_NBLCK, 1),
+                unittest.mock.call(handle_fd, fake_msvcrt.LK_UNLCK, 1),
+            ],
+        )
+
+    def test_windows_weekly_lock_treats_lock_violation_as_contention(self):
+        fake_msvcrt = SimpleNamespace(
+            LK_NBLCK=10,
+            LK_UNLCK=20,
+            locking=MagicMock(
+                side_effect=OSError(errno.EACCES, "lock violation")
+            ),
+        )
+        backend = scheduler_module._create_file_lock_backend(
+            platform_name="nt", import_module=lambda name: fake_msvcrt
+        )
+        with TemporaryDirectory() as data_dir:
+            lock = scheduler_module.WeeklyAttemptLock(
+                data_dir, "2026-08-10", backend=backend
+            )
+            self.assertFalse(lock.acquire())
+            self.assertIsNone(lock._handle)
+
+    def test_posix_weekly_lock_treats_eacces_as_contention(self):
+        fake_fcntl = SimpleNamespace(
+            LOCK_EX=1,
+            LOCK_NB=2,
+            LOCK_UN=4,
+            flock=MagicMock(
+                side_effect=OSError(errno.EACCES, "lock contention")
+            ),
+        )
+        backend = scheduler_module._create_file_lock_backend(
+            platform_name="posix", import_module=lambda name: fake_fcntl
+        )
+        with TemporaryDirectory() as data_dir:
+            lock = scheduler_module.WeeklyAttemptLock(
+                data_dir, "2026-08-10", backend=backend
+            )
+            self.assertFalse(lock.acquire())
+            self.assertIsNone(lock._handle)
 
     def test_weekly_attempt_lock_is_nonblocking_and_scoped_by_window(self):
         with TemporaryDirectory() as data_dir:

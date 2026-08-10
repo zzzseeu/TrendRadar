@@ -7,7 +7,9 @@
 """
 
 import copy
-import fcntl
+import errno
+import importlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,15 +18,83 @@ from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime
 
 
+class _PosixFileLockBackend:
+    _CONTENTION_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}
+
+    def __init__(self, fcntl_module: Any):
+        self._fcntl = fcntl_module
+
+    def try_lock(self, handle: Any) -> bool:
+        try:
+            self._fcntl.flock(
+                handle.fileno(),
+                self._fcntl.LOCK_EX | self._fcntl.LOCK_NB,
+            )
+        except OSError as exc:
+            if exc.errno in self._CONTENTION_ERRNOS:
+                return False
+            raise
+        return True
+
+    def unlock(self, handle: Any) -> None:
+        self._fcntl.flock(handle.fileno(), self._fcntl.LOCK_UN)
+
+
+class _WindowsFileLockBackend:
+    _CONTENTION_ERRNOS = {errno.EACCES, errno.EAGAIN, errno.EDEADLK}
+
+    def __init__(self, msvcrt_module: Any):
+        self._msvcrt = msvcrt_module
+
+    def try_lock(self, handle: Any) -> bool:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write("\0")
+            handle.flush()
+        handle.seek(0)
+        try:
+            self._msvcrt.locking(
+                handle.fileno(), self._msvcrt.LK_NBLCK, 1
+            )
+        except OSError as exc:
+            if exc.errno in self._CONTENTION_ERRNOS:
+                return False
+            raise
+        return True
+
+    def unlock(self, handle: Any) -> None:
+        handle.seek(0)
+        self._msvcrt.locking(handle.fileno(), self._msvcrt.LK_UNLCK, 1)
+
+
+def _create_file_lock_backend(
+    platform_name: Optional[str] = None,
+    import_module: Callable[[str], Any] = importlib.import_module,
+) -> Any:
+    """Load only the file-lock module available on the current platform."""
+    platform_name = platform_name or os.name
+    if platform_name == "nt":
+        return _WindowsFileLockBackend(import_module("msvcrt"))
+    if platform_name == "posix":
+        return _PosixFileLockBackend(import_module("fcntl"))
+    raise RuntimeError(f"不支持的周报锁平台: {platform_name}")
+
+
 class WeeklyAttemptLock:
     """Non-blocking process lock for one natural-week delivery attempt."""
 
-    def __init__(self, data_dir: str, checkpoint_date: str):
+    def __init__(
+        self,
+        data_dir: str,
+        checkpoint_date: str,
+        backend: Any = None,
+    ):
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", checkpoint_date):
             raise ValueError(f"周报锁日期格式非法: {checkpoint_date}")
         self.path = (
             Path(data_dir) / "locks" / f"weekly-{checkpoint_date}.lock"
         )
+        self._backend = backend or _create_file_lock_backend()
         self._handle = None
 
     def acquire(self) -> bool:
@@ -33,8 +103,11 @@ class WeeklyAttemptLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+", encoding="utf-8")
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            acquired = self._backend.try_lock(handle)
+        except BaseException:
+            handle.close()
+            raise
+        if not acquired:
             handle.close()
             return False
         self._handle = handle
@@ -46,7 +119,7 @@ class WeeklyAttemptLock:
             return
         self._handle = None
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            self._backend.unlock(handle)
         finally:
             handle.close()
 
