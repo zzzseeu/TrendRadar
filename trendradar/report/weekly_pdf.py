@@ -49,6 +49,17 @@ def _text(value: Any) -> str:
     return escape(str(value or ""), quote=True)
 
 
+def _css_string(value: Any) -> str:
+    """Escape controlled text for a quoted CSS content value."""
+    return (
+        " ".join(str(value or "").split())
+        .replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("<", "\\3c ")
+        .replace(">", "\\3e ")
+    )
+
+
 def _safe_http_url(value: Any) -> str:
     raw = str(value or "").strip()
     try:
@@ -148,6 +159,9 @@ def render_weekly_pdf_html(
         topic_groups.setdefault(_news_topic(item), []).append(item)
 
     generated = generated_at.strftime("%Y-%m-%d %H:%M")
+    page_header = _css_string(
+        f"农业育种新闻周报　周期：{period_label}"
+    )
     weather_html = _render_weather(agro_weather)
     topic_html = "".join(
         f'<section class="topic"><h3>{_text(topic)}</h3>'
@@ -167,11 +181,18 @@ def render_weekly_pdf_html(
 @page {{
   size: A4;
   margin: 18mm 14mm 18mm;
+  @top-center {{
+    content: "{page_header}";
+    color: #475569;
+    font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+    font-size: 8.5pt;
+    border-bottom: 1px solid #cbd5e1;
+    padding-bottom: 2mm;
+  }}
   @bottom-center {{ content: "第 " counter(page) " 页"; }}
 }}
 * {{ box-sizing: border-box; }}
 body {{ font-family: "Noto Sans CJK SC", "Microsoft YaHei", sans-serif; color: #172554; font-size: 10.5pt; line-height: 1.58; }}
-.page-header {{ position: fixed; top: -14mm; left: 0; right: 0; color: #475569; font-size: 8.5pt; border-bottom: 1px solid #cbd5e1; padding-bottom: 2mm; }}
 .cover {{ border-left: 6px solid #0f766e; padding: 6mm 7mm; background: #f0fdfa; margin-bottom: 6mm; }}
 h1 {{ margin: 0 0 3mm; color: #134e4a; font-size: 25pt; }}
 h2 {{ color: #0f766e; font-size: 15pt; border-bottom: 1px solid #99f6e4; padding-bottom: 2mm; margin-top: 8mm; }}
@@ -182,8 +203,9 @@ h3 {{ font-size: 11.5pt; margin: 0 0 2mm; color: #164e63; }}
 .highlight-marker {{ display: inline-block; color: #fff; background: #0f766e; padding: 0 1.6mm; border-radius: 1mm; font-size: 8pt; margin-right: 2mm; vertical-align: 1px; }}
 .topic {{ break-inside: avoid-page; }}
 .overview-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }}
-.overview-grid > div, .weather-grid > div {{ background: #f8fafc; padding: 3mm; border-radius: 1.5mm; break-inside: avoid-page; }}
-.weather-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }}
+.overview-grid > div {{ background: #f8fafc; padding: 3mm; border-radius: 1.5mm; break-inside: avoid-page; }}
+.weather-grid {{ display: block; }}
+.weather-grid > div {{ background: #f8fafc; padding: 3mm; border-radius: 1.5mm; margin: 3mm 0; break-inside: auto; }}
 .label {{ font-weight: 700; color: #0f766e; }}
 .links {{ margin: 2mm 0 0; font-size: 9pt; }}
 a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
@@ -192,7 +214,6 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
 </style>
 </head>
 <body>
-<header class="page-header">农业育种新闻周报　周期：{_text(period_label)}</header>
 <main>
   <section class="cover">
     <h1>农业育种新闻周报</h1>

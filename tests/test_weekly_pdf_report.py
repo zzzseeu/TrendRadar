@@ -2,6 +2,7 @@ import re
 import shutil
 import subprocess
 import unittest
+import xml.etree.ElementTree as ElementTree
 from datetime import date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -67,7 +68,8 @@ class WeeklyPdfReportTests(unittest.TestCase):
         self.assertIn('href="https://search.example.com/1"', html)
         self.assertIn("@page", html)
         self.assertIn("size: A4", html)
-        self.assertIn(".page-header { position: fixed", html)
+        self.assertIn("@top-center", html)
+        self.assertNotIn("position: fixed", html)
 
     def test_rejects_more_than_twenty_unselected_news_items(self):
         with self.assertRaisesRegex(ValueError, "20"):
@@ -116,6 +118,73 @@ class WeeklyPdfReportTests(unittest.TestCase):
 
 
 class WeeklyPdfGenerationValidationTests(unittest.TestCase):
+    def test_long_weather_content_stays_above_repeated_page_furniture(self):
+        period = "2026-08-03—2026-08-09"
+        html = render_weekly_pdf_html(
+            news_items=[],
+            ai_analysis=None,
+            agro_weather=SimpleNamespace(
+                title="全国农业气象周报",
+                impact="气象影响正文。" * 260,
+                outlook="未来十天天气展望。" * 80,
+                recommendations="及时排涝散墒。" * 40,
+                risk_regions=("东北", "华北"),
+                risk_crops=("水稻", "玉米"),
+                source_url="https://www.nmc.cn/publish/agro/ten-week/index.html",
+            ),
+            period_label=period,
+            generated_at=datetime(2026, 8, 10, 10, 0),
+        )
+        with TemporaryDirectory() as tmp:
+            pdf = Path(build_weekly_pdf(
+                tmp, date(2026, 8, 3), date(2026, 8, 10), html
+            ))
+            bbox = Path(tmp) / "report.xml"
+            subprocess.run(
+                ["pdftotext", "-bbox-layout", str(pdf), str(bbox)],
+                check=True,
+            )
+            pages = [
+                node
+                for node in ElementTree.parse(bbox).getroot().iter()
+                if node.tag.endswith("page")
+            ]
+
+        checked_pages = 0
+        for page in pages:
+            words = [
+                (
+                    float(node.attrib["yMin"]),
+                    (node.text or "").strip(),
+                )
+                for node in page.iter()
+                if node.tag.endswith("word")
+            ]
+            repeated_headers = [
+                y
+                for y, text in words
+                if text == "农业育种新闻周报"
+            ]
+            if not repeated_headers:
+                continue
+            checked_pages += 1
+            self.assertTrue(
+                all(y < 80 for y in repeated_headers), repeated_headers
+            )
+            bottom_words = [
+                text
+                for y, text in words
+                if y > 790
+            ]
+            self.assertTrue(
+                all(
+                    text in {"第", "页"} or text.isdigit()
+                    for text in bottom_words
+                ),
+                bottom_words[:5],
+            )
+        self.assertGreater(checked_pages, 0)
+
     def test_actual_chromium_output_is_a4_multipage_with_repeated_chinese_furniture(self):
         self.assertTrue(
             shutil.which("chromium") or shutil.which("chromium-browser")
