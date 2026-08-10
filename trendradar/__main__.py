@@ -41,6 +41,11 @@ from trendradar.core.weekly import (
     primary_weekly_topic,
     select_weekly_news,
 )
+from trendradar.report.weekly_pdf import (
+    build_weekly_pdf,
+    flatten_unique_news,
+    render_weekly_pdf_html,
+)
 from trendradar.commands import check_all_versions, run_doctor, run_test_notification, handle_status_commands
 from trendradar.commands.version import _fetch_remote_version, _parse_version
 
@@ -178,6 +183,7 @@ class NewsAnalyzer:
         self._daily_delivery_rss_data = None
         self._report_period_label = ""
         self._agro_weather_report = None
+        self._weekly_pdf_path = None
         # A single run owns one immutable clock snapshot.  Strict storage keys,
         # delivery windows and scheduler decisions must never straddle midnight.
         self._run_at = None
@@ -972,8 +978,6 @@ class NewsAnalyzer:
                 # AI 筛选成功：无条件用 AI 结果替换 RSS 主区与新增区（与热榜 stats 一致，
                 # 不因 AI 命中为空而回退到关键词结果）
                 rss_items = ai_rss_stats
-                if mode == "weekly":
-                    rss_items = self._select_weekly_rss_items(ai_rss_stats)
                 rss_new_items = ai_rss_new_stats
             else:
                 error_msg = ai_filter_result.error if ai_filter_result else "未知错误"
@@ -994,6 +998,11 @@ class NewsAnalyzer:
                 id_to_name, title_info, new_titles,
                 mode=mode, global_filters=global_filters, quiet=quiet,
             )
+
+        # 周报只使用同一批 select_weekly_news 选出的普通新闻，统一覆盖
+        # AI 筛选和关键词筛选路径，避免专用 PDF 绕过 20 条上限。
+        if mode == "weekly" and rss_items:
+            rss_items = self._select_weekly_rss_items(rss_items)
 
         self._hotlist_total_count = total_titles
 
@@ -1108,6 +1117,11 @@ class NewsAnalyzer:
                     raise RuntimeError("每日交付 HTML 报告生成失败")
                 raise RuntimeError("周报 HTML 报告生成失败")
 
+        # 专用 PDF 不使用现有 dashboard HTML。运行实例均设置此属性；hasattr
+        # 使直接构造的旧分析单测保持其原有职责。
+        if mode == "weekly" and hasattr(self, "_agro_weather_report"):
+            self._generate_weekly_pdf_report(rss_items or [], ai_result)
+
         return stats, html_file, ai_result, rss_items, standalone_data, rss_new_items
 
     @staticmethod
@@ -1139,6 +1153,37 @@ class NewsAnalyzer:
             {"word": topic, "count": len(items), "position": 9999, "titles": items}
             for topic, items in grouped.items()
         ]
+
+    def _generate_weekly_pdf_report(
+        self,
+        rss_items: list[dict],
+        ai_result: Optional[AIAnalysisResult],
+    ) -> str:
+        """Build the offline A4 report from selected RSS news and official weather."""
+        selected_news = flatten_unique_news(rss_items)
+        weather = self._agro_weather_report
+        if not selected_news and weather is None:
+            raise RuntimeError("周报没有入选新闻和农业气象报告，无法生成 PDF")
+        if selected_news and not getattr(ai_result, "success", False):
+            raise RuntimeError("周报普通新闻缺少成功的 AI 摘要，无法生成 PDF")
+
+        window = self._rss_window
+        if window is None:
+            window = previous_natural_week(
+                self._operation_run_at(), self.ctx.timezone
+            )
+        html = render_weekly_pdf_html(
+            news_items=selected_news,
+            ai_analysis=ai_result,
+            agro_weather=weather,
+            period_label=window.label,
+            generated_at=self._operation_run_at(),
+        )
+        self._weekly_pdf_path = build_weekly_pdf(
+            "output", window.start.date(), window.end.date(), html
+        )
+        print(f"[周报] 专用 PDF 已生成: {self._weekly_pdf_path}")
+        return self._weekly_pdf_path
 
     def _send_notification_if_needed(
         self,
@@ -2206,8 +2251,6 @@ class NewsAnalyzer:
                     print("[周报] 本周 PDF 已成功发送，跳过重试")
                     return True
                 self._agro_weather_report = self._fetch_agro_weather()
-                if self._agro_weather_report is None:
-                    raise RuntimeError("本期全国农业气象周报尚未发布")
 
             if not self._initialize_and_check_config():
                 return True
@@ -2279,9 +2322,13 @@ class NewsAnalyzer:
                     return False
                 return True
 
-            if schedule.report_mode == "weekly" and self._rss_window is None:
-                print("[周报] 上一自然周没有可用数据，本次成功结束")
-                return True
+            if (
+                schedule.report_mode == "weekly"
+                and getattr(self, "_rss_window", None) is None
+            ):
+                if self._agro_weather_report is None:
+                    raise RuntimeError("周报没有入选新闻和农业气象报告，无法生成 PDF")
+                print("[周报] 上一自然周没有普通新闻，生成仅含气象专栏的 PDF")
 
             # 执行模式策略，传递 RSS 数据用于合并推送
             return self._execute_mode_strategy(

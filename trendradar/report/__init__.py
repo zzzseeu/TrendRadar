@@ -24,6 +24,11 @@ from trendradar.report.generator import (
     prepare_report_data,
     generate_html_report,
 )
+from trendradar.report.weekly_pdf import (
+    build_weekly_pdf,
+    flatten_unique_news,
+    render_weekly_pdf_html,
+)
 
 __all__ = [
     # 辅助函数
@@ -37,4 +42,8 @@ __all__ = [
     # 报告生成器
     "prepare_report_data",
     "generate_html_report",
+    # 周报专用 PDF
+    "build_weekly_pdf",
+    "flatten_unique_news",
+    "render_weekly_pdf_html",
 ]

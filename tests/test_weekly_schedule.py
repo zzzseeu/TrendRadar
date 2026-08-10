@@ -319,14 +319,16 @@ class WeeklyScheduleTests(unittest.TestCase):
                 late = self.resolve(at(2026, 8, day, 10, 30))
                 self.assertFalse(late.collect)
 
-    def test_missing_current_weather_aborts_before_ordinary_crawl(self):
+    def test_missing_current_weather_does_not_abort_when_weekly_news_exist(self):
         analyzer = self.make_analyzer()
         analyzer._fetch_agro_weather.return_value = None
+        analyzer._rss_window = object()
 
-        self.assertFalse(analyzer.run())
+        self.assertTrue(analyzer.run())
 
-        analyzer._crawl_data.assert_not_called()
-        analyzer._crawl_rss_data.assert_not_called()
+        analyzer._crawl_data.assert_called_once()
+        analyzer._crawl_rss_data.assert_called_once()
+        analyzer._execute_mode_strategy.assert_called_once()
 
     def test_weather_error_aborts_before_ordinary_crawl(self):
         analyzer = self.make_analyzer()
