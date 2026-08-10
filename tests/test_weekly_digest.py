@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytz
 
-from trendradar.core.weekly import WeeklyRSSAggregator, previous_natural_week
+from trendradar.core.weekly import (
+    WeeklyRSSAggregator,
+    previous_natural_week,
+    select_weekly_news,
+)
 from trendradar.core.rss_snapshot import (
     item_identity,
     item_richness,
@@ -17,7 +21,9 @@ from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.storage.sqlite_mixin import SQLiteStorageMixin
-from trendradar.utils.time import parse_iso_datetime
+
+
+SHANGHAI = pytz.timezone("Asia/Shanghai")
 
 
 def rss_data(date, *items):
@@ -151,6 +157,25 @@ class WeeklyAIFilterScopeTests(unittest.TestCase):
 
 
 class NaturalWeekWindowTests(unittest.TestCase):
+    def test_previous_week_is_local_half_open_and_date_only_safe(self):
+        now = SHANGHAI.localize(datetime(2026, 8, 10, 10, 0))
+        window = previous_natural_week(now, "Asia/Shanghai")
+        self.assertEqual(window.start.isoformat(), "2026-08-03T00:00:00+08:00")
+        self.assertEqual(window.end.isoformat(), "2026-08-10T00:00:00+08:00")
+        self.assertTrue(window.contains("2026-08-03"))
+        self.assertTrue(window.contains("2026-08-09T23:59:59+08:00"))
+        self.assertFalse(window.contains("2026-08-10"))
+        self.assertFalse(window.contains(""))
+
+    def test_weekly_aggregator_reads_previous_seven_days_and_run_day(self):
+        window = previous_natural_week(
+            SHANGHAI.localize(datetime(2026, 8, 10, 10, 0)),
+            "Asia/Shanghai",
+        )
+        self.assertEqual(window.storage_dates[0], "2026-08-03")
+        self.assertEqual(window.storage_dates[-1], "2026-08-10")
+        self.assertEqual(len(window.storage_dates), 8)
+
     def test_previous_week_is_monday_to_monday_in_shanghai(self):
         tz = pytz.timezone("Asia/Shanghai")
         window = previous_natural_week(
@@ -182,9 +207,12 @@ class NaturalWeekWindowTests(unittest.TestCase):
         self.assertFalse(window.contains(""))
         self.assertFalse(window.contains("invalid"))
 
-    def test_naive_iso_time_keeps_existing_utc_assumption(self):
-        parsed = parse_iso_datetime("2026-08-02T16:00:00", "Asia/Shanghai")
-        self.assertEqual(parsed.isoformat(), "2026-08-03T00:00:00+08:00")
+    def test_naive_iso_time_is_not_eligible_for_weekly_window(self):
+        window = previous_natural_week(
+            SHANGHAI.localize(datetime(2026, 8, 10, 10, 0)),
+            "Asia/Shanghai",
+        )
+        self.assertFalse(window.contains("2026-08-03T00:00:00"))
 
     def test_rss_read_doc_describes_zero_item_all_source_failure(self):
         self.assertIn(
@@ -194,6 +222,99 @@ class NaturalWeekWindowTests(unittest.TestCase):
 
 
 class WeeklyRSSAggregatorTests(unittest.TestCase):
+    def test_snapshot_crawl_time_uses_frozen_run_at(self):
+        storage = MagicMock()
+        storage.get_rss_data.side_effect = lambda date: (
+            rss_data(
+                date,
+                RSSItem(
+                    title="Weekly item",
+                    feed_id="journal",
+                    url="https://example.org/weekly",
+                    published_at="2026-08-05T08:00:00+08:00",
+                ),
+            ) if date == "2026-08-05" else None
+        )
+        storage.save_rss_data.return_value = True
+        storage.get_all_rss_ids.return_value = [{
+            "id": 1, "source_id": "journal", "title": "Weekly item",
+            "url": "https://example.org/weekly",
+        }]
+        run_at = SHANGHAI.localize(datetime(2026, 8, 10, 10, 0))
+
+        WeeklyRSSAggregator(storage, "Asia/Shanghai").build(run_at)
+
+        self.assertEqual(
+            storage.save_rss_data.call_args.args[0].crawl_time,
+            "2026-08-10T10:00:00+08:00",
+        )
+
+    def test_select_weekly_news_caps_at_twenty_and_balances_remaining_topics(self):
+        items = [
+            {
+                "title": f"Same topic {index}",
+                "url": f"https://example.org/same-{index}",
+                "weekly_topics": ["育种"],
+                "ai_score": 100 - index,
+            }
+            for index in range(30)
+        ] + [
+            {
+                "title": f"Topic {topic} {index}",
+                "url": f"https://example.org/{topic}-{index}",
+                "weekly_topics": [topic],
+                "ai_score": 50 - index,
+            }
+            for topic in ("基因编辑", "种质资源", "生物育种")
+            for index in range(3)
+        ]
+
+        selected = select_weekly_news(items)
+
+        self.assertEqual(len(selected), 20)
+        self.assertEqual(
+            [item["title"] for item in selected[:5]],
+            [f"Same topic {index}" for index in range(5)],
+        )
+        self.assertTrue(
+            {"基因编辑", "种质资源", "生物育种"}.issubset(
+                {item["weekly_topics"][0] for item in selected[5:]}
+            )
+        )
+
+    def test_select_weekly_news_deduplicates_and_is_stable_when_under_limit(self):
+        items = [
+            {
+                "title": "Duplicate lower score",
+                "url": "https://example.org/duplicate?utm_source=one",
+                "weekly_topics": ["育种"],
+                "ai_score": 1,
+            },
+            {
+                "title": "Duplicate higher score",
+                "url": "https://example.org/duplicate?utm_source=two",
+                "weekly_topics": ["基因编辑"],
+                "ai_score": 2,
+            },
+            {
+                "title": "Only other item",
+                "url": "https://example.org/other",
+                "weekly_topics": ["种质资源"],
+                "ai_score": 1,
+            },
+        ]
+
+        first = select_weekly_news(items)
+        second = select_weekly_news(items)
+
+        self.assertEqual(len(first), 2)
+        self.assertEqual(
+            [item["url"] for item in first], [item["url"] for item in second]
+        )
+        self.assertEqual(
+            [item["title"] for item in first],
+            ["Duplicate higher score", "Only other item"],
+        )
     def test_shared_snapshot_identity_prefers_canonical_url(self):
         item = RSSItem(
             title="Rice breeding update",

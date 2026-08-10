@@ -2,13 +2,23 @@ from datetime import datetime, timezone
 import unittest
 from unittest.mock import MagicMock
 
+import pytz
+
 from trendradar.crawler.news_search import (
     AgriculturalNewsSearch,
     GDELTClient,
     GoogleNewsRSSClient,
+    NewsSearchBounds,
     SearchArticle,
     canonicalize_url,
     title_similarity,
+)
+
+
+SHANGHAI = pytz.timezone("Asia/Shanghai")
+DEFAULT_BOUNDS = NewsSearchBounds(
+    start=datetime(2026, 7, 27, tzinfo=timezone.utc),
+    end=datetime(2026, 8, 3, tzinfo=timezone.utc),
 )
 
 
@@ -159,6 +169,20 @@ class ProviderParsingTests(unittest.TestCase):
 
 
 class ProviderRequestTests(unittest.TestCase):
+    def test_provider_bounds_are_safe_superset_of_shanghai_week(self):
+        window = NewsSearchBounds(
+            start=SHANGHAI.localize(datetime(2026, 8, 3, 0, 0)),
+            end=SHANGHAI.localize(datetime(2026, 8, 10, 0, 0)),
+        )
+        gdelt = GDELTClient().build_params("rice breeding", 20, window)
+        self.assertEqual(gdelt["startdatetime"], "20260802155959")
+        self.assertEqual(gdelt["enddatetime"], "20260809160000")
+        self.assertNotIn("timespan", gdelt)
+        google = GoogleNewsRSSClient().build_params("水稻育种", "zh", window)
+        self.assertIn("after:2026-08-02", google["q"])
+        self.assertIn("before:2026-08-10", google["q"])
+        self.assertNotIn("when:2d", google["q"])
+
     def test_provider_clients_forward_proxy_configuration_to_direct_first_session(self):
         with unittest.mock.patch(
             "trendradar.crawler.news_search.DirectFirstSession"
@@ -186,35 +210,36 @@ class ProviderRequestTests(unittest.TestCase):
             session_class.call_args_list[1].kwargs["use_proxy"], False
         )
 
-    def test_gdelt_builds_48_hour_article_list_params(self):
+    def test_gdelt_builds_windowed_article_list_params(self):
         self.assertEqual(
-            GDELTClient().build_params("wheat breeding", 25),
+            GDELTClient().build_params("wheat breeding", 25, DEFAULT_BOUNDS),
             {
                 "query": "wheat breeding",
                 "mode": "artlist",
                 "format": "json",
-                "timespan": "48h",
+                "startdatetime": "20260726235959",
+                "enddatetime": "20260803000000",
                 "sort": "datedesc",
                 "maxrecords": 25,
             },
         )
 
-    def test_google_rss_requests_two_day_window(self):
+    def test_google_rss_requests_windowed_query(self):
         client = GoogleNewsRSSClient()
 
         self.assertEqual(
-            client.build_params("水稻 基因编辑", "zh"),
+            client.build_params("水稻 基因编辑", "zh", DEFAULT_BOUNDS),
             {
-                "q": "水稻 基因编辑 when:2d",
+                "q": "水稻 基因编辑 after:2026-07-26 before:2026-08-03",
                 "hl": "zh-CN",
                 "gl": "CN",
                 "ceid": "CN:zh-Hans",
             },
         )
         self.assertEqual(
-            client.build_params("rice gene editing", "en"),
+            client.build_params("rice gene editing", "en", DEFAULT_BOUNDS),
             {
-                "q": "rice gene editing when:2d",
+                "q": "rice gene editing after:2026-07-26 before:2026-08-03",
                 "hl": "en-US",
                 "gl": "US",
                 "ceid": "US:en",
@@ -232,11 +257,13 @@ class ProviderRequestTests(unittest.TestCase):
         session.get.return_value = response
         client = GDELTClient(session=session, timeout=12)
 
-        articles = client.fetch("wheat breeding", "genomic-breeding", 10)
+        articles = client.fetch(
+            "wheat breeding", "genomic-breeding", 10, DEFAULT_BOUNDS
+        )
 
         session.get.assert_called_once_with(
             client.endpoint,
-            params=client.build_params("wheat breeding", 10),
+            params=client.build_params("wheat breeding", 10, DEFAULT_BOUNDS),
             timeout=12,
         )
         response.raise_for_status.assert_called_once_with()
@@ -248,11 +275,13 @@ class ProviderRequestTests(unittest.TestCase):
         session.get.return_value = response
         client = GoogleNewsRSSClient(session=session, timeout=8)
 
-        articles = client.fetch("水稻 基因编辑", "gene-editing", "zh")
+        articles = client.fetch(
+            "水稻 基因编辑", "gene-editing", "zh", DEFAULT_BOUNDS
+        )
 
         session.get.assert_called_once_with(
             client.endpoint,
-            params=client.build_params("水稻 基因编辑", "zh"),
+            params=client.build_params("水稻 基因编辑", "zh", DEFAULT_BOUNDS),
             timeout=8,
         )
         response.raise_for_status.assert_called_once_with()
@@ -290,18 +319,29 @@ class SearchAggregationTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-    def test_rejects_missing_future_and_expired_dates(self):
+    def test_rejects_missing_dates_but_keeps_weekly_recall_candidates(self):
         result = self.coordinator.aggregate(
             [
                 article("missing", ""),
-                article("future", "2026-07-31T15:01:00+00:00"),
-                article("old", "2026-07-30T14:59:59+00:00"),
-                article("fresh", "2026-07-31T14:00:00+00:00"),
+                article(
+                    "future", "2026-07-31T15:01:00+00:00",
+                    url="https://example.com/future",
+                ),
+                article(
+                    "old", "2026-07-30T14:59:59+00:00",
+                    url="https://example.com/old",
+                ),
+                article(
+                    "fresh", "2026-07-31T14:00:00+00:00",
+                    url="https://example.com/fresh",
+                ),
             ],
             now="2026-07-31T15:00:00+00:00",
         )
 
-        self.assertEqual([item.title for item in result], ["fresh"])
+        self.assertEqual(
+            [item.title for item in result], ["future", "old", "fresh"]
+        )
 
     def test_merges_similar_reports_counts_publishers_and_prefers_authority(self):
         result = self.coordinator.aggregate([
@@ -331,7 +371,7 @@ class SearchAggregationTests(unittest.TestCase):
             "https://example.com/path?keep=1",
         )
 
-    def test_calculates_pre_hot_score_from_coverage_authority_and_recency(self):
+    def test_calculates_pre_hot_score_from_coverage_and_authority(self):
         result = self.coordinator.aggregate([
             article(
                 "Rice breeding update",
@@ -350,7 +390,7 @@ class SearchAggregationTests(unittest.TestCase):
             ),
         ])
 
-        self.assertEqual(result[0].pre_hot_score, 0.7333)
+        self.assertEqual(result[0].pre_hot_score, 0.8)
 
     def test_merges_english_provider_labels_and_deduplicates_media_domain(self):
         result = self.coordinator.aggregate([
@@ -609,7 +649,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
         )
 
-        coordinator.search()
+        coordinator.search(DEFAULT_BOUNDS)
 
         gdelt.fetch.assert_not_called()
         google.fetch.assert_not_called()
@@ -630,7 +670,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
                 providers={"gdelt": "yes", "google_news": []},
                 topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
             )
-            coordinator.search()
+            coordinator.search(DEFAULT_BOUNDS)
 
         self.assertEqual(gdelt.fetch.call_count, 1)
         self.assertEqual(google.fetch.call_count, 2)
@@ -659,7 +699,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
         from io import StringIO
         output = StringIO()
         with redirect_stdout(output):
-            result = coordinator.search()
+            result = coordinator.search(DEFAULT_BOUNDS)
 
         message = output.getvalue()
         self.assertEqual(result.failed_providers, ["gdelt"])
@@ -682,7 +722,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             "topic-3": "Soybean yield trial results",
         }
 
-        def google_result(query, topic, language):
+        def google_result(query, topic, language, bounds):
             return [SearchArticle(
                 title=titles[topic],
                 url=f"https://{topic}.example/{language}",
@@ -707,7 +747,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         called_topics = [call.args[1] for call in google.fetch.call_args_list]
         self.assertEqual(called_topics, ["topic-0", "topic-3"])
@@ -723,7 +763,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             "topic-3": "Soybean yield trial results",
         }
 
-        def google_result(query, topic, language):
+        def google_result(query, topic, language, bounds):
             if topic == "topic-0":
                 raise RuntimeError("first selected query failed")
             return [SearchArticle(
@@ -750,7 +790,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         self.assertEqual(
             [call.args[1] for call in google.fetch.call_args_list],
@@ -792,7 +832,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         provider_counts = {
             provider: sum(provider in item.providers for item in result.items)
@@ -808,7 +848,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
 
     def test_small_provider_budget_does_not_let_first_query_monopolize(self):
         gdelt = MagicMock()
-        gdelt.fetch.side_effect = lambda query, topic, limit: [
+        gdelt.fetch.side_effect = lambda query, topic, limit, bounds: [
             SearchArticle(
                 title=f"{topic}-{index}",
                 published_at="2026-07-31T14:00:00+00:00",
@@ -833,7 +873,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         self.assertEqual({item.topic for item in result.items}, {"one", "two"})
         self.assertEqual([call.args[2] for call in gdelt.fetch.call_args_list], [1, 1])
@@ -848,7 +888,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         gdelt.fetch.assert_not_called()
         self.assertEqual(google.fetch.call_count, 2)
@@ -864,7 +904,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         gdelt.fetch.assert_not_called()
         google.fetch.assert_not_called()
@@ -887,7 +927,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         self.assertEqual(result.failed_providers, ["gdelt"])
         self.assertEqual(len(result.items), 1)
@@ -915,7 +955,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         self.assertEqual([item.title for item in result.items], ["Chinese first"])
 
@@ -931,7 +971,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             now_func=lambda: datetime(2026, 7, 31, 15, tzinfo=timezone.utc),
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         self.assertEqual(result.failed_providers, ["google_news"])
         self.assertEqual([item.title for item in result.items], ["GDELT result"])
@@ -947,7 +987,7 @@ class SearchFailureToleranceTests(unittest.TestCase):
             topics=[{"id": "gene-editing", "zh": "水稻", "en": "rice"}],
         )
 
-        result = coordinator.search()
+        result = coordinator.search(DEFAULT_BOUNDS)
 
         self.assertEqual(result.items, [])
         self.assertEqual(result.failed_providers, ["gdelt", "google_news"])

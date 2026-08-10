@@ -1,7 +1,9 @@
 """自然周时间窗口和 RSS 周快照聚合。"""
 
+from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+import re
 from typing import Iterator
 
 import pytz
@@ -15,6 +17,27 @@ from trendradar.core.rss_snapshot import (
 )
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.utils.time import parse_iso_datetime, parse_storage_datetime
+
+
+DATE_ONLY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def parse_week_published_at(value: str, timezone_name: str) -> datetime | None:
+    """Parse an explicit weekly publication time without accepting naive time."""
+    text = str(value or "").strip()
+    tz = pytz.timezone(timezone_name)
+    if DATE_ONLY.fullmatch(text):
+        try:
+            return tz.localize(datetime.strptime(text, "%Y-%m-%d"))
+        except ValueError:
+            return None
+    try:
+        raw = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if raw.tzinfo is None:
+        return None
+    return parse_iso_datetime(text, timezone_name)
 
 
 @dataclass(frozen=True)
@@ -35,16 +58,105 @@ class NaturalWeekWindow:
         ]
 
     def contains(self, published_at: str) -> bool:
-        parsed = parse_iso_datetime(published_at, self.timezone)
+        parsed = parse_week_published_at(published_at, self.timezone)
         return parsed is not None and self.start <= parsed < self.end
 
 
 def previous_natural_week(now: datetime, timezone: str) -> NaturalWeekWindow:
-    tz = pytz.timezone(timezone)
+    current = current_natural_week(now, timezone)
+    return NaturalWeekWindow(
+        current.start - timedelta(days=7), current.start, timezone
+    )
+
+
+def current_natural_week(now: datetime, timezone_name: str) -> NaturalWeekWindow:
+    """Return the local Monday-to-Monday window containing ``now``."""
+    tz = pytz.timezone(timezone_name)
     local_now = now.astimezone(tz)
-    monday_date = (local_now - timedelta(days=local_now.weekday())).date()
-    end = tz.localize(datetime.combine(monday_date, datetime.min.time()))
-    return NaturalWeekWindow(end - timedelta(days=7), end, timezone)
+    monday = (local_now - timedelta(days=local_now.weekday())).date()
+    start = tz.localize(datetime.combine(monday, datetime.min.time()))
+    return NaturalWeekWindow(start, start + timedelta(days=7), timezone_name)
+
+
+def report_item_identity(item: dict) -> tuple[str, str]:
+    url = canonicalize_url(str(item.get("url") or ""))
+    if url:
+        return ("url", url)
+    return ("title", normalize_title(str(item.get("title") or "")))
+
+
+def primary_weekly_topic(item: dict) -> str:
+    topics = item.get("weekly_topics") or []
+    if isinstance(topics, str):
+        topics = [topics]
+    normalized = sorted({str(topic).strip() for topic in topics if str(topic).strip()})
+    return normalized[0] if normalized else "其他"
+
+
+def weekly_value_sort_key(item: dict) -> tuple:
+    try:
+        highlight = int(item.get("highlight_rank") or 10**9)
+    except (TypeError, ValueError):
+        highlight = 10**9
+    try:
+        score = float(item.get("ai_score") or item.get("score") or 0.0)
+    except (TypeError, ValueError):
+        score = 0.0
+    published = parse_week_published_at(
+        str(item.get("published_at") or ""), "Asia/Shanghai"
+    )
+    published_epoch = published.timestamp() if published else 0.0
+    return (
+        highlight,
+        -score,
+        -published_epoch,
+        str(item.get("source_name") or ""),
+        str(item.get("title") or ""),
+    )
+
+
+def deduplicate_report_items(items: list[dict]) -> list[dict]:
+    merged: dict[tuple[str, str], dict] = {}
+    for raw in items:
+        item = dict(raw)
+        key = report_item_identity(item)
+        if not key[1]:
+            continue
+        existing = merged.get(key)
+        if existing is None or weekly_value_sort_key(item) < weekly_value_sort_key(existing):
+            merged[key] = item
+    return list(merged.values())
+
+
+def select_weekly_news(
+    items: list[dict], *, limit: int = 20, highlight_count: int = 5,
+) -> list[dict]:
+    """Select a stable, topic-balanced weekly news list without padding."""
+    unique = deduplicate_report_items(items)
+    ranked = sorted(unique, key=weekly_value_sort_key)
+    selected = ranked[:min(highlight_count, limit)]
+    selected_keys = {report_item_identity(item) for item in selected}
+    buckets: dict[str, deque[dict]] = {}
+    for item in ranked:
+        if report_item_identity(item) in selected_keys:
+            continue
+        topic = primary_weekly_topic(item) or "其他"
+        buckets.setdefault(topic, deque()).append(item)
+    topics = sorted(buckets)
+    while len(selected) < limit and topics:
+        next_topics = []
+        for topic in topics:
+            bucket = buckets[topic]
+            if bucket and len(selected) < limit:
+                item = bucket.popleft()
+                selected.append(item)
+                selected_keys.add(report_item_identity(item))
+            if bucket:
+                next_topics.append(topic)
+        topics = next_topics
+    for rank, item in enumerate(selected[:highlight_count], start=1):
+        item["highlight_rank"] = rank
+    return selected
 
 
 @dataclass
@@ -221,7 +333,7 @@ class WeeklyRSSAggregator:
 
         data = RSSData(
             date=window.end.strftime("%Y-%m-%d"),
-            crawl_time="weekly",
+            crawl_time=now.astimezone(pytz.timezone(self.timezone)).isoformat(),
             items=grouped_items,
             id_to_name=id_to_name,
             failed_ids=[],

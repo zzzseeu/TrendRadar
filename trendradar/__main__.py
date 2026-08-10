@@ -23,6 +23,7 @@ from trendradar.crawler.news_search import (
     GDELTClient,
     GoogleNewsRSSClient,
     NEWS_SEARCH_PROVIDERS,
+    NewsSearchBounds,
     canonicalize_url,
 )
 from trendradar.storage import convert_crawl_results_to_news_data
@@ -32,7 +33,13 @@ from trendradar.utils.time import DEFAULT_TIMEZONE
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.core.daily_delivery import DailyDeliveryAggregator
 from trendradar.core.scheduler import ResolvedSchedule
-from trendradar.core.weekly import WeeklyRSSAggregator
+from trendradar.core.weekly import (
+    WeeklyRSSAggregator,
+    current_natural_week,
+    previous_natural_week,
+    primary_weekly_topic,
+    select_weekly_news,
+)
 from trendradar.commands import check_all_versions, run_doctor, run_test_notification, handle_status_commands
 from trendradar.commands.version import _fetch_remote_version, _parse_version
 
@@ -255,6 +262,15 @@ class NewsAnalyzer:
     def _operation_time_filename(self) -> str:
         frozen = getattr(self, "_run_time_filename", None)
         return frozen or self.ctx.format_time()
+
+    def _news_search_bounds(self, report_mode: str) -> NewsSearchBounds:
+        """Derive all provider recall from the run's one natural-week window."""
+        run_at = self._operation_run_at()
+        if report_mode == "weekly":
+            window = previous_natural_week(run_at, self.ctx.timezone)
+        else:
+            window = current_natural_week(run_at, self.ctx.timezone)
+        return NewsSearchBounds(window.start, window.end)
 
     def _resolve_and_apply_schedule(self) -> ResolvedSchedule:
         """在采集前解析一次调度，并应用本次运行的覆盖配置。"""
@@ -889,6 +905,8 @@ class NewsAnalyzer:
                 # AI 筛选成功：无条件用 AI 结果替换 RSS 主区与新增区（与热榜 stats 一致，
                 # 不因 AI 命中为空而回退到关键词结果）
                 rss_items = ai_rss_stats
+                if mode == "weekly":
+                    rss_items = self._select_weekly_rss_items(ai_rss_stats)
                 rss_new_items = ai_rss_new_stats
             else:
                 error_msg = ai_filter_result.error if ai_filter_result else "未知错误"
@@ -1024,6 +1042,36 @@ class NewsAnalyzer:
                 raise RuntimeError("周报 HTML 报告生成失败")
 
         return stats, html_file, ai_result, rss_items, standalone_data, rss_new_items
+
+    @staticmethod
+    def _select_weekly_rss_items(rss_stats: list[dict] | None) -> list[dict]:
+        """Apply the weekly cap once across all AI-approved RSS tag groups."""
+        candidates: list[dict] = []
+        for stat in rss_stats or []:
+            topic = str(stat.get("word") or "").strip()
+            for raw_item in stat.get("titles") or []:
+                item = dict(raw_item)
+                topics = item.get("weekly_topics") or []
+                if isinstance(topics, str):
+                    topics = [topics]
+                if topic:
+                    topics = [*topics, topic]
+                item["weekly_topics"] = sorted({
+                    str(value).strip() for value in topics if str(value).strip()
+                })
+                item.setdefault("ai_score", item.get("importance_score", 0))
+                item.setdefault("score", item.get("relevance_score", 0))
+                candidates.append(item)
+
+        selected = select_weekly_news(candidates)
+        grouped: dict[str, list[dict]] = {}
+        for item in selected:
+            topic = primary_weekly_topic(item)
+            grouped.setdefault(topic, []).append(item)
+        return [
+            {"word": topic, "count": len(items), "position": 9999, "titles": items}
+            for topic, items in grouped.items()
+        ]
 
     def _send_notification_if_needed(
         self,
@@ -1380,7 +1428,9 @@ class NewsAnalyzer:
                         authority_domains=authority_domains,
                         providers=providers,
                     )
-                    search_result = news_search.search()
+                    search_result = news_search.search(
+                        self._news_search_bounds(self.report_mode)
+                    )
                     if search_result.failed_providers:
                         failed = ", ".join(search_result.failed_providers)
                         print(f"[新闻搜索] 部分来源失败: {failed}")

@@ -6,7 +6,11 @@ from unittest.mock import MagicMock, patch
 import pytz
 import yaml
 
-from trendradar.crawler.news_search import GDELTClient, GoogleNewsRSSClient
+from trendradar.crawler.news_search import (
+    GDELTClient,
+    GoogleNewsRSSClient,
+    NewsSearchBounds,
+)
 from trendradar.notification.renderer import (
     render_dingtalk_content,
     render_feishu_content,
@@ -55,13 +59,22 @@ class DailyDeliveryReportTests(unittest.TestCase):
             "max_age_days" not in feed
             for feed in config["rss"].get("feeds", [])
         ))
-        self.assertEqual(
-            GDELTClient().build_params("rice breeding", 10)["timespan"],
-            "48h",
+        bounds = NewsSearchBounds(
+            start=pytz.timezone("Asia/Shanghai").localize(
+                datetime(2026, 8, 3)
+            ),
+            end=pytz.timezone("Asia/Shanghai").localize(
+                datetime(2026, 8, 10)
+            ),
         )
+        gdelt = GDELTClient().build_params("rice breeding", 10, bounds)
+        self.assertEqual(gdelt["startdatetime"], "20260802155959")
+        self.assertEqual(gdelt["enddatetime"], "20260809160000")
+        self.assertNotIn("timespan", gdelt)
+        google = GoogleNewsRSSClient().build_params("rice breeding", "en", bounds)
         self.assertIn(
-            "when:2d",
-            GoogleNewsRSSClient().build_params("rice breeding", "en")["q"],
+            "after:2026-08-02 before:2026-08-10",
+            google["q"],
         )
 
     def test_daily_delivery_header_contains_exact_window(self):

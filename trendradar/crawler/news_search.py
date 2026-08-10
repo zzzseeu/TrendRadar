@@ -2,7 +2,7 @@
 """Keyless clients for agricultural news search providers."""
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 import math
 import re
@@ -39,6 +39,36 @@ class NewsSearchResult:
 
     items: list[SearchArticle]
     failed_providers: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class NewsSearchBounds:
+    """Provider recall bounds derived from one natural-week window."""
+
+    start: datetime
+    end: datetime
+
+    def __post_init__(self):
+        if self.start.tzinfo is None or self.end.tzinfo is None:
+            raise ValueError("news search bounds must be timezone-aware")
+        if self.start >= self.end:
+            raise ValueError("news search bounds must be increasing")
+
+    @property
+    def gdelt_start(self) -> datetime:
+        return self.start.astimezone(timezone.utc) - timedelta(seconds=1)
+
+    @property
+    def gdelt_end(self) -> datetime:
+        return self.end.astimezone(timezone.utc)
+
+    @property
+    def google_after(self) -> str:
+        return (self.start.date() - timedelta(days=1)).isoformat()
+
+    @property
+    def google_before(self) -> str:
+        return self.end.date().isoformat()
 
 
 TRACKING_KEYS = {"utm_source", "utm_medium", "utm_campaign", "gclid", "fbclid"}
@@ -277,15 +307,11 @@ class AgriculturalNewsSearch:
     def aggregate(
         self, articles: list[SearchArticle], now: datetime | str | None = None
     ) -> list[SearchArticle]:
-        """Strictly retain recent reports, then merge equivalent coverage."""
-        current_time = self._current_time(now)
+        """Merge valid provider reports; weekly eligibility is decided downstream."""
         normalized_articles: list[SearchArticle] = []
         for article in articles:
             published_at = _parse_timestamp(article.published_at)
             if published_at is None:
-                continue
-            age = current_time - published_at
-            if age.total_seconds() < 0 or age.total_seconds() > 24 * 60 * 60:
                 continue
 
             normalized_url = canonicalize_url(article.url)
@@ -376,22 +402,19 @@ class AgriculturalNewsSearch:
                         source_keys.add(f"publisher:{publisher_key}")
                 if self._prefer_primary(primary, candidate):
                     primary = candidate
-            published_at = _parse_timestamp(primary.published_at)
-            age_hours = (current_time - published_at).total_seconds() / 3600
             source_count = max(1, len(source_keys))
             coverage = min(source_count / 3, 1.0)
             authority = 1.0 if self._is_authority_domain(primary.publisher_domain) else 0.0
-            recency = max(0.0, 1.0 - age_hours / 24.0)
             results.append(replace(
                 primary,
                 providers=providers,
                 related_publishers=publishers - {primary.publisher},
                 source_count=source_count,
-                pre_hot_score=round(0.5 * coverage + 0.3 * authority + 0.2 * recency, 4),
+                pre_hot_score=round(0.6 * coverage + 0.4 * authority, 4),
             ))
         return results
 
-    def search(self) -> NewsSearchResult:
+    def search(self, bounds: NewsSearchBounds) -> NewsSearchResult:
         """Fetch each configured query without letting one failure halt the rest."""
         articles: list[SearchArticle] = []
         failed_providers: list[str] = []
@@ -461,11 +484,11 @@ class AgriculturalNewsSearch:
                 try:
                     if provider == "gdelt":
                         fetched = self.gdelt_client.fetch(
-                            query, topic_id, allocation
+                            query, topic_id, allocation, bounds
                         )
                     else:
                         fetched = self.google_news_client.fetch(
-                            query, topic_id, language
+                            query, topic_id, language, bounds
                         )
                     accepted = list(fetched)[:allocation]
                     articles.extend(accepted)
@@ -506,22 +529,25 @@ class GDELTClient:
         )
         self.timeout = timeout
 
-    def build_params(self, query: str, max_results: int) -> dict:
+    def build_params(
+        self, query: str, max_results: int, bounds: NewsSearchBounds,
+    ) -> dict:
         return {
             "query": query,
             "mode": "artlist",
             "format": "json",
-            "timespan": "48h",
+            "startdatetime": bounds.gdelt_start.strftime("%Y%m%d%H%M%S"),
+            "enddatetime": bounds.gdelt_end.strftime("%Y%m%d%H%M%S"),
             "sort": "datedesc",
             "maxrecords": max_results,
         }
 
     def fetch(
-        self, query: str, topic: str, max_results: int
+        self, query: str, topic: str, max_results: int, bounds: NewsSearchBounds,
     ) -> list[SearchArticle]:
         response = self.session.get(
             self.endpoint,
-            params=self.build_params(query, max_results),
+            params=self.build_params(query, max_results, bounds),
             timeout=self.timeout,
         )
         response.raise_for_status()
@@ -578,18 +604,28 @@ class GoogleNewsRSSClient:
         )
         self.timeout = timeout
 
-    def build_params(self, query: str, language: str) -> dict:
+    def build_params(
+        self, query: str, language: str, bounds: NewsSearchBounds,
+    ) -> dict:
         locale = (
             {"hl": "zh-CN", "gl": "CN", "ceid": "CN:zh-Hans"}
             if language == "zh"
             else {"hl": "en-US", "gl": "US", "ceid": "US:en"}
         )
-        return {"q": f"{query} when:2d", **locale}
+        return {
+            "q": (
+                f"{query} after:{bounds.google_after} "
+                f"before:{bounds.google_before}"
+            ),
+            **locale,
+        }
 
-    def fetch(self, query: str, topic: str, language: str) -> list[SearchArticle]:
+    def fetch(
+        self, query: str, topic: str, language: str, bounds: NewsSearchBounds,
+    ) -> list[SearchArticle]:
         response = self.session.get(
             self.endpoint,
-            params=self.build_params(query, language),
+            params=self.build_params(query, language, bounds),
             timeout=self.timeout,
         )
         response.raise_for_status()

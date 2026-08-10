@@ -2,10 +2,13 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, Mock, patch
+
+import pytz
 
 from trendradar.__main__ import (
     NewsAnalyzer,
@@ -436,6 +439,7 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
     def _analyzer(self, enabled=True):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer.ctx = SimpleNamespace(
+            timezone="Asia/Shanghai",
             rss_enabled=True,
             rss_feeds=[{
                 "id": "regular",
@@ -467,6 +471,11 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         )
         analyzer.proxy_url = None
         analyzer.report_mode = "daily"
+        analyzer._run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 10, 10, 0)
+        )
+        analyzer._run_date = "2026-08-10"
+        analyzer._run_time_filename = "10-00"
         analyzer.storage_manager = _StorageStub()
         analyzer._rss_source_total = 0
         analyzer._rss_source_failed = 0
@@ -522,11 +531,25 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
             authority_domains=["example.org"],
             providers={"gdelt": True, "google_news": True},
         )
-        search_class.return_value.search.assert_called_once_with()
+        search_class.return_value.search.assert_called_once_with(ANY)
+        bounds = search_class.return_value.search.call_args.args[0]
+        self.assertEqual(bounds.start.isoformat(), "2026-08-10T00:00:00+08:00")
+        self.assertEqual(bounds.end.isoformat(), "2026-08-17T00:00:00+08:00")
         saved = analyzer.storage_manager.saved[0]
         self.assertIn("regular", saved.items)
         self.assertEqual(saved.items[SEARCH_FEED_ID][0].title, SEARCH_HOTSPOT.title)
         self.assertEqual(analyzer._rss_source_failed, 1)
+
+    def test_search_bounds_use_current_week_daily_and_previous_week_weekly(self):
+        analyzer = self._analyzer(enabled=True)
+
+        daily = analyzer._news_search_bounds("daily")
+        weekly = analyzer._news_search_bounds("weekly")
+
+        self.assertEqual(daily.start.isoformat(), "2026-08-10T00:00:00+08:00")
+        self.assertEqual(daily.end.isoformat(), "2026-08-17T00:00:00+08:00")
+        self.assertEqual(weekly.start.isoformat(), "2026-08-03T00:00:00+08:00")
+        self.assertEqual(weekly.end.isoformat(), "2026-08-10T00:00:00+08:00")
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")
