@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 import unittest
@@ -66,7 +67,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
         self.assertIn('href="https://search.example.com/1"', html)
         self.assertIn("@page", html)
         self.assertIn("size: A4", html)
-        self.assertIn("@top-center", html)
+        self.assertIn(".page-header { position: fixed", html)
 
     def test_rejects_more_than_twenty_unselected_news_items(self):
         with self.assertRaisesRegex(ValueError, "20"):
@@ -146,20 +147,22 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
             self.assertTrue(pdf.read_bytes().startswith(b"%PDF"))
             self.assertGreater(pdf.stat().st_size, 5)
             self.assertLessEqual(pdf.stat().st_size, 20 * 1024 * 1024)
-            pdf_bytes = pdf.read_bytes()
             info = subprocess.run(
                 ["pdfinfo", str(pdf)], capture_output=True, text=True, check=True,
             ).stdout
-            self.assertRegex(info, r"Pages:\s+[2-9]")
+            pages = re.search(r"Pages:\s+(\d+)", info)
+            self.assertIsNotNone(pages, info)
+            self.assertGreaterEqual(int(pages.group(1)), 2)
             self.assertRegex(info, r"Page size:\s+59[4-6](?:\.\d+)? x 84[1-2](?:\.\d+)? pts")
             text = subprocess.run(
                 ["pdftotext", str(pdf), "-"],
                 capture_output=True, text=True, check=True,
             ).stdout
             self.assertIn("水稻育种技术进展 1", text)
-            self.assertIn(f"农业育种新闻周报　周期：{period}", text)
-            self.assertIn("第 1 页", text)
-            self.assertIn("第 2 页", text)
+            header = rf"农业育种新闻周报\s+周期：{re.escape(period)}"
+            self.assertGreaterEqual(len(re.findall(header, text)), 2)
+            self.assertRegex(text, r"第\s*1\s*页")
+            self.assertRegex(text, r"第\s*2\s*页")
 
     def test_invalid_or_oversized_pdf_is_deleted(self):
         from trendradar.report.pdf import generate_pdf_from_html
