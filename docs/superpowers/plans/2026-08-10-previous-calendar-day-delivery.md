@@ -2,7 +2,7 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 每天北京时间 10:00 只推送前一自然日 `[昨日 00:00, 今日 00:00)` 发布的农业育种新闻，删除旧滚动时间规则，并在清空旧运行缓存后立即补跑 2026-08-09。
+**目标：** 当前启用的每日推送链每天北京时间 10:00 只推送前一自然日 `[昨日 00:00, 今日 00:00)` 发布的农业育种新闻，删除该链路全部旧滚动时间规则，并在清空旧运行缓存后立即补跑 2026-08-09。
 
 **架构：** 运行入口冻结一次 `run_at` 并生成唯一 `DailyDeliveryWindow`；同一个窗口用于新闻搜索查询边界和最终 RSS 快照筛选。RSS 抓取、搜索聚合、AI 和报告转换不再执行 `24h/48h/max_age_days` 二次裁剪；checkpoint 只负责同日幂等，first-seen 只作为存储账本保留。部署时把整个 `output` 原子移动到可恢复备份，再用原 `.env` 重建并显式补跑。
 
@@ -14,6 +14,7 @@
 
 - 修改 `trendradar/core/daily_delivery.py`：前一自然日窗口、发布时间解析、昨日库与今日库聚合。
 - 修改 `trendradar/crawler/rss/parser.py`：ScienceDirect 与 JSON Feed 纯日期保持日精度，标准 RSS 时间明确为 UTC。
+- 修改 `trendradar/utils/time.py`：纯日期显示不再漂移为 UTC 午夜后的 08:00。
 - 修改 `trendradar/crawler/rss/fetcher.py`：删除 `freshness_enabled`、`max_age_days` 及抓取前滚动过滤。
 - 修改 `trendradar/crawler/news_search.py`：删除聚合器滚动 24 小时和 recency 打分；搜索客户端接收唯一自然日窗口。
 - 修改 `trendradar/ai/filter_pipeline.py`：删除 RSS freshness 配置和二次判断，只保留权威 ID 或报告窗口范围。
@@ -21,7 +22,7 @@
 - 修改 `trendradar/core/loader.py`、`trendradar/context.py`、`trendradar/utils/time.py`：删除旧 freshness 配置加载与无调用时间工具。
 - 修改 `config/config.yaml`、`config/config.en.yaml`：删除 `freshness_filter` 和所有 `max_age_days`。
 - 修改 `docs/index.html`、`docs/assets/script.js`、`docs/assets/i18n.js`、`docs/news-push-technical-implementation.md`：删除会生成或说明旧 freshness 字段的网页配置器与文档内容。
-- 修改 `config/timeline.yaml`、`trendradar/notification/splitter.py`、`trendradar/notification/renderer.py`、`trendradar/report/html.py`：显示“昨日新闻”。
+- 修改 `config/timeline.yaml`、`trendradar/notification/splitter.py`、`trendradar/notification/renderer.py`、`trendradar/notification/senders.py`、`trendradar/report/html.py`：显示“昨日新闻”。
 - 创建 `tests/test_previous_day_time_rule.py`：集中证明生产代码和配置仅保留自然日交付规则。
 - 修改 `tests/test_sciencedirect_rss_dates.py`、`tests/test_daily_delivery.py`、`tests/test_daily_delivery_schedule.py`：自然日边界、双日库、checkpoint 幂等。
 - 修改 `tests/test_news_search.py`、`tests/test_news_search_pipeline.py`：搜索查询复用自然日窗口，不再有独立 24/48 小时。
@@ -188,6 +189,7 @@ git commit -m "refactor: 删除旧RSS滚动时间规则"
 **文件：**
 - 修改：`trendradar/crawler/rss/parser.py:12-14,189-203,278-300,318-346`
 - 修改：`trendradar/core/daily_delivery.py:1-99`
+- 修改：`trendradar/utils/time.py:144-185`
 - 测试：`tests/test_sciencedirect_rss_dates.py`
 - 测试：`tests/test_daily_delivery.py:70-170`
 
@@ -225,6 +227,13 @@ def test_naive_full_timestamps_are_normalized_to_explicit_utc(self):
     self.assertEqual(
         parser._parse_iso_date("2026-08-09T01:02:03"),
         "2026-08-09T01:02:03+00:00",
+    )
+
+
+def test_date_only_display_does_not_invent_a_time(self):
+    self.assertEqual(
+        format_iso_time_friendly("2026-08-09", "Asia/Shanghai", True),
+        "08-09",
     )
     self.assertEqual(
         parser._parse_date({"published": "Sun, 09 Aug 2026 01:02:03"}),
@@ -303,6 +312,9 @@ return parsed.date().isoformat()
 完整时间若没有 offset，明确按 UTC 补 `tzinfo=datetime_timezone.utc`；所有非纯日期输出必须
 带时区，不能把 naive 值交给下游自行猜测。
 
+`format_iso_time_friendly()` 对严格 `YYYY-MM-DD` 且 `include_date=True` 时直接输出 `MM-DD`，
+不把日期补成 UTC 午夜后再转换出虚假的 `08:00`。
+
 - [ ] **步骤 4：实现唯一自然日窗口**
 
 `daily_delivery.py` 使用：
@@ -343,7 +355,7 @@ def daily_delivery_window(now: datetime, timezone: str) -> DailyDeliveryWindow:
 运行任务 2 步骤 2 命令，预期全部 `OK`，然后：
 
 ```bash
-git add trendradar/crawler/rss/parser.py trendradar/core/daily_delivery.py tests/test_sciencedirect_rss_dates.py tests/test_daily_delivery.py
+git add trendradar/crawler/rss/parser.py trendradar/core/daily_delivery.py trendradar/utils/time.py tests/test_sciencedirect_rss_dates.py tests/test_daily_delivery.py tests/test_daily_delivery_report.py
 git commit -m "feat: 定义前一自然日发布时间窗口"
 ```
 
@@ -381,15 +393,22 @@ def test_google_query_is_safe_superset_derived_from_delivery_dates(self):
     self.assertIn("before:2026-08-10", params["q"])
 
 
-def test_aggregate_does_not_apply_independent_age_filter(self):
+def test_aggregate_does_not_apply_any_date_eligibility_filter(self):
     coordinator = AgriculturalNewsSearch()
     result = coordinator.aggregate([
         article("Old candidate", "2026-07-01T00:00:00+00:00"),
         article("Future candidate", "2026-09-01T00:00:00+00:00"),
+        article("Undated candidate", ""),
+        article("Invalid-date candidate", "not-a-date"),
     ])
     self.assertEqual(
         [item.title for item in result],
-        ["Old candidate", "Future candidate"],
+        [
+            "Old candidate",
+            "Future candidate",
+            "Undated candidate",
+            "Invalid-date candidate",
+        ],
     )
 ```
 
@@ -409,13 +428,12 @@ docker run --rm --network none --entrypoint /app/.venv/bin/python \
 
 - [ ] **步骤 3：删除搜索聚合器独立时间规则**
 
-`aggregate()` 只拒绝无法解析的发布时间，不计算 age，也不以 24 小时 recency 打分：
+`aggregate()` 不再判断发布时间是否缺失、非法、未来或过旧；它只做 URL/标题结构校验和去重。
+GDELT/Google provider parser 同样只要求安全 URL 与标题，无法解析的发布时间保存为空字符串，
+由最终 `DailyDeliveryAggregator` 唯一排除并统计。聚合阶段不计算 age，也不以 24 小时 recency
+打分：
 
 ```python
-published_at = _parse_timestamp(article.published_at)
-if published_at is None:
-    continue
-
 pre_hot_score = round(
     0.6 * coverage + 0.4 * authority,
     4,
@@ -735,6 +753,7 @@ git commit -m "feat: 按发布日期构建昨日新闻快照"
 - 修改：`config/timeline.yaml:461-473`
 - 修改：`trendradar/notification/splitter.py:295-301,385-400`
 - 修改：`trendradar/notification/renderer.py:121-132,263-274`
+- 修改：`trendradar/notification/senders.py:847-855`
 - 修改：`trendradar/report/html.py:1498-1507`
 - 修改：`config/daily.crontab:4`
 - 修改：`tests/test_portable_deployment.sh:42`
@@ -757,7 +776,8 @@ def test_daily_delivery_header_contains_exact_previous_day_window(self):
     self.assertIn("周期： 2026-08-09 00:00—2026-08-10 00:00", content)
 ```
 
-HTML、飞书、钉钉和企业微信 payload 均断言“昨日新闻”；空态为“昨日新闻暂无匹配内容”；时间线 `daily_delivery.name` 为“昨日新闻”。
+HTML、飞书、钉钉、企业微信和 ntfy payload 均断言“昨日新闻”；空态为“昨日新闻暂无匹配内容”；
+时间线 `daily_delivery.name` 为“昨日新闻”。
 
 - [ ] **步骤 2：运行显示测试并确认失败**
 
@@ -784,6 +804,7 @@ docker run --rm --network none --entrypoint /app/.venv/bin/python \
 
 时间线把顶层名称、`report_mode` 注释和 period 显示名中的“每日新增”全部替换为“昨日新闻”，
 但 `start/end/once/report_mode` 值不变；splitter/renderer/html 的 daily 显示与空态同步替换。
+ntfy 的英文 header 映射增加 `"昨日新闻": "Previous Day News"`，不再回退通用标题。
 把 `config/daily.crontab` 的旧“周一汇总上一自然周”注释改为“每天 10:00 推送前一自然日”，
 Cron 表达式仍保持 `0 10 * * *`。
 同步更新 `tests/test_portable_deployment.sh` 的注释断言，避免部署验证继续锁定旧周报文案。
@@ -793,7 +814,7 @@ Cron 表达式仍保持 `0 10 * * *`。
 运行任务 6 步骤 2 命令，预期 `OK`，然后：
 
 ```bash
-git add config/timeline.yaml config/daily.crontab trendradar/__main__.py trendradar/notification/splitter.py trendradar/notification/renderer.py trendradar/report/html.py tests/test_daily_delivery_report.py tests/test_weekly_configuration.py tests/test_portable_deployment.sh
+git add config/timeline.yaml config/daily.crontab trendradar/__main__.py trendradar/notification/splitter.py trendradar/notification/renderer.py trendradar/notification/senders.py trendradar/report/html.py tests/test_daily_delivery_report.py tests/test_weekly_configuration.py tests/test_portable_deployment.sh
 git commit -m "feat: 统一昨日新闻报告文案"
 ```
 
