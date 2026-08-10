@@ -1264,7 +1264,7 @@ git commit -m "docs: 更新每周PDF推送配置说明"
 - 运行时迁移：`output` 整目录备份
 - 运行时配置：`docker/.env` 只更新 `CRON_SCHEDULES`
 
-- [ ] **步骤 1：运行聚焦回归**
+- [x] **步骤 1：运行聚焦回归**
 
 ```bash
 docker run --rm --network none --entrypoint /app/.venv/bin/python \
@@ -1286,7 +1286,7 @@ docker run --rm --network none --entrypoint /app/.venv/bin/python \
 
 预期：全部 `OK`，退出码 0。
 
-- [ ] **步骤 2：运行兼容和全量回归**
+- [x] **步骤 2：运行兼容和全量回归**
 
 ```bash
 docker run --rm --network none --entrypoint /app/.venv/bin/python \
@@ -1304,7 +1304,7 @@ docker run --rm --network none --entrypoint /app/.venv/bin/python \
 
 预期：两个容器明确退出码 0，无 `FAIL` 或 `ERROR`。
 
-- [ ] **步骤 3：运行静态与 PDF 实际生成验证**
+- [x] **步骤 3：运行静态与 PDF 实际生成验证**
 
 ```bash
 bash -n docker/entrypoint.sh
@@ -1321,12 +1321,32 @@ docker run --rm --network none --entrypoint /app/.venv/bin/python \
 
 预期：全部退出码 0，集成测试生成有效 `%PDF` 文件。
 
-- [ ] **步骤 4：提交最终测试修正和计划记录**
+- [x] **步骤 4：提交最终测试修正和计划记录**
 
 ```bash
 git add tests docs/superpowers/plans/2026-08-10-weekly-pdf-delivery.md
 git commit -m "test: 验证每周PDF交付链路"
 ```
+
+验证记录（2026-08-10，专用镜像
+`trendradar-task8-verify:7b97a5d0`，只读工作树，`--network none`）：
+
+- 聚焦回归：240 项通过，`OK`，退出码 0（修正后复验 287.498 秒）。
+- 兼容回归：计划中的 `tests.test_elsevier_fulltext` 和
+  `tests.test_email_multi_recipient` 并不存在；使用仓库实际模块
+  `tests.test_elsevier_full_text`、`tests.test_direct_first_proxy`、
+  `tests.test_email_delivery` 后 36 项通过，`OK`，退出码 0。
+- 全量回归：首轮 603 项发现一条仍断言旧每日推送时间线的测试，且
+  多进程锁子进程发生一次性 `SemLock` 启动错误；更新旧时间线期望后，
+  定向 2 项、聚焦 240 项均通过，第二轮全量 603 项通过，`OK`，
+  退出码 0（1018.092 秒）。
+- 静态验证：两项 `bash -n`、可移植部署检查和 `git diff --check`
+  均退出码 0。
+- PDF 实际生成：计划中的 `PdfChromiumIntegrationTests` 并不存在；
+  运行实际多页用例
+  `WeeklyPdfGenerationValidationTests.test_actual_chromium_output_is_a4_multipage_with_repeated_chinese_furniture`
+  后 1 项通过，`OK`，退出码 0。用例校验了 `%PDF`、A4、多页、中文
+  页眉页码以及 `pdfinfo`/`pdftotext` 输出。
 
 - [ ] **步骤 5：合并前只读审查**
 

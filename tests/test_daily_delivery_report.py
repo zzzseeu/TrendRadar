@@ -34,23 +34,35 @@ REPORT_DATA = {
 
 
 class DailyDeliveryReportTests(unittest.TestCase):
-    def test_custom_timeline_runs_daily_delivery_every_day(self):
+    def test_custom_timeline_collects_daily_and_delivers_weekly(self):
         timeline = yaml.safe_load(
             (ROOT / "config/timeline.yaml").read_text(encoding="utf-8")
         )["custom"]
-        self.assertEqual(list(timeline["periods"]), ["daily_delivery"])
+        self.assertEqual(
+            list(timeline["periods"]), ["daily_collect", "monday_weekly"]
+        )
         self.assertEqual(
             timeline["day_plans"],
-            {"daily": {"periods": ["daily_delivery"]}},
+            {
+                "monday": {"periods": ["monday_weekly"]},
+                "collect_only": {"periods": ["daily_collect"]},
+            },
         )
         self.assertEqual(
             timeline["week_map"],
-            {1: "daily", 2: "daily", 3: "daily", 4: "daily",
-             5: "daily", 6: "daily", 7: "daily"},
+            {1: "monday", 2: "collect_only", 3: "collect_only",
+             4: "collect_only", 5: "collect_only", 6: "collect_only",
+             7: "collect_only"},
         )
-        period = timeline["periods"]["daily_delivery"]
-        self.assertEqual(period["report_mode"], "daily_delivery")
-        self.assertEqual(period["once"], {"analyze": True, "push": True})
+        daily_collect = timeline["periods"]["daily_collect"]
+        self.assertTrue(daily_collect["collect"])
+        self.assertFalse(daily_collect["analyze"])
+        self.assertFalse(daily_collect["push"])
+        monday_weekly = timeline["periods"]["monday_weekly"]
+        self.assertEqual(monday_weekly["report_mode"], "weekly")
+        self.assertEqual(
+            monday_weekly["once"], {"analyze": True, "push": True}
+        )
         config = yaml.safe_load(
             (ROOT / "config/config.yaml").read_text(encoding="utf-8")
         )
