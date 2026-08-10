@@ -1255,3 +1255,74 @@ FAIL/ERROR。这不是产品代码或断言失败。按最终验证协调没有�
 若进程在企业微信已成功、但对应账号 ledger 写成功前崩溃（或 ledger 写确定失败），
 重试时该账号仍可能收到一次重复 PDF。这是无企业微信幂等键/查询回执 API 时不可避免的
 外部调用/崩溃歧义；本轮已关闭其他所有可确定恢复的部分成功和全局 checkpoint 失败路径。
+
+---
+
+# 最终复审 follow-up：新闻搜索来源状态持久化
+
+日期：2026-08-10
+前置提交：`e6097242`
+
+## 根因与真实调用链
+
+复核链路为 `_crawl_rss_data()` → `AgriculturalNewsSearch.search()` →
+`merge_news_search_into_rss()` → `save_rss_data()` → SQLite
+`rss_crawl_status` → 次周 `WeeklyRSSAggregator.build()`。
+
+问题成立：原 merge 只有在存在有效搜索条目时才创建合成 feed；provider partial failure
+和整体 exception 只打印日志，未进入 `RSSData.failed_ids`；全部成功但零结果也不进入
+`RSSData.items`。因此周二至周日普通 fail-soft 采集虽然保存了固定 RSS，却没有持久化
+新闻搜索本次是失败、未执行还是合法空，次周 strict 聚合会错误放行不完整历史。
+
+## 状态契约与最小修复
+
+- 唯一合成来源 ID 继续使用现有 `agri-breeding-search`；搜索结果条目的 `feed_id`、
+  `feed_name` 和全部搜索元数据不变。
+- news-search 启用且至少一个已知 provider 启用时，所有启用 provider 成功即写该合成源
+  `success`；即使零结果或结果全部因无效元数据被丢弃，也写空 items key 形成明确 success。
+- 任一 provider partial failure、整体 exception 或合成来源 ID 冲突，写同一合成源
+  `failed`。partial 先保留有效搜索条目，再以 failed 覆盖本次 crawl status，避免丢条目。
+- news-search 为 null/disabled 或全部 provider disabled 时不伪造执行状态。
+- current/daily 普通模式仍 fail-soft，固定 RSS 继续保存和展示；`_rss_source_failed` 的固定
+  RSS 计数不变。weekly 对 8 个日库已有的 `failed_ids` strict 检查无需新增分支即可失败关闭。
+
+文件：`trendradar/__main__.py`、`tests/test_news_search_pipeline.py`。
+
+## TDD 证据
+
+新增真实生产链测试在周二执行普通采集并写 Local SQLite，再于下一周一调用
+`WeeklyRSSAggregator`：
+
+- provider partial（同时返回有效搜索条目）必须持久化 failed，且条目仍保持合成 feed ID；
+- 整体 exception 必须持久化 failed；两者的下一周 strict 聚合均抛错；
+- 全部成功零结果必须持久化 success，补齐其余合法空日后 weekly 聚合正常返回空快照；
+- 合成来源 ID collision 必须记录 failed 且不覆盖既有固定条目。
+
+RED：三项 `Ran 3 in 11.670s`，3 failures + 1 error，exit 1；分别观察到 partial、
+exception 与 collision 都没有合成 failed，零结果读取合成状态触发 `KeyError`。
+
+第一次实现复跑还揭示了顺序问题：若在 merge 前先写 failed，合成 id/name 会被 merge
+误判为 collision，导致 partial 的有效条目丢失。生产逻辑改为先 merge 条目、再幂等标记
+failed；同时移除测试中不存在的显式 backend `close()` 调用。
+
+最终新增三项：`Ran 3 in 80.687s, OK`，exit 0。
+
+完整 pipeline 首轮按新契约运行 `Ran 48 in 88.332s`，仅 6 个旧断言仍要求失败不持久化或
+零结果不建 success；迁移这些夹具后，又定向核对 null、全部 provider disabled、collision
+三个易混边界：`Ran 3 in 0.193s, OK`，exit 0。
+
+最终相关组合：
+
+```bash
+docker run --rm --network none \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -v /mnt/d/project/trendradar/.worktrees/previous-day-window:/workspace:ro \
+  -w /workspace --entrypoint /app/.venv/bin/python \
+  trendradar-final-fix:0d703bcd -m unittest \
+  tests.test_news_search tests.test_news_search_pipeline \
+  tests.test_weekly_digest tests.test_weekly_schedule -q
+```
+
+结果：`Ran 175 tests in 451.929s, OK`，exit 0。按复审协调未重复运行 618 项 full
+discovery。最终 `git diff --check` exit 0；未部署、未读取或修改真实 `.env`、未移动
+`output`、未真实发送。

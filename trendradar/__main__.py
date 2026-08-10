@@ -57,10 +57,15 @@ SEARCH_FEED_ID = "agri-breeding-search"
 SEARCH_FEED_NAME = "农业育种热点搜索"
 
 
+def _mark_news_search_failed(rss_data) -> None:
+    """Persist one opaque synthetic-source failure without changing item IDs."""
+    rss_data.id_to_name.setdefault(SEARCH_FEED_ID, SEARCH_FEED_NAME)
+    if SEARCH_FEED_ID not in rss_data.failed_ids:
+        rss_data.failed_ids.append(SEARCH_FEED_ID)
+
+
 def merge_news_search_into_rss(rss_data, search_result) -> None:
     """Merge discovered breeding hotspots into an isolated synthetic RSS feed."""
-    if not search_result.items:
-        return
     if (
         SEARCH_FEED_ID in rss_data.items
         or SEARCH_FEED_ID in rss_data.id_to_name
@@ -68,6 +73,7 @@ def merge_news_search_into_rss(rss_data, search_result) -> None:
         print(
             f"[新闻搜索] 合成源 ID 冲突，保留现有固定 RSS: {SEARCH_FEED_ID}"
         )
+        _mark_news_search_failed(rss_data)
         return
 
     mapped_items = []
@@ -98,8 +104,6 @@ def merge_news_search_into_rss(rss_data, search_result) -> None:
             first_time=rss_data.crawl_time,
             last_time=rss_data.crawl_time,
         ))
-    if not mapped_items:
-        return
     rss_data.id_to_name[SEARCH_FEED_ID] = SEARCH_FEED_NAME
     rss_data.items[SEARCH_FEED_ID] = mapped_items
 
@@ -1638,12 +1642,17 @@ class NewsAnalyzer:
                 else {}
             )
             if news_search_config.get("ENABLED", False):
+                has_enabled_search_provider = False
                 try:
                     providers_value = news_search_config.get("PROVIDERS", {})
                     providers = (
                         providers_value
                         if isinstance(providers_value, Mapping)
                         else {}
+                    )
+                    has_enabled_search_provider = any(
+                        bool(providers.get(provider, False))
+                        for provider in NEWS_SEARCH_PROVIDERS
                     )
                     topics_value = news_search_config.get("TOPICS", [])
                     topics = topics_value if isinstance(topics_value, list) else []
@@ -1679,7 +1688,10 @@ class NewsAnalyzer:
                     search_result = news_search.search(
                         self._news_search_bounds(self.report_mode)
                     )
-                    if search_result.failed_providers:
+                    if (
+                        has_enabled_search_provider
+                        and search_result.failed_providers
+                    ):
                         failed = ", ".join(search_result.failed_providers)
                         print(f"[新闻搜索] 部分来源失败: {failed}")
                         if self._is_strict_delivery_mode(self.report_mode):
@@ -1691,9 +1703,14 @@ class NewsAnalyzer:
                             search_failure = (
                                 f"{label}新闻搜索来源失败: {failed}"
                             )
-                    merge_news_search_into_rss(rss_data, search_result)
+                    if has_enabled_search_provider:
+                        merge_news_search_into_rss(rss_data, search_result)
+                        if search_result.failed_providers:
+                            _mark_news_search_failed(rss_data)
                 except Exception as e:
                     print(f"[新闻搜索] 搜索失败，继续使用固定 RSS: {e}")
+                    if has_enabled_search_provider:
+                        _mark_news_search_failed(rss_data)
                     if self._is_strict_delivery_mode(self.report_mode):
                         label = (
                             "每日交付"
@@ -1706,6 +1723,8 @@ class NewsAnalyzer:
             if self.storage_manager.save_rss_data(rss_data):
                 print(f"[RSS] 数据已保存到存储后端")
 
+                if search_failure:
+                    raise RuntimeError(search_failure)
                 if (
                     self._is_strict_delivery_mode(self.report_mode)
                     and rss_data.failed_ids
@@ -1717,8 +1736,6 @@ class NewsAnalyzer:
                         else "周报"
                     )
                     raise RuntimeError(f"{label} RSS 来源失败: {failed}")
-                if search_failure:
-                    raise RuntimeError(search_failure)
 
                 if self.report_mode == "daily_delivery":
                     self._daily_delivery_rss_data = rss_data

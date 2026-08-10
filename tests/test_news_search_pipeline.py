@@ -13,10 +13,12 @@ import pytz
 from trendradar.__main__ import (
     NewsAnalyzer,
     SEARCH_FEED_ID,
+    SEARCH_FEED_NAME,
     merge_news_search_into_rss,
 )
 from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.loader import _load_rss_config
+from trendradar.core.weekly import WeeklyRSSAggregator
 from trendradar.crawler.news_search import NewsSearchResult, SearchArticle
 from trendradar.report.formatter import format_title_for_platform
 from trendradar.storage.base import RSSData, RSSItem
@@ -319,8 +321,10 @@ class NewsSearchRSSMergeTests(unittest.TestCase):
 
         merge_news_search_into_rss(rss_data, NewsSearchResult(items=[unsafe]))
 
-        self.assertNotIn(SEARCH_FEED_ID, rss_data.items)
-        self.assertNotIn(SEARCH_FEED_ID, rss_data.id_to_name)
+        self.assertEqual(rss_data.items[SEARCH_FEED_ID], [])
+        self.assertEqual(
+            rss_data.id_to_name[SEARCH_FEED_ID], SEARCH_FEED_NAME
+        )
 
     def test_merge_search_result_maps_all_rss_metadata(self):
         regular = RSSItem(
@@ -359,7 +363,7 @@ class NewsSearchRSSMergeTests(unittest.TestCase):
         self.assertEqual(item.last_time, "15:00")
         self.assertEqual(rss_data.id_to_name[SEARCH_FEED_ID], "农业育种热点搜索")
 
-    def test_merge_empty_search_result_leaves_fixed_rss_unchanged(self):
+    def test_merge_empty_search_result_records_success_without_items(self):
         regular = RSSItem(title="Regular RSS", feed_id="regular")
         rss_data = RSSData(
             date="2026-07-31",
@@ -370,8 +374,12 @@ class NewsSearchRSSMergeTests(unittest.TestCase):
 
         merge_news_search_into_rss(rss_data, NewsSearchResult(items=[]))
 
-        self.assertEqual(rss_data.items, {"regular": [regular]})
-        self.assertEqual(rss_data.id_to_name, {"regular": "Regular feed"})
+        self.assertEqual(rss_data.items["regular"], [regular])
+        self.assertEqual(rss_data.items[SEARCH_FEED_ID], [])
+        self.assertEqual(rss_data.id_to_name["regular"], "Regular feed")
+        self.assertEqual(
+            rss_data.id_to_name[SEARCH_FEED_ID], SEARCH_FEED_NAME
+        )
 
     def test_merge_collision_preserves_existing_fixed_source_and_warns(self):
         fixed = RSSItem(
@@ -396,7 +404,10 @@ class NewsSearchRSSMergeTests(unittest.TestCase):
 
         self.assertEqual(rss_data.items[SEARCH_FEED_ID], [fixed])
         self.assertEqual(rss_data.id_to_name[SEARCH_FEED_ID], "Existing fixed feed")
-        self.assertEqual(rss_data.failed_ids, ["fixed-failure"])
+        self.assertEqual(
+            rss_data.failed_ids,
+            ["fixed-failure", SEARCH_FEED_ID],
+        )
         self.assertIn("[新闻搜索]", output.getvalue())
         self.assertIn("冲突", output.getvalue())
 
@@ -616,14 +627,17 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         saved = analyzer.storage_manager.saved[0]
         self.assertEqual(saved.items[SEARCH_FEED_ID], [collision_item])
         self.assertEqual(saved.id_to_name[SEARCH_FEED_ID], "Configured fixed feed")
-        self.assertEqual(saved.failed_ids, ["fixed-failure"])
+        self.assertEqual(
+            saved.failed_ids,
+            ["fixed-failure", SEARCH_FEED_ID],
+        )
         self.assertEqual(analyzer._rss_source_failed, 1)
         self.assertIn("[新闻搜索]", output.getvalue())
         self.assertIn("冲突", output.getvalue())
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")
-    def test_provider_failures_are_logged_without_changing_fixed_failure_count(
+    def test_provider_failures_are_persisted_without_changing_fixed_failure_count(
         self, fetcher_class, search_class
     ):
         analyzer = self._analyzer(enabled=True)
@@ -640,12 +654,15 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         self.assertIn("[新闻搜索]", output.getvalue())
         self.assertIn("gdelt", output.getvalue())
         self.assertEqual(analyzer._rss_source_failed, 1)
-        self.assertEqual(analyzer.storage_manager.saved[0].failed_ids, ["fixed-failure"])
+        self.assertEqual(
+            analyzer.storage_manager.saved[0].failed_ids,
+            ["fixed-failure", SEARCH_FEED_ID],
+        )
         self.assertIn(SEARCH_FEED_ID, analyzer.storage_manager.saved[0].items)
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")
-    def test_search_exception_degrades_to_fixed_rss_data(
+    def test_search_exception_degrades_to_fixed_rss_and_persists_failure(
         self, fetcher_class, search_class
     ):
         analyzer = self._analyzer(enabled=True)
@@ -658,10 +675,143 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
 
         saved = analyzer.storage_manager.saved[0]
         self.assertEqual(list(saved.items), ["regular"])
-        self.assertEqual(saved.failed_ids, ["fixed-failure"])
+        self.assertEqual(
+            saved.failed_ids,
+            ["fixed-failure", SEARCH_FEED_ID],
+        )
         self.assertEqual(analyzer._rss_source_failed, 1)
         self.assertIn("[新闻搜索]", output.getvalue())
         self.assertIn("provider outage", output.getvalue())
+
+    def test_midweek_search_partial_or_exception_fails_next_week_snapshot(self):
+        monday = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 10, 10, 0)
+        )
+        storage_dates = [
+            "2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06",
+            "2026-08-07", "2026-08-08", "2026-08-09", "2026-08-10",
+        ]
+        cases = {
+            "partial": NewsSearchResult(
+                items=[SEARCH_HOTSPOT], failed_providers=["gdelt"]
+            ),
+            "exception": RuntimeError("provider outage"),
+        }
+
+        for label, outcome in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temp_dir:
+                backend = LocalStorageBackend(
+                    data_dir=temp_dir,
+                    enable_txt=False,
+                    enable_html=False,
+                )
+                analyzer = self._analyzer(enabled=True)
+                analyzer._run_at = pytz.timezone("Asia/Shanghai").localize(
+                    datetime(2026, 8, 4, 10, 0)
+                )
+                analyzer._run_date = "2026-08-04"
+                analyzer.storage_manager = backend
+                current = RSSData(
+                    date="2026-08-04",
+                    crawl_time="2026-08-04 10:00:00",
+                    items={"regular": []},
+                    id_to_name={"regular": "Regular feed"},
+                    failed_ids=[],
+                )
+
+                with patch(
+                    "trendradar.crawler.rss.RSSFetcher"
+                ) as fetcher_class, patch(
+                    "trendradar.__main__.AgriculturalNewsSearch"
+                ) as search_class:
+                    fetcher_class.return_value.fetch_all.return_value = current
+                    if isinstance(outcome, Exception):
+                        search_class.return_value.search.side_effect = outcome
+                    else:
+                        search_class.return_value.search.return_value = outcome
+                    analyzer._crawl_rss_data()
+
+                restored = backend.get_rss_data_strict("2026-08-04")
+                self.assertIsNotNone(restored)
+                self.assertIn(SEARCH_FEED_ID, restored.failed_ids)
+                if label == "partial":
+                    self.assertEqual(
+                        restored.items[SEARCH_FEED_ID][0].feed_id,
+                        SEARCH_FEED_ID,
+                    )
+
+                for storage_date in storage_dates:
+                    if storage_date == "2026-08-04":
+                        continue
+                    self.assertTrue(backend.save_rss_data(RSSData(
+                        date=storage_date,
+                        crawl_time=f"{storage_date} 10:00:00",
+                        items={"regular": []},
+                        id_to_name={"regular": "Regular feed"},
+                        failed_ids=[],
+                    )))
+
+                with self.assertRaisesRegex(
+                    RuntimeError, "RSS 来源失败.*agri-breeding-search"
+                ):
+                    WeeklyRSSAggregator(
+                        backend, "Asia/Shanghai"
+                    ).build(monday)
+
+    @patch("trendradar.__main__.AgriculturalNewsSearch")
+    @patch("trendradar.crawler.rss.RSSFetcher")
+    def test_midweek_successful_empty_search_is_legal_weekly_history(
+        self, fetcher_class, search_class
+    ):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            backend = LocalStorageBackend(
+                data_dir=temp_dir,
+                enable_txt=False,
+                enable_html=False,
+            )
+            analyzer = self._analyzer(enabled=True)
+            analyzer._run_at = pytz.timezone("Asia/Shanghai").localize(
+                datetime(2026, 8, 4, 10, 0)
+            )
+            analyzer._run_date = "2026-08-04"
+            analyzer.storage_manager = backend
+            fetcher_class.return_value.fetch_all.return_value = RSSData(
+                date="2026-08-04",
+                crawl_time="2026-08-04 10:00:00",
+                items={"regular": []},
+                id_to_name={"regular": "Regular feed"},
+                failed_ids=[],
+            )
+            search_class.return_value.search.return_value = NewsSearchResult(
+                items=[]
+            )
+
+            analyzer._crawl_rss_data()
+
+            self.assertEqual(
+                backend.get_rss_feed_statuses_strict("2026-08-04")[
+                    SEARCH_FEED_ID
+                ],
+                "success",
+            )
+            for storage_date in (
+                "2026-08-03", "2026-08-05", "2026-08-06", "2026-08-07",
+                "2026-08-08", "2026-08-09", "2026-08-10",
+            ):
+                self.assertTrue(backend.save_rss_data(RSSData(
+                    date=storage_date,
+                    crawl_time=f"{storage_date} 10:00:00",
+                    items={"regular": []},
+                    id_to_name={"regular": "Regular feed"},
+                    failed_ids=[],
+                )))
+
+            snapshot = WeeklyRSSAggregator(
+                backend, "Asia/Shanghai"
+            ).build(pytz.timezone("Asia/Shanghai").localize(
+                datetime(2026, 8, 10, 10, 0)
+            ))
+            self.assertIsNone(snapshot.data)
 
     @patch("trendradar.crawler.rss.RSSFetcher")
     def test_weekly_snapshot_exception_is_not_swallowed(self, fetcher_class):
@@ -729,7 +879,7 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")
-    def test_empty_search_result_preserves_fixed_rss_data(
+    def test_empty_search_result_preserves_fixed_rss_and_records_success(
         self, fetcher_class, search_class
     ):
         analyzer = self._analyzer(enabled=True)
@@ -739,8 +889,15 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         analyzer._crawl_rss_data()
 
         saved = analyzer.storage_manager.saved[0]
-        self.assertEqual(list(saved.items), ["regular"])
-        self.assertEqual(saved.id_to_name, {"regular": "Regular feed"})
+        self.assertEqual(
+            [item.title for item in saved.items["regular"]],
+            ["Regular RSS"],
+        )
+        self.assertEqual(saved.items[SEARCH_FEED_ID], [])
+        self.assertEqual(saved.id_to_name["regular"], "Regular feed")
+        self.assertEqual(
+            saved.id_to_name[SEARCH_FEED_ID], SEARCH_FEED_NAME
+        )
 
     @patch("trendradar.__main__.GoogleNewsRSSClient")
     @patch("trendradar.__main__.GDELTClient")
