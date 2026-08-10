@@ -124,6 +124,27 @@ class AgroWeatherClientTests(unittest.TestCase):
                 with self.assertRaisesRegex(AgroWeatherFetchError, "签发日期"):
                     AgroWeatherClient(session=session).fetch_latest(self.run_at())
 
+    def test_rejects_parenthesized_page_update_in_signing_value(self):
+        parenthesized_update = HTML.replace(
+            "签发：郑昌玲　2026 年 08 月 10 日",
+            "签发：郑昌玲（页面更新时间） 2026 年 08 月 10 日",
+        )
+        session = self.make_session(parenthesized_update)
+
+        with self.assertRaisesRegex(AgroWeatherFetchError, "签发日期"):
+            AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_accepts_signing_date_without_a_signer_name(self):
+        direct_signing = HTML.replace(
+            "签发：郑昌玲　2026 年 08 月 10 日",
+            "签发：2026 年 08 月 10 日",
+        )
+        session = self.make_session(direct_signing)
+
+        report = AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+        self.assertEqual(report.report_date.isoformat(), "2026-08-10")
+
     def test_rejects_impact_section_that_contains_only_review_dates(self):
         dates_only = HTML.replace(
             "本周（2026年8月2日-2026年8月8日），东北农区光温适宜。",
@@ -182,6 +203,26 @@ class AgroWeatherClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(AgroWeatherFetchError, "未来10天"):
             AgroWeatherClient(session=session).fetch_latest(self.run_at())
+
+    def test_rejects_h5_or_h6_content_after_an_empty_second_section(self):
+        for heading_tag in ("h5", "h6"):
+            with self.subTest(heading_tag=heading_tag):
+                later_heading = f"""
+                <html><body><article class="agro-report">
+                <h1>全国农业气象周报</h1>
+                <p>预报：李轩　签发：郑昌玲　2026 年 08 月 10 日</p>
+                <h3>一、本周天气特点及农业影响分析</h3>
+                <p>本周（2026年8月2日-2026年8月8日），东北农区水稻长势良好。</p>
+                <h3>二、未来天气对农业生产影响预估及建议</h3>
+                <{heading_tag}>补充信息</{heading_tag}>
+                <p>未来10天，黄淮农田强降雨风险高。</p>
+                <p>建议：及时排涝。</p>
+                </article></body></html>
+                """
+                session = self.make_session(later_heading)
+
+                with self.assertRaisesRegex(AgroWeatherFetchError, "未来10天"):
+                    AgroWeatherClient(session=session).fetch_latest(self.run_at())
 
     def test_rejects_recommendation_label_without_text(self):
         label_only = HTML.replace("建议：及时排涝散墒，做好病虫害监测。", "建议：")

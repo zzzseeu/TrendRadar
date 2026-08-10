@@ -15,9 +15,12 @@ OFFICIAL_AGRO_WEATHER_URL = "https://www.nmc.cn/publish/agro/ten-week/index.html
 _DATE_PATTERN = re.compile(
     r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日"
 )
-_SIGNING_DATE_PATTERN = re.compile(
-    r"签发\s*[：:]\s*"
-    r"(?:(?:[^\d年月日，、；;。:：\s]{1,40})\s+)?"
+_SIGNING_FIELD = re.compile(r"(?:^|\s)签发\s*[：:]\s*")
+_SIGNING_DATE = re.compile(
+    r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日"
+)
+_SIGNING_NAME_AND_DATE = re.compile(
+    r"[\u4e00-\u9fff]{2,8}\s+"
     r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月\s*(?P<day>\d{1,2})\s*日"
 )
 _REVIEW_RANGE_PATTERN = re.compile(
@@ -61,7 +64,7 @@ class _VisibleBlock:
 class _VisibleTextParser(HTMLParser):
     """Extract human-visible, block-level text without an HTML dependency."""
 
-    _BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "li", "div", "td", "th"}
+    _BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "div", "td", "th"}
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -236,12 +239,7 @@ class AgroWeatherClient:
 
         title = blocks[title_index].text
         metadata_blocks = blocks[title_index + 1 : first_section]
-        signing_metadata = next(
-            (block.text for block in metadata_blocks if "签发" in block.text), None
-        )
-        report_date = self._parse_full_date(
-            _SIGNING_DATE_PATTERN.search(signing_metadata or ""), "签发日期"
-        )
+        report_date = self._parse_signing_date(metadata_blocks)
         review_text = " ".join(
             block.text for block in blocks[first_section + 1 : second_section]
         )
@@ -363,6 +361,19 @@ class AgroWeatherClient:
     @staticmethod
     def _unique_matches(pattern: re.Pattern[str], value: str) -> tuple[str, ...]:
         return tuple(dict.fromkeys(match.group(0) for match in pattern.finditer(value)))
+
+    def _parse_signing_date(self, metadata_blocks: list[_VisibleBlock]) -> date:
+        for block in metadata_blocks:
+            normalized = " ".join(block.text.split())
+            field = _SIGNING_FIELD.search(normalized)
+            if field is None:
+                continue
+            value = normalized[field.end() :]
+            for pattern in (_SIGNING_DATE, _SIGNING_NAME_AND_DATE):
+                match = pattern.fullmatch(value)
+                if match is not None:
+                    return self._parse_full_date(match, "签发日期")
+        self._fail("缺少签发日期")
 
     def _parse_full_date(self, match: re.Match[str] | None, label: str) -> date:
         if match is None:
