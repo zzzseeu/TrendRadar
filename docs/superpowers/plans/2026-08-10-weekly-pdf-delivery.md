@@ -1410,3 +1410,266 @@ docker compose -f docker/docker-compose.yml run --rm \
 - 立即再次运行 `--force-weekly` 会在任何外部请求前幂等跳过。
 
 若真实发送失败，保留新 `output` 供诊断且不写检查点；修复后再次补跑。只有无法在当前授权范围修复时才执行步骤 6 的缓存回滚。
+
+### 任务 9：执行 2026-08-03 至 2026-08-09 初始化补采
+
+**文件：**
+- 临时创建：`/tmp/trendradar-initial-week-backfill.py`（不进入仓库）
+- 临时创建：`/tmp/test-trendradar-initial-week-backfill.py`（不进入仓库）
+- 修改：`docs/superpowers/plans/2026-08-10-weekly-pdf-delivery.md`（只记录执行结果）
+- 运行时备份：`output.pre-initial-backfill-20260810/`
+
+该任务不修改正式周报生产代码。临时入口只在当前 Python 进程中替换
+`WeeklyRSSAggregator`：它读取本次运行写入的 `2026-08-10` 日库，按正式
+`NaturalWeekWindow`、`item_identity` 和 `item_richness` 构造尽力恢复快照，
+并复用正式严格 AI、气象校验、PDF 和逐账号投递账本。正常
+`--force-weekly` 仍要求八个完整日库。
+
+- [ ] **步骤 1：编写并运行临时入口的失败测试**
+
+测试必须覆盖固定操作令牌、窗口外排除、canonical 去重、富信息条目优先、
+允许 ID 只来自保留条目，以及 PDF 周期标签包含“初始化补采”。先只创建
+`/tmp/test-trendradar-initial-week-backfill.py`，内容为：
+
+```python
+import importlib.util
+import unittest
+from datetime import datetime
+from pathlib import Path
+
+import pytz
+
+from trendradar.storage.base import RSSData, RSSItem
+
+
+MODULE_PATH = Path("/operator/trendradar-initial-week-backfill.py")
+SPEC = importlib.util.spec_from_file_location("initial_backfill", MODULE_PATH)
+BACKFILL = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(BACKFILL)
+
+
+class FakeStorage:
+    def __init__(self):
+        self.data = RSSData(
+            date="2026-08-10",
+            crawl_time="2026-08-10 10:00:00",
+            items={
+                "feed-a": [
+                    RSSItem(
+                        title="A short",
+                        feed_id="feed-a",
+                        url="https://example.com/a?utm_source=x",
+                        published_at="2026-08-04",
+                    ),
+                    RSSItem(
+                        title="A richer",
+                        feed_id="feed-a",
+                        url="https://example.com/a",
+                        published_at="2026-08-04T08:00:00+08:00",
+                        summary="完整摘要",
+                    ),
+                    RSSItem(
+                        title="Outside",
+                        feed_id="feed-a",
+                        url="https://example.com/outside",
+                        published_at="2026-08-02",
+                    ),
+                ],
+            },
+            id_to_name={"feed-a": "来源 A"},
+            failed_ids=[],
+        )
+
+    def get_rss_data_strict(self, date):
+        return self.data if date == "2026-08-10" else None
+
+    def get_all_rss_ids_strict(self, date):
+        return [{
+            "id": 42,
+            "source_id": "feed-a",
+            "source_name": "来源 A",
+            "url": "https://example.com/a",
+            "title": "A richer",
+        }]
+
+
+class InitialBackfillTests(unittest.TestCase):
+    def test_guard_rejects_any_other_operation(self):
+        with self.assertRaises(ValueError):
+            BACKFILL.validate_ack("2026-08-02_2026-08-08")
+
+    def test_builds_one_deduplicated_window_snapshot(self):
+        now = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 10, 10, 0)
+        )
+        snapshot = BACKFILL.build_initial_snapshot(
+            FakeStorage(), now, "Asia/Shanghai"
+        )
+        retained = list(snapshot.iter_items())
+        self.assertEqual([item.title for item in retained], ["A richer"])
+        self.assertEqual(snapshot.allowed_rss_ids, {42})
+        self.assertEqual(snapshot.total_read, 3)
+        self.assertEqual(snapshot.filtered_out, 1)
+        self.assertEqual(snapshot.duplicate_count, 1)
+        self.assertEqual(
+            BACKFILL.initial_period_label(snapshot.window.label),
+            "初始化补采｜2026-08-03—2026-08-09",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+```
+
+再运行：
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm \
+  -v /tmp:/operator:ro \
+  --entrypoint /app/.venv/bin/python trendradar \
+  /operator/test-trendradar-initial-week-backfill.py
+```
+
+预期：因 `/operator/trendradar-initial-week-backfill.py` 尚不存在而失败，退出码
+非 0；不得发起网络请求。
+
+- [ ] **步骤 2：实现隔离的一次性聚合入口**
+
+创建 `/tmp/trendradar-initial-week-backfill.py`，核心接口固定如下：
+
+```python
+BACKFILL_TOKEN = "2026-08-03_2026-08-09"
+SOURCE_DATE = "2026-08-10"
+
+
+def validate_ack(value):
+    if value != BACKFILL_TOKEN:
+        raise ValueError("初始化补采操作令牌不匹配")
+
+
+def initial_period_label(label):
+    return f"初始化补采｜{label}"
+
+
+def build_initial_snapshot(storage, now, timezone_name):
+    window = previous_natural_week(now, timezone_name)
+    if window.label != "2026-08-03—2026-08-09":
+        raise RuntimeError("初始化补采窗口不匹配")
+    source = storage.get_rss_data_strict(SOURCE_DATE)
+    if source is None or source.failed_ids:
+        raise RuntimeError("初始化补采源快照不存在或来源失败")
+
+    deduplicated = {}
+    total_read = filtered_out = duplicate_count = 0
+    for items in source.items.values():
+        for item in items:
+            total_read += 1
+            if not window.contains(item.published_at):
+                filtered_out += 1
+                continue
+            identity = item_identity(item)
+            if not identity:
+                filtered_out += 1
+                continue
+            current = deduplicated.get(identity)
+            if current is None:
+                deduplicated[identity] = replace(item)
+            else:
+                duplicate_count += 1
+                if item_richness(item) > item_richness(current):
+                    deduplicated[identity] = replace(item)
+
+    grouped = {}
+    id_to_name = {}
+    for item in sorted(
+        deduplicated.values(),
+        key=lambda value: (value.published_at, value.feed_id, value.title),
+    ):
+        grouped.setdefault(item.feed_id, []).append(item)
+        id_to_name[item.feed_id] = item.feed_name or item.feed_id
+    data = RSSData(
+        date=SOURCE_DATE,
+        crawl_time=now.isoformat(),
+        items=grouped,
+        id_to_name=id_to_name,
+        failed_ids=[],
+    )
+    resolver = WeeklyRSSAggregator(storage, timezone_name)
+    return WeeklyRSSSnapshot(
+        window=window,
+        data=data if deduplicated else None,
+        allowed_rss_ids=resolver._resolve_allowed_ids(data) if deduplicated else set(),
+        total_read=total_read,
+        filtered_out=filtered_out,
+        duplicate_count=duplicate_count,
+    )
+```
+
+入口还必须：
+
+1. 只接受命令行 `--ack 2026-08-03_2026-08-09`；
+2. 在进程内把 `trendradar.__main__.WeeklyRSSAggregator` 替换成仅调用
+   `build_initial_snapshot()` 的适配器；
+3. 包装 `trendradar.__main__.render_weekly_pdf_html()`，把传入的
+   `period_label` 改为 `初始化补采｜2026-08-03—2026-08-09`；
+4. 调用 `NewsAnalyzer(config=load_config(), force_weekly=True).run()`；
+5. 只有 `run()` 返回真才以退出码 0 结束，任何异常或假值均退出 1。
+
+- [ ] **步骤 3：运行临时入口单元测试并做无外呼预检**
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm --network none \
+  -v /tmp:/operator:ro \
+  --entrypoint /app/.venv/bin/python trendradar \
+  /operator/test-trendradar-initial-week-backfill.py
+```
+
+预期：全部 `OK`、退出码 0。随后只读检查正式源码没有新增 backfill 分支，
+临时脚本没有读取或输出 Webhook、API Key 等秘密。
+
+- [ ] **步骤 4：停止常驻任务并创建可恢复运行时备份**
+
+```bash
+docker compose -f docker/docker-compose.yml stop trendradar trendradar-mcp
+```
+
+确认没有正在运行的 TrendRadar Python 任务、目标备份目录不存在，再把
+`output` 同盘重命名为 `output.pre-initial-backfill-20260810`，复制其内容到新建
+`output`。不删除任何目录，不修改 `docker/.env`。运行前记录两个目录的文件
+数量和总大小；若外呼尚未成功而任务失败，停止任务后恢复原备份。
+
+- [ ] **步骤 5：执行唯一一次真实 PDF 补推**
+
+```bash
+docker compose -f docker/docker-compose.yml run --rm \
+  -v /tmp:/operator:ro \
+  --entrypoint /app/.venv/bin/python trendradar \
+  /operator/trendradar-initial-week-backfill.py \
+  --ack 2026-08-03_2026-08-09
+```
+
+持续观察到进程明确退出。不得同时启动第二个补推进程。
+
+- [ ] **步骤 6：验证实际交付并恢复常驻服务**
+
+验证必须同时满足：
+
+- 日志显示固定 RSS 与所有启用的新闻搜索供应商成功；
+- 所有 allowed RSS 条目的 `published_at` 均属于
+  `[2026-08-03 00:00, 2026-08-10 00:00)`；
+- 严格 AI 成功，普通新闻不超过 20 条；
+- 官方气象周报校验成功；
+- PDF 文件头、A4 页数、中文文本和文件大小有效，且正文出现“初始化补采”；
+- 企业微信只执行 PDF 上传与 `file` 发送；所有账号成功；
+- `monday_weekly/push/2026-08-10` 和逐账号 PDF 摘要账本存在；
+- 用相同命令再次做只读幂等验证时，在气象、新闻和企业微信外呼前跳过。
+
+成功后删除 `/tmp` 中两个临时脚本，保留运行时备份直至用户确认效果；然后：
+
+```bash
+docker compose -f docker/docker-compose.yml up -d trendradar trendradar-mcp
+docker compose -f docker/docker-compose.yml ps
+```
+
+若发送前失败，恢复步骤 4 的备份后启动服务；若企业微信已经成功但本地账本
+写入失败，禁止自动重试，保留现场并人工核对，避免重复发送。
