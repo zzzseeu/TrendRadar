@@ -19,6 +19,7 @@ from trendradar.core.rss_snapshot import (
 from trendradar.crawler.news_search import normalize_title
 from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
+from trendradar.__main__ import NewsAnalyzer
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.storage.sqlite_mixin import SQLiteStorageMixin
 
@@ -101,6 +102,77 @@ class WeeklyAIFilterScopeTests(unittest.TestCase):
         self.assertEqual(
             [item["title"] for item in rss_stats[0]["titles"]],
             ["Allowed"],
+        )
+
+    def test_weekly_report_conversion_preserves_published_order_for_selection(self):
+        result = AIFilterResult(success=True, tags=[{
+            "tag": "育种", "count": 2, "items": [
+                {
+                    "id": 1,
+                    "news_item_id": 1,
+                    "title": "Alpha older report",
+                    "source_type": "rss",
+                    "source_id": "journal",
+                    "source_name": "Alpha Source",
+                    "url": "https://example.org/older",
+                    "published_at": "2026-08-03T08:00:00+08:00",
+                    "relevance_score": 0.8,
+                    "importance_score": 0.8,
+                    "highlight_rank": 9,
+                },
+                {
+                    "id": 2,
+                    "news_item_id": 2,
+                    "title": "Zulu newer report",
+                    "source_type": "rss",
+                    "source_id": "journal",
+                    "source_name": "Zulu Source",
+                    "url": "https://example.org/newer",
+                    "published_at": "2026-08-09T08:00:00+08:00",
+                    "relevance_score": 0.8,
+                    "importance_score": 0.8,
+                    "highlight_rank": 9,
+                },
+            ],
+        }])
+
+        _, rss_stats, _ = self.pipeline.convert_to_report_data(
+            result, mode="weekly"
+        )
+        selected = NewsAnalyzer._select_weekly_rss_items(rss_stats)
+
+        self.assertEqual(
+            [item.get("published_at") for item in rss_stats[0]["titles"]],
+            ["2026-08-03T08:00:00+08:00", "2026-08-09T08:00:00+08:00"],
+        )
+        self.assertEqual(
+            [item["title"] for item in selected[0]["titles"]],
+            ["Zulu newer report", "Alpha older report"],
+        )
+
+    def test_weekly_selector_uses_source_and_title_for_missing_dates(self):
+        selected = select_weekly_news([
+            {
+                "title": "Bravo missing date",
+                "source_name": "Bravo Source",
+                "url": "https://example.org/bravo",
+                "weekly_topics": ["育种"],
+                "ai_score": 0.8,
+                "highlight_rank": 9,
+            },
+            {
+                "title": "Alpha missing date",
+                "source_name": "Alpha Source",
+                "url": "https://example.org/alpha",
+                "weekly_topics": ["育种"],
+                "ai_score": 0.8,
+                "highlight_rank": 9,
+            },
+        ])
+
+        self.assertEqual(
+            [item["title"] for item in selected],
+            ["Alpha missing date", "Bravo missing date"],
         )
 
     def test_partial_weekly_batch_failure_returns_failed_filter_result(self):

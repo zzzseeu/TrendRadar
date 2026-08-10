@@ -1194,6 +1194,7 @@ class AIFilterPipeline:
                     "count": item.get("count", 1),
                     "is_new": is_new,
                     "time_display": time_display,
+                    "published_at": item.get("published_at", ""),
                     "matched_keyword": tag_name,
                     "content_level": item.get("content_level", "title_only"),
                     "risk_warning": item.get("risk_warning", ""),
