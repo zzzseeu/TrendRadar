@@ -224,8 +224,8 @@ class DailyDeliveryFirstSeenLedgerTests(unittest.TestCase):
 
                 with patch.object(
                     backend,
-                    "_get_rss_connection",
-                    wraps=backend._get_rss_connection,
+                    "_open_rss_history_snapshot_strict",
+                    wraps=backend._open_rss_history_snapshot_strict,
                 ) as history_open:
                     first = backend.get_earliest_rss_discoveries_strict(
                         {identity}, "2026-08-09"

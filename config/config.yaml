@@ -130,7 +130,8 @@ rss:
     max_hotspots: 5
     similarity_threshold: 0.86
     providers:
-      gdelt: true
+      # GDELT 当前对本出口持续返回 HTTP 429；暂时停用，避免阻断每日严格交付。
+      gdelt: false
       google_news: true
     authority_domains:
       - reuters.com

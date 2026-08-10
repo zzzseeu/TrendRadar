@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 from abc import abstractmethod
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,6 +60,11 @@ class SQLiteStorageMixin:
     ) -> sqlite3.Connection:
         """获取 RSS 连接；远程后端可覆盖以启用严格存在性检查。"""
         return self._get_connection(date, db_type="rss")
+
+    @contextmanager
+    def _open_rss_history_snapshot_strict(self, date: str):
+        """打开 first-seen 回填快照；默认复用后端严格 RSS 连接。"""
+        yield self._get_rss_connection(date, strict=True)
 
     def _get_ai_connection(
         self, date: Optional[str] = None, strict: bool = False
@@ -172,69 +178,83 @@ class SQLiteStorageMixin:
         if before != listed_version:
             raise RuntimeError(f"RSS 日库版本在快照读取前变化: {date}")
 
-        conn = self._get_rss_connection(date, strict=True)
-        bound = self._get_rss_source_version_strict(date)
-        if bound != listed_version:
-            raise RuntimeError(f"RSS 日库版本在快照绑定时变化: {date}")
+        with self._open_rss_history_snapshot_strict(date) as conn:
+            bound = self._get_rss_source_version_strict(date)
+            if bound != listed_version:
+                raise RuntimeError(f"RSS 日库版本在快照绑定时变化: {date}")
 
-        try:
-            conn.commit()
-            conn.execute("BEGIN")
-            cursor = conn.cursor()
-            cursor.execute(
-                """SELECT write_id, identity_key, first_seen, storage_date,
-                          crawl_record_id, source_generation
-                   FROM rss_first_seen_outbox
-                   WHERE source_generation > ?
-                   ORDER BY source_generation, write_id""",
-                (watermark,),
-            )
-            outbox = [dict(row) for row in cursor.fetchall()]
-            row = cursor.execute(
-                """SELECT value FROM rss_storage_metadata
-                   WHERE key = 'generation'"""
-            ).fetchone()
-            generation = int(row[0]) if row else 0
-            if generation < watermark:
-                raise RuntimeError(
-                    f"RSS 日库 generation 回退: {date} "
-                    f"{generation} < {watermark}"
-                )
-
-            rows = []
-            # 旧版本数据库没有 durable outbox；只在首次迁移且确实没有
-            # outbox 时读取 rss_items，后续 generation 永远只走增量 outbox。
-            if allow_legacy_fallback and watermark == 0 and not outbox:
-                cursor.execute("""
-                    SELECT title, feed_id, url,
-                           first_crawl_time, last_crawl_time
-                    FROM rss_items
-                """)
-                for (
-                    title,
-                    feed_id,
-                    url,
-                    first_time,
-                    last_time,
-                ) in cursor.fetchall():
-                    identity = self._rss_identity_for_ledger(
-                        title, feed_id, url
+            try:
+                conn.commit()
+                conn.execute("BEGIN")
+                cursor = conn.cursor()
+                tables = {
+                    row[0]
+                    for row in cursor.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall()
+                }
+                if "rss_first_seen_outbox" in tables:
+                    cursor.execute(
+                        """SELECT write_id, identity_key, first_seen,
+                                  storage_date, crawl_record_id,
+                                  source_generation
+                           FROM rss_first_seen_outbox
+                           WHERE source_generation > ?
+                           ORDER BY source_generation, write_id""",
+                        (watermark,),
                     )
-                    rows.append((
-                        identity,
-                        first_time or last_time or "",
-                        date,
-                    ))
+                    outbox = [dict(row) for row in cursor.fetchall()]
+                else:
+                    outbox = []
 
-            after = self._get_rss_source_version_strict(date)
-            if after != listed_version:
-                raise RuntimeError(
-                    f"RSS 日库版本在快照读取后变化: {date}"
-                )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+                if "rss_storage_metadata" in tables:
+                    row = cursor.execute(
+                        """SELECT value FROM rss_storage_metadata
+                           WHERE key = 'generation'"""
+                    ).fetchone()
+                    generation = int(row[0]) if row else 0
+                else:
+                    generation = 0
+                if generation < watermark:
+                    raise RuntimeError(
+                        f"RSS 日库 generation 回退: {date} "
+                        f"{generation} < {watermark}"
+                    )
+
+                rows = []
+                # 旧版本数据库没有 durable outbox；只在首次迁移且确实没有
+                # outbox 时读取 rss_items，后续 generation 永远只走增量 outbox。
+                if allow_legacy_fallback and watermark == 0 and not outbox:
+                    cursor.execute("""
+                        SELECT title, feed_id, url,
+                               first_crawl_time, last_crawl_time
+                        FROM rss_items
+                    """)
+                    for (
+                        title,
+                        feed_id,
+                        url,
+                        first_time,
+                        last_time,
+                    ) in cursor.fetchall():
+                        identity = self._rss_identity_for_ledger(
+                            title, feed_id, url
+                        )
+                        rows.append((
+                            identity,
+                            first_time or last_time or "",
+                            date,
+                        ))
+
+                after = self._get_rss_source_version_strict(date)
+                if after != listed_version:
+                    raise RuntimeError(
+                        f"RSS 日库版本在快照读取后变化: {date}"
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         return {
             "outbox": outbox,
             "fallback_rows": rows,

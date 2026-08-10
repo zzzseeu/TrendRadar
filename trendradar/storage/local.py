@@ -9,6 +9,7 @@ import sqlite3
 import shutil
 import pytz
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -153,6 +154,21 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
 
     def _get_rss_source_version_strict(self, date: str) -> str:
         return self._rss_source_file_version(date)
+
+    @contextmanager
+    def _open_rss_history_snapshot_strict(self, date: str):
+        """只读打开历史日库，避免 first-seen 回填触发 schema 迁移。"""
+        db_path = self.data_dir / "rss" / f"{date}.db"
+        if not db_path.exists():
+            raise RuntimeError(f"RSS 日库不存在: {date}")
+        conn = sqlite3.connect(
+            f"{db_path.resolve().as_uri()}?mode=ro", uri=True
+        )
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _list_rss_history_sources_strict(
         self, through_date: str
