@@ -21,6 +21,15 @@ assert_not_contains() {
     fi
 }
 
+assert_equal() {
+    local actual="$1"
+    local expected="$2"
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "FAIL: 期望 '${expected}'，实际 '${actual}'" >&2
+        exit 1
+    fi
+}
+
 SCHEDULER="${PROJECT_ROOT}/scripts/start_daily_scheduler.sh"
 CRONTAB="${PROJECT_ROOT}/config/daily.crontab"
 COMPOSE="${PROJECT_ROOT}/docker/docker-compose.yml"
@@ -31,6 +40,13 @@ GITIGNORE="${PROJECT_ROOT}/.gitignore"
 CONFIG="${PROJECT_ROOT}/config/config.yaml"
 
 bash -n "${SCHEDULER}"
+bash -n "${ENTRYPOINT}"
+# shellcheck source=/dev/null
+source "${ENTRYPOINT}"
+DEFAULT_CRONS='0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1'
+assert_equal "$(CRON_SCHEDULES= CRON_SCHEDULE='5 6 * * *' resolve_cron_list)" '5 6 * * *'
+assert_equal "$(CRON_SCHEDULES='7 8 * * *' CRON_SCHEDULE='5 6 * * *' resolve_cron_list)" '7 8 * * *'
+assert_equal "$(CRON_SCHEDULES= CRON_SCHEDULE= resolve_cron_list)" "${DEFAULT_CRONS}"
 assert_not_contains "${SCHEDULER}" "/share/"
 assert_not_contains "${CRONTAB}" "/share/"
 assert_contains "${SCHEDULER}" 'BASH_SOURCE[0]'
@@ -42,9 +58,11 @@ assert_contains "${CRONTAB}" '0 10 * * *'
 assert_contains "${CRONTAB}" '每日采集，周一汇总上一自然周'
 assert_contains "${SCHEDULER}" '每天 10:00'
 assert_contains "${COMPOSE}" 'dockerfile: docker/Dockerfile'
-assert_contains "${COMPOSE}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1}'
-assert_contains "${COMPOSE_BUILD}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1}'
-assert_contains "${ENTRYPOINT}" 'CRON_LIST="${CRON_SCHEDULES:-${CRON_SCHEDULE:-0 10 * * *}}"'
+assert_contains "${COMPOSE}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-}'
+assert_contains "${COMPOSE}" 'CRON_SCHEDULE=${CRON_SCHEDULE:-}'
+assert_contains "${COMPOSE_BUILD}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-}'
+assert_contains "${COMPOSE_BUILD}" 'CRON_SCHEDULE=${CRON_SCHEDULE:-}'
+assert_contains "${ENTRYPOINT}" 'CRON_LIST="$(resolve_cron_list)"'
 assert_contains "${ENTRYPOINT}" "IFS=';' read -ra EXPRESSIONS"
 assert_not_contains "${COMPOSE}" 'image: wantcat/trendradar:latest'
 assert_contains "${COMPOSE}" 'HTTP_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'

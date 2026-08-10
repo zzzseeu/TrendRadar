@@ -31,7 +31,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
             all("max_age_days" not in feed for feed in feeds.values())
         )
 
-    def test_custom_timeline_collects_and_pushes_daily_delivery_every_day(self):
+    def test_custom_timeline_collects_daily_and_delivers_weekly_on_monday(self):
         config = yaml.safe_load(
             (ROOT / "config/config.yaml").read_text(encoding="utf-8")
         )
@@ -43,53 +43,60 @@ class WeeklyConfigurationTests(unittest.TestCase):
         self.assertEqual(
             timeline["default"],
             {
-                "collect": True,
+                "collect": False,
                 "analyze": False,
-                "ai_mode": "follow_report",
                 "push": False,
                 "report_mode": "current",
+                "ai_mode": "follow_report",
                 "once": {"analyze": False, "push": False},
             },
         )
-        daily_delivery = timeline["periods"]["daily_delivery"]
+        monday_weekly = timeline["periods"]["monday_weekly"]
         self.assertEqual(
-            daily_delivery,
+            monday_weekly,
             {
-                "name": "每日新增",
-                "start": "00:00",
-                "end": "24:00",
+                "name": "每周农业新闻 PDF",
+                "start": "10:00",
+                "end": "12:01",
                 "collect": True,
                 "analyze": True,
-                "ai_mode": "follow_report",
                 "push": True,
-                "report_mode": "daily_delivery",
+                "report_mode": "weekly",
+                "ai_mode": "weekly",
                 "once": {"analyze": True, "push": True},
             },
         )
         self.assertEqual(
             timeline["day_plans"],
-            {"daily": {"periods": ["daily_delivery"]}},
+            {
+                "monday": {"periods": ["monday_weekly"]},
+                "collect_only": {"periods": ["daily_collect"]},
+            },
         )
         self.assertEqual(
             timeline["week_map"],
-            {1: "daily", 2: "daily", 3: "daily", 4: "daily", 5: "daily",
-             6: "daily", 7: "daily"},
+            {1: "monday", 2: "collect_only", 3: "collect_only",
+             4: "collect_only", 5: "collect_only", 6: "collect_only",
+             7: "collect_only"},
         )
-        self.assertEqual(timeline["overlap"], {"policy": "error_on_overlap"})
 
         resolved = Scheduler(
             config["schedule"], timeline_data, MagicMock(),
-            lambda: datetime(2026, 8, 10, 23, 59),
+            lambda: datetime(2026, 8, 10, 10, 30),
         ).resolve()
-        self.assertEqual(resolved.period_key, "daily_delivery")
+        self.assertEqual(resolved.period_key, "monday_weekly")
         self.assertTrue(resolved.collect)
         self.assertTrue(resolved.analyze)
         self.assertTrue(resolved.push)
-        self.assertEqual(resolved.report_mode, "daily_delivery")
-        self.assertEqual(resolved.ai_mode, "daily_delivery")
+        self.assertEqual(resolved.report_mode, "weekly")
+        self.assertEqual(resolved.ai_mode, "weekly")
         self.assertTrue(resolved.once_analyze)
         self.assertTrue(resolved.once_push)
 
     def test_example_cron_runs_daily_at_ten(self):
         text = (ROOT / "docker/.env.example").read_text(encoding="utf-8")
-        self.assertIn('CRON_SCHEDULE="0 10 * * *"', text)
+        self.assertIn(
+            'CRON_SCHEDULES="0 10 * * *;30 10 * * 1;'
+            '0,30 11 * * 1;0 12 * * 1"',
+            text,
+        )

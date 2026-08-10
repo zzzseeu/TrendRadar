@@ -73,6 +73,41 @@ class AgroWeatherClientTests(unittest.TestCase):
 
         self.assertIsNone(AgroWeatherClient(session=session).fetch_latest(self.run_at()))
 
+    def test_force_run_uses_the_expected_delivery_anchor(self):
+        session = self.make_session()
+        force_run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+
+        report = AgroWeatherClient(session=session).fetch_latest(
+            force_run_at,
+            expected_delivery_anchor=self.run_at(),
+        )
+
+        self.assertIsNotNone(report)
+        self.assertEqual(report.report_date.isoformat(), "2026-08-10")
+        self.assertEqual(report.reviewed_end.isoformat(), "2026-08-08")
+
+    def test_delivery_anchor_rejects_next_or_previous_cycle(self):
+        anchor = self.run_at()
+        force_run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        next_cycle = HTML.replace("08 月 10 日", "08 月 17 日").replace(
+            "8月2日-2026年8月8日", "8月9日-2026年8月15日"
+        )
+        previous_cycle = HTML.replace("08 月 10 日", "08 月 03 日").replace(
+            "8月2日-2026年8月8日", "7月26日-2026年8月1日"
+        )
+
+        for html in (next_cycle, previous_cycle):
+            with self.subTest(html=html):
+                client = AgroWeatherClient(session=self.make_session(html))
+                self.assertIsNone(client.fetch_latest(
+                    force_run_at,
+                    expected_delivery_anchor=anchor,
+                ))
+
     def test_rejects_report_without_future_outlook(self):
         no_outlook = HTML.replace(
             "<p>未来10天，黄淮等地有强降雨，低洼农田渍涝风险高。</p>", ""

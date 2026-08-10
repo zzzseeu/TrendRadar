@@ -1,7 +1,9 @@
 import unittest
 import inspect
+import multiprocessing
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +15,7 @@ from trendradar.__main__ import NewsAnalyzer
 from trendradar.ai.analyzer import AIAnalysisResult
 from trendradar.ai.filter import AIFilterResult
 from trendradar.core.scheduler import ResolvedSchedule, Scheduler
+from trendradar.core import scheduler as scheduler_module
 from trendradar.core.weekly import previous_natural_week
 from trendradar.notification.dispatcher import NotificationDispatcher
 from trendradar.storage.base import RSSData, RSSItem
@@ -64,6 +67,14 @@ CURRENT_WEATHER = SimpleNamespace(
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def acquire_weekly_lock_in_child(data_dir, checkpoint_date, result_queue):
+    lock = scheduler_module.WeeklyAttemptLock(data_dir, checkpoint_date)
+    acquired = lock.acquire()
+    result_queue.put(acquired)
+    if acquired:
+        lock.release()
+
+
 def schedule(**overrides):
     values = {
         "period_key": "monday_weekly",
@@ -106,11 +117,89 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.report_mode = "weekly"
         analyzer._initialize_and_check_config = MagicMock(return_value=True)
         analyzer._resolve_and_apply_schedule = MagicMock(return_value=schedule())
+        attempt_lock = MagicMock()
+        attempt_lock.acquire.return_value = True
+        analyzer._create_weekly_attempt_lock = MagicMock(
+            return_value=attempt_lock
+        )
         analyzer._fetch_agro_weather = MagicMock(return_value=CURRENT_WEATHER)
         analyzer._crawl_data = MagicMock(return_value=({}, {}, []))
         analyzer._crawl_rss_data = MagicMock(return_value=(None, None, [], set()))
         analyzer._execute_mode_strategy = MagicMock(return_value=True)
         return analyzer
+
+    def test_weekly_attempt_lock_is_nonblocking_and_scoped_by_window(self):
+        with TemporaryDirectory() as data_dir:
+            first = scheduler_module.WeeklyAttemptLock(data_dir, "2026-08-10")
+            overlapping = scheduler_module.WeeklyAttemptLock(
+                data_dir, "2026-08-10"
+            )
+            next_week = scheduler_module.WeeklyAttemptLock(
+                data_dir, "2026-08-17"
+            )
+
+            self.assertTrue(first.acquire())
+            self.assertFalse(overlapping.acquire())
+            self.assertTrue(next_week.acquire())
+
+            context = multiprocessing.get_context("spawn")
+            result_queue = context.Queue()
+            process = context.Process(
+                target=acquire_weekly_lock_in_child,
+                args=(data_dir, "2026-08-10", result_queue),
+            )
+            process.start()
+            self.assertFalse(result_queue.get(timeout=10))
+            process.join(timeout=10)
+            self.assertFalse(process.is_alive())
+            self.assertEqual(process.exitcode, 0)
+
+            first.release()
+            self.assertTrue(overlapping.acquire())
+
+            overlapping.release()
+            next_week.release()
+
+    def test_overlapping_weekly_run_stops_before_checkpoint_or_network(self):
+        with TemporaryDirectory() as data_dir:
+            held = scheduler_module.WeeklyAttemptLock(data_dir, "2026-08-10")
+            self.assertTrue(held.acquire())
+            analyzer = self.make_analyzer()
+            analyzer.storage_manager = SimpleNamespace(data_dir=data_dir)
+            analyzer._create_weekly_attempt_lock = (
+                NewsAnalyzer._create_weekly_attempt_lock.__get__(
+                    analyzer, NewsAnalyzer
+                )
+            )
+            scheduler = analyzer.ctx.create_scheduler.return_value
+
+            try:
+                self.assertTrue(analyzer.run())
+            finally:
+                held.release()
+
+            scheduler.already_executed.assert_not_called()
+            scheduler.record_execution.assert_not_called()
+            analyzer._fetch_agro_weather.assert_not_called()
+            analyzer._crawl_data.assert_not_called()
+            analyzer._execute_mode_strategy.assert_not_called()
+
+    def test_failed_weekly_run_releases_attempt_lock_for_retry(self):
+        with TemporaryDirectory() as data_dir:
+            analyzer = self.make_analyzer()
+            analyzer.storage_manager = SimpleNamespace(data_dir=data_dir)
+            analyzer._create_weekly_attempt_lock = (
+                NewsAnalyzer._create_weekly_attempt_lock.__get__(
+                    analyzer, NewsAnalyzer
+                )
+            )
+            analyzer._fetch_agro_weather.return_value = None
+
+            self.assertFalse(analyzer.run())
+
+            retry = scheduler_module.WeeklyAttemptLock(data_dir, "2026-08-10")
+            self.assertTrue(retry.acquire())
+            retry.release()
 
     def test_monday_attempt_window_and_other_days_silent_collect(self):
         for hour, minute in [(10, 0), (10, 30), (11, 0), (11, 30), (12, 0)]:
@@ -175,6 +264,20 @@ class WeeklyScheduleTests(unittest.TestCase):
         self.assertTrue(forced.collect and forced.analyze and forced.push)
         self.assertEqual(forced.report_mode, "weekly")
 
+    def test_force_weekly_overrides_disabled_scheduler_fallback(self):
+        scheduler = Scheduler(
+            {"enabled": False, "preset": "custom"}, TIMELINE, MagicMock(),
+            lambda: at(2026, 8, 12, 15, 0),
+        )
+
+        forced = scheduler.resolve(force_period_key="monday_weekly")
+
+        self.assertEqual(forced.period_key, "monday_weekly")
+        self.assertEqual(forced.day_plan, "forced")
+        self.assertTrue(forced.once_analyze)
+        self.assertTrue(forced.once_push)
+        self.assertEqual(forced.report_mode, "weekly")
+
     def test_analyzer_force_weekly_requests_the_weekly_period(self):
         run_at = at(2026, 8, 12, 15, 0)
         scheduler = MagicMock()
@@ -214,6 +317,26 @@ class WeeklyScheduleTests(unittest.TestCase):
 
         scheduler.record_execution.assert_called_once_with(
             "monday_weekly", "push", "2026-08-10"
+        )
+
+    def test_manual_weather_fetch_uses_weekly_window_end_anchor(self):
+        run_at = at(2026, 8, 12, 15, 0)
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={"AGRO_WEATHER": {}},
+            timezone="Asia/Shanghai",
+        )
+        analyzer.proxy_url = None
+        analyzer._run_at = run_at
+
+        with patch("trendradar.__main__.AgroWeatherClient") as client_class:
+            client_class.return_value.fetch_latest.return_value = CURRENT_WEATHER
+            report = analyzer._fetch_agro_weather()
+
+        self.assertIs(report, CURRENT_WEATHER)
+        client_class.return_value.fetch_latest.assert_called_once_with(
+            run_at,
+            expected_delivery_anchor=at(2026, 8, 10, 0, 0),
         )
 
     def test_active_timelines_use_the_weekly_collection_plan(self):
@@ -385,6 +508,11 @@ class WeeklyScheduleTests(unittest.TestCase):
         )
         analyzer._fetch_agro_weather = MagicMock(
             side_effect=lambda: events.append("weather") or CURRENT_WEATHER
+        )
+        attempt_lock = MagicMock()
+        attempt_lock.acquire.return_value = True
+        analyzer._create_weekly_attempt_lock = MagicMock(
+            return_value=attempt_lock
         )
         analyzer._crawl_data = MagicMock(
             side_effect=lambda: events.append("crawl") or ({}, {}, [])
@@ -862,6 +990,11 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._resolve_and_apply_schedule = MagicMock(return_value=schedule())
         analyzer._initialize_and_check_config = MagicMock(return_value=True)
         analyzer._fetch_agro_weather = MagicMock(return_value=CURRENT_WEATHER)
+        attempt_lock = MagicMock()
+        attempt_lock.acquire.return_value = True
+        analyzer._create_weekly_attempt_lock = MagicMock(
+            return_value=attempt_lock
+        )
         analyzer._crawl_data = MagicMock(return_value=({}, {}, []))
         analyzer._crawl_rss_data = MagicMock(
             side_effect=RuntimeError("八个日库全部缺失")

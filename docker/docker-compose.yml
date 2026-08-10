@@ -78,7 +78,8 @@ services:
       - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}
       - S3_REGION=${S3_REGION:-}
       # 运行模式
-      - CRON_SCHEDULES=${CRON_SCHEDULES:-0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1}
+      - CRON_SCHEDULES=${CRON_SCHEDULES:-}
+      - CRON_SCHEDULE=${CRON_SCHEDULE:-}
       - RUN_MODE=${RUN_MODE:-cron}
       - IMMEDIATE_RUN=${IMMEDIATE_RUN:-true}
 

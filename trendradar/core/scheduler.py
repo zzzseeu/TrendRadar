@@ -7,11 +7,48 @@
 """
 
 import copy
+import fcntl
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from datetime import datetime
+
+
+class WeeklyAttemptLock:
+    """Non-blocking process lock for one natural-week delivery attempt."""
+
+    def __init__(self, data_dir: str, checkpoint_date: str):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", checkpoint_date):
+            raise ValueError(f"周报锁日期格式非法: {checkpoint_date}")
+        self.path = (
+            Path(data_dir) / "locks" / f"weekly-{checkpoint_date}.lock"
+        )
+        self._handle = None
+
+    def acquire(self) -> bool:
+        if self._handle is not None:
+            return True
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open("a+", encoding="utf-8")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return False
+        self._handle = handle
+        return True
+
+    def release(self) -> None:
+        handle = self._handle
+        if handle is None:
+            return
+        self._handle = None
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 @dataclass
@@ -110,7 +147,7 @@ class Scheduler:
         Returns:
             ResolvedSchedule 包含当前应执行的行为
         """
-        if not self.enabled:
+        if not self.enabled and force_period_key is None:
             # 调度未启用时返回默认的全功能配置，report_mode 回退使用 config.yaml 的 report.mode
             return ResolvedSchedule(
                 period_key=None,

@@ -33,7 +33,7 @@ from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import DEFAULT_TIMEZONE
 from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.core.daily_delivery import DailyDeliveryAggregator
-from trendradar.core.scheduler import ResolvedSchedule
+from trendradar.core.scheduler import ResolvedSchedule, WeeklyAttemptLock
 from trendradar.core.weekly import (
     WeeklyRSSAggregator,
     current_natural_week,
@@ -330,7 +330,21 @@ class NewsAnalyzer:
             use_proxy=bool(self.proxy_url),
             proxy_url=self.proxy_url or "",
         )
-        return client.fetch_latest(self._operation_run_at())
+        run_at = self._operation_run_at()
+        delivery_anchor = previous_natural_week(
+            run_at, self.ctx.timezone
+        ).end
+        return client.fetch_latest(
+            run_at,
+            expected_delivery_anchor=delivery_anchor,
+        )
+
+    def _create_weekly_attempt_lock(
+        self, checkpoint_date: str
+    ) -> WeeklyAttemptLock:
+        return WeeklyAttemptLock(
+            self.storage_manager.data_dir, checkpoint_date
+        )
 
     @staticmethod
     def _should_fallback_ai_filter(mode: str) -> bool:
@@ -2167,6 +2181,7 @@ class NewsAnalyzer:
 
     def run(self) -> bool:
         """执行分析流程"""
+        weekly_attempt_lock = None
         try:
             self._run_at = self.ctx.get_time()
             self._run_date = self._run_at.strftime("%Y-%m-%d")
@@ -2175,6 +2190,11 @@ class NewsAnalyzer:
 
             if schedule.report_mode == "weekly":
                 checkpoint_date = self._delivery_checkpoint_date("weekly")
+                attempt_lock = self._create_weekly_attempt_lock(checkpoint_date)
+                if not attempt_lock.acquire():
+                    print("[周报] 同一自然周已有任务执行中，跳过本次重叠触发")
+                    return True
+                weekly_attempt_lock = attempt_lock
                 scheduler = self.ctx.create_scheduler()
                 if (
                     schedule.once_push
@@ -2277,6 +2297,8 @@ class NewsAnalyzer:
                 raise
             return False
         finally:
+            if weekly_attempt_lock is not None:
+                weekly_attempt_lock.release()
             # 清理资源（包括过期数据清理和数据库连接关闭）
             self.ctx.cleanup()
 

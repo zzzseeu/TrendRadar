@@ -1,6 +1,23 @@
 #!/bin/bash
 set -e
 
+DEFAULT_CRON_SCHEDULES='0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1'
+
+resolve_cron_list() {
+    if [ -n "${CRON_SCHEDULES:-}" ]; then
+        echo "$CRON_SCHEDULES"
+    elif [ -n "${CRON_SCHEDULE:-}" ]; then
+        echo "$CRON_SCHEDULE"
+    else
+        echo "$DEFAULT_CRON_SCHEDULES"
+    fi
+}
+
+# 允许 shell 测试只加载纯函数，不执行容器启动流程。
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+    return 0
+fi
+
 # 检查配置文件
 if [ ! -f "/app/config/config.yaml" ] || [ ! -f "/app/config/frequency_words.txt" ]; then
     echo "❌ 配置文件缺失"
@@ -14,7 +31,7 @@ case "${RUN_MODE:-cron}" in
     ;;
 "cron")
     # 兼容旧 CRON_SCHEDULE，并支持分号分隔的多条短触发。
-    CRON_LIST="${CRON_SCHEDULES:-${CRON_SCHEDULE:-0 10 * * *}}"
+    CRON_LIST="$(resolve_cron_list)"
     : > /tmp/crontab
     IFS=';' read -ra EXPRESSIONS <<< "$CRON_LIST"
     for CRON_EXPR in "${EXPRESSIONS[@]}"; do

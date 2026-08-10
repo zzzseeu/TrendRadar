@@ -126,8 +126,15 @@ class AgroWeatherReport:
     risk_crops: tuple[str, ...]
     source_url: str
 
-    def belongs_to_run(self, run_at: datetime, timezone_name: str) -> bool:
-        local_date = run_at.astimezone(pytz.timezone(timezone_name)).date()
+    def belongs_to_run(
+        self,
+        run_at: datetime,
+        timezone_name: str,
+        *,
+        expected_delivery_anchor: datetime | None = None,
+    ) -> bool:
+        anchor = expected_delivery_anchor or run_at
+        local_date = anchor.astimezone(pytz.timezone(timezone_name)).date()
         valid_report_dates = {local_date, local_date - timedelta(days=1)}
         valid_review_ends = {
             local_date - timedelta(days=1),
@@ -167,8 +174,13 @@ class AgroWeatherClient:
             proxy_url=proxy_url,
         )
 
-    def fetch_latest(self, run_at: datetime) -> AgroWeatherReport | None:
-        """Request and return this run's report, or ``None`` for a stale report."""
+    def fetch_latest(
+        self,
+        run_at: datetime,
+        *,
+        expected_delivery_anchor: datetime | None = None,
+    ) -> AgroWeatherReport | None:
+        """Return the report for the expected delivery cycle, if published."""
         try:
             response = self.session.get(self.source_url, timeout=self.timeout)
             response.raise_for_status()
@@ -186,7 +198,11 @@ class AgroWeatherClient:
                 f"农业气象周报解析失败: {self.source_url} ({type(exc).__name__})"
             ) from exc
 
-        return report if report.belongs_to_run(run_at, self.timezone_name) else None
+        return report if report.belongs_to_run(
+            run_at,
+            self.timezone_name,
+            expected_delivery_anchor=expected_delivery_anchor,
+        ) else None
 
     def _parse(self, html: str) -> AgroWeatherReport:
         if not isinstance(html, str) or not html.strip():
