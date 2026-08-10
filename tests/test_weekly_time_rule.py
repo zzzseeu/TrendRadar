@@ -73,6 +73,29 @@ class WeeklyTimeRuleRemovalTests(unittest.TestCase):
         self.assertNotIn("_is_rss_item_fresh", source)
         self.assertNotIn("freshness_filtered_rss", source)
 
+    def test_runtime_and_user_docs_have_no_obsolete_delivery_terms(self):
+        paths = (
+            "trendradar", "config", "docker", "docs/index.html",
+            "docs/assets/script.js", "docs/assets/i18n.js",
+            "docs/news-push-technical-implementation.md", "README.md",
+            "README-EN.md",
+        )
+        forbidden = (
+            "freshness_filter", "max_age_days", "when:2d",
+            '"timespan": "48h"', "每日新增推送",
+            "WEWORK_PDF_TOP_N", "WEWORK_PDF_ENABLED",
+        )
+        for relative in paths:
+            path = ROOT / relative
+            files = [path] if path.is_file() else list(path.rglob("*"))
+            text = "\n".join(
+                file.read_text(encoding="utf-8", errors="ignore")
+                for file in files
+                if file.is_file() and "__pycache__" not in file.parts
+            )
+            for token in forbidden:
+                self.assertNotIn(token, text, f"{relative}: {token}")
+
     def test_weekly_scope_uses_published_at_not_first_seen_time(self):
         pipeline = self._pipeline_for_previous_week()
         result = pipeline._build_filter_result(

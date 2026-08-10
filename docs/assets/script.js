@@ -920,9 +920,6 @@ function renderControls(mod) {
             break;
         case "rss":
             html = createToggleControl(mod.key, "enabled", t('ctrl.enableRss'));
-            html += `<div class="mt-3 mb-2 text-xs font-bold text-gray-700">${t('ctrl.freshnessFilter')}</div>`;
-            html += createToggleControl(mod.key, "freshness_filter.enabled", t('ctrl.enableFreshness'));
-            html += createNumberControl(mod.key, "freshness_filter.max_age_days", t('ctrl.maxAgeDays'));
             html += `<div class="mt-4 mb-2 text-xs font-bold text-gray-700">${t('ctrl.rssFeedList')}</div>`;
             html += `<div id="rss-feeds-list" class="space-y-2"></div>`;
             html += `<div class="flex items-center gap-2 mt-3">
@@ -3040,9 +3037,6 @@ function updateRssFeedsInYaml(feeds) {
         if (f.enabled === false) {
             feedYaml += `\n${indent}  enabled: false`;
         }
-        if (f.max_age_days !== undefined && f.max_age_days !== '') {
-            feedYaml += `\n${indent}  max_age_days: ${f.max_age_days}`;
-        }
         return feedYaml;
     }).join('\n\n');
 
@@ -3077,7 +3071,6 @@ function openRssModalWithData(feed, editIndex) {
     document.getElementById('rss-id').value = feed ? feed.id : '';
     document.getElementById('rss-name').value = feed ? feed.name : '';
     document.getElementById('rss-url').value = feed ? feed.url : '';
-    document.getElementById('rss-max-age').value = feed && feed.max_age_days !== undefined ? feed.max_age_days : '';
 
     modal.dataset.editIndex = editIndex;
 
@@ -3100,7 +3093,6 @@ window.closeRssModal = function() {
     document.getElementById('rss-id').value = '';
     document.getElementById('rss-name').value = '';
     document.getElementById('rss-url').value = '';
-    document.getElementById('rss-max-age').value = '';
 }
 
 // 确认添加/编辑 RSS
@@ -3111,7 +3103,6 @@ window.confirmAddRss = function() {
     const id = document.getElementById('rss-id').value.trim();
     const name = document.getElementById('rss-name').value.trim();
     const url = document.getElementById('rss-url').value.trim();
-    const maxAge = document.getElementById('rss-max-age').value.trim();
 
     if (!id || !name || !url) {
         alert(t('alert.fillRequired'));
@@ -3121,10 +3112,6 @@ window.confirmAddRss = function() {
     const feeds = parseRssFeedsFromYaml();
 
     const newFeed = { id, name, url };
-    if (maxAge) {
-        newFeed.max_age_days = parseInt(maxAge);
-    }
-
     if (editIndex >= 0) {
         feeds[editIndex] = newFeed;
     } else {

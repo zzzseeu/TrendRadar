@@ -1,5 +1,5 @@
 SHELL=/bin/bash
 TZ=Asia/Shanghai
 
-# 每天北京时间 10:00 每日采集，周一汇总上一自然周。
+# 每天静默采集，周一生成上一自然周 PDF；周一 10:30—12:00 为气象周报重试。
 0 10 * * * cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1

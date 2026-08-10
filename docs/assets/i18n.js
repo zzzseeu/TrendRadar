@@ -82,9 +82,6 @@
 
         // RSS
         ['ctrl.enableRss', '启用 RSS 抓取', 'Enable RSS crawling'],
-        ['ctrl.freshnessFilter', '新鲜度过滤', 'Freshness Filter'],
-        ['ctrl.enableFreshness', '启用新鲜度过滤', 'Enable freshness filter'],
-        ['ctrl.maxAgeDays', '最大文章年龄 (天)', 'Max article age (days)'],
         ['ctrl.rssFeedList', 'RSS 源列表', 'RSS Feed List'],
         ['ctrl.addRss', '添加 RSS 源', 'Add RSS Feed'],
         ['ctrl.rssLibHint', '(内附 RSS 源参考库)', '(RSS feed reference library included)'],
@@ -282,8 +279,6 @@
         ['rssModal.nameLabel', '显示名称', 'Display Name'],
         ['rssModal.namePlaceholder', '例如: 我的博客', 'e.g., My Blog'],
         ['rssModal.urlLabel', 'RSS URL', 'RSS URL'],
-        ['rssModal.maxAgeLabel', '最大文章年龄（天，可选）', 'Max article age (days, optional)'],
-        ['rssModal.maxAgePlaceholder', '留空使用全局设置', 'Leave empty to use global setting'],
         ['rssModal.tipsTitle', 'RSS 订阅灵感 & 参考库', 'RSS Inspiration & Reference Library'],
         ['rssModal.tipsHasFeeds', '(内附常用源)', '(common feeds included)'],
         ['rssModal.bingNews', 'Bing 新闻 (支持任意关键词)', 'Bing News (supports any keyword)'],
