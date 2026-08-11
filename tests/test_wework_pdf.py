@@ -44,6 +44,20 @@ class PdfGenerationTests(unittest.TestCase):
             self.assertIn("--headless", command)
             self.assertIn(html_path.resolve().as_uri(), command)
 
+    def test_missing_chromium_preserves_old_target_and_cleans_staged_pdf(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html_path = Path(tmp) / "report.html"
+            pdf_path = Path(tmp) / "report.pdf"
+            html_path.write_text("<html><body>报告</body></html>", encoding="utf-8")
+            pdf_path.write_bytes(b"%PDF-old")
+
+            with patch("trendradar.report.pdf.shutil.which", return_value=None):
+                with self.assertRaisesRegex(RuntimeError, "Chromium"):
+                    generate_pdf_from_html(str(html_path), str(pdf_path))
+
+            self.assertEqual(pdf_path.read_bytes(), b"%PDF-old")
+            self.assertEqual(list(Path(tmp).glob("*.tmp.pdf")), [])
+
 class WeWorkFileApiTests(unittest.TestCase):
     def test_upload_pdf_returns_media_id(self):
         with tempfile.TemporaryDirectory() as tmp:

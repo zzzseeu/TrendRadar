@@ -5,6 +5,7 @@ import subprocess
 import unittest
 import xml.etree.ElementTree as ElementTree
 from datetime import date, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -13,10 +14,42 @@ from unittest.mock import MagicMock, patch
 import pytz
 
 from trendradar.report.weekly_pdf import (
+    _validate_weekly_pdf,
     build_weekly_pdf,
     render_weekly_pdf_html,
 )
 from trendradar.core.weekly import WeeklyNewsSelection
+
+
+class _ModuleHeadingParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.section_stack = []
+        self.current_heading = None
+        self.primary_headings = []
+        self.non_primary_h2 = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "section":
+            classes = dict(attrs).get("class", "").split()
+            self.section_stack.append("primary-module" in classes)
+        elif tag == "h2":
+            self.current_heading = []
+
+    def handle_data(self, data):
+        if self.current_heading is not None:
+            self.current_heading.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "h2" and self.current_heading is not None:
+            heading = "".join(self.current_heading).strip()
+            if self.section_stack and self.section_stack[-1]:
+                self.primary_headings.append(heading)
+            else:
+                self.non_primary_h2.append(heading)
+            self.current_heading = None
+        elif tag == "section" and self.section_stack:
+            self.section_stack.pop()
 
 
 class WeeklyPdfReportTests(unittest.TestCase):
@@ -84,6 +117,16 @@ class WeeklyPdfReportTests(unittest.TestCase):
         self.assertNotIn("核心观点摘要", html)
         self.assertNotIn("重点新闻</h2>", html)
         self.assertNotIn("入选新闻</h2>", html)
+        parser = _ModuleHeadingParser()
+        parser.feed(html)
+        self.assertEqual(
+            parser.primary_headings,
+            ["一、政策动态", "二、科研进展", "三、农业气象与灾害风险"],
+        )
+        self.assertEqual(parser.non_primary_h2, [])
+        self.assertIn("<aside", html)
+        self.assertIn("<h3>趋势与指标</h3>", html)
+        self.assertIn("<h3>数据与方法说明</h3>", html)
         self.assertEqual(html.count("重点政策"), 5)
         self.assertEqual(html.count("重点文献"), 5)
         self.assertIn("政策趋势分析 [policy:1]", html)
@@ -120,6 +163,25 @@ class WeeklyPdfReportTests(unittest.TestCase):
             render_weekly_pdf_html(
                 policy_items=[{**duplicated, "module_rank": 1}],
                 research_items=[{**duplicated, "module_rank": 1}],
+                ai_analysis=None,
+                agro_weather=None,
+                period_label="period",
+                generated_at=datetime(2026, 8, 10),
+            )
+
+    def test_rejects_non_contiguous_duplicate_module_ranks(self):
+        invalid = [
+            {
+                "title": f"政策 {index}",
+                "url": f"https://example.com/policy/{index}",
+                "module_rank": 1,
+            }
+            for index in range(1, 7)
+        ]
+        with self.assertRaisesRegex(ValueError, "module_rank"):
+            render_weekly_pdf_html(
+                policy_items=invalid,
+                research_items=[],
                 ai_analysis=None,
                 agro_weather=None,
                 period_label="period",
@@ -281,8 +343,163 @@ class WeeklyPdfReportTests(unittest.TestCase):
             self.assertEqual(final_html.read_text(encoding="utf-8"), "old html")
             self.assertEqual(list(final_pdf.parent.glob("*.tmp*")), [])
 
+    def test_rollback_failure_preserves_recoverable_backup_and_cleans_others(self):
+        with TemporaryDirectory() as tmp:
+            final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            )
+            final_html = final_pdf.with_suffix(".html")
+            final_pdf.parent.mkdir(parents=True)
+            final_pdf.write_bytes(b"%PDF-old")
+            final_html.write_text("old html", encoding="utf-8")
+
+            def create_pdf(_html, pdf):
+                Path(pdf).write_bytes(b"%PDF-new")
+                return pdf
+
+            real_replace = os.replace
+            pdf_replace_failed = False
+
+            def fail_pdf_and_html_rollback(source, destination):
+                nonlocal pdf_replace_failed
+                source = Path(source)
+                destination = Path(destination)
+                if destination == final_pdf and not pdf_replace_failed:
+                    pdf_replace_failed = True
+                    raise OSError("simulated PDF replace failure")
+                if destination == final_html and source.name.endswith(
+                    ".tmp.backup.html"
+                ):
+                    raise OSError("simulated HTML rollback failure")
+                return real_replace(source, destination)
+
+            with patch(
+                "trendradar.report.weekly_pdf.generate_pdf_from_html",
+                side_effect=create_pdf,
+            ), patch(
+                "trendradar.report.weekly_pdf._validate_weekly_pdf"
+            ), patch(
+                "trendradar.report.weekly_pdf.os.replace",
+                side_effect=fail_pdf_and_html_rollback,
+            ), self.assertLogs(
+                "trendradar.report.weekly_pdf", level="WARNING"
+            ) as logs:
+                with self.assertRaisesRegex(OSError, "PDF replace"):
+                    build_weekly_pdf(
+                        tmp, date(2026, 8, 3), date(2026, 8, 10), "new html"
+                    )
+
+            backups = list(final_pdf.parent.glob("*.tmp.backup.html"))
+            self.assertEqual(len(backups), 1)
+            self.assertEqual(backups[0].read_text(encoding="utf-8"), "old html")
+            self.assertEqual(final_pdf.read_bytes(), b"%PDF-old")
+            self.assertEqual(final_html.read_text(encoding="utf-8"), "new html")
+            self.assertEqual(
+                list(final_pdf.parent.glob("*.tmp.backup.pdf")), []
+            )
+            self.assertTrue(any("保留" in message for message in logs.output))
+            self.assertTrue(
+                any(str(backups[0]) in message for message in logs.output)
+            )
+
+    def test_backup_cleanup_failure_warns_but_keeps_successful_formal_pair(self):
+        with TemporaryDirectory() as tmp:
+            final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            )
+            final_html = final_pdf.with_suffix(".html")
+            final_pdf.parent.mkdir(parents=True)
+            final_pdf.write_bytes(b"%PDF-old")
+            final_html.write_text("old html", encoding="utf-8")
+
+            def create_pdf(_html, pdf):
+                Path(pdf).write_bytes(b"%PDF-new")
+                return pdf
+
+            real_replace = os.replace
+            real_unlink = Path.unlink
+            formal_pdf_replaced = False
+
+            def track_replace(source, destination):
+                nonlocal formal_pdf_replaced
+                result = real_replace(source, destination)
+                if Path(destination) == final_pdf:
+                    formal_pdf_replaced = True
+                return result
+
+            def fail_html_backup_cleanup(path, *args, **kwargs):
+                if formal_pdf_replaced and path.name.endswith(
+                    ".tmp.backup.html"
+                ):
+                    raise OSError("simulated backup unlink failure")
+                return real_unlink(path, *args, **kwargs)
+
+            with patch(
+                "trendradar.report.weekly_pdf.generate_pdf_from_html",
+                side_effect=create_pdf,
+            ), patch(
+                "trendradar.report.weekly_pdf._validate_weekly_pdf"
+            ), patch(
+                "trendradar.report.weekly_pdf.os.replace",
+                side_effect=track_replace,
+            ), patch.object(
+                Path, "unlink", autospec=True,
+                side_effect=fail_html_backup_cleanup,
+            ), self.assertLogs(
+                "trendradar.report.weekly_pdf", level="WARNING"
+            ) as logs:
+                result = build_weekly_pdf(
+                    tmp, date(2026, 8, 3), date(2026, 8, 10), "new html"
+                )
+
+            self.assertEqual(Path(result), final_pdf)
+            self.assertEqual(final_pdf.read_bytes(), b"%PDF-new")
+            self.assertEqual(final_html.read_text(encoding="utf-8"), "new html")
+            backup_html = list(final_pdf.parent.glob("*.tmp.backup.html"))
+            self.assertEqual(len(backup_html), 1)
+            self.assertEqual(
+                list(final_pdf.parent.glob("*.tmp.backup.pdf")), []
+            )
+            self.assertTrue(any("清理失败" in message for message in logs.output))
+
 
 class WeeklyPdfGenerationValidationTests(unittest.TestCase):
+    def test_poppler_commands_support_windows_paths_and_force_utf8(self):
+        with TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "report.pdf"
+            pdf.write_bytes(b"%PDF-valid")
+            responses = [
+                subprocess.CompletedProcess(
+                    [], 0, "Pages: 2\nPage size: 595 x 842 pts\n", ""
+                ),
+                subprocess.CompletedProcess([], 0, "农业育种新闻周报", ""),
+            ]
+            with patch.dict(
+                os.environ,
+                {
+                    "PDFINFO_BIN": r"C:\\poppler\\Library\\bin\\pdfinfo.exe",
+                    "PDFTOTEXT_BIN": r"C:\\poppler\\Library\\bin\\pdftotext.exe",
+                },
+            ), patch(
+                "trendradar.report.weekly_pdf.subprocess.run",
+                side_effect=responses,
+            ) as run:
+                _validate_weekly_pdf(pdf)
+
+        info_call, text_call = run.call_args_list
+        self.assertEqual(
+            info_call.args[0][0], r"C:\\poppler\\Library\\bin\\pdfinfo.exe"
+        )
+        self.assertEqual(
+            text_call.args[0],
+            [
+                r"C:\\poppler\\Library\\bin\\pdftotext.exe",
+                "-enc", "UTF-8", str(pdf), "-",
+            ],
+        )
+        self.assertEqual(info_call.kwargs["encoding"], "utf-8")
+        self.assertEqual(text_call.kwargs["encoding"], "utf-8")
+
     def test_long_weather_content_stays_above_repeated_page_furniture(self):
         period = "2026-08-03—2026-08-09"
         html = render_weekly_pdf_html(

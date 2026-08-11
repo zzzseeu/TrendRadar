@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from html import escape
+import logging
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,9 @@ from trendradar.report.pdf import (
     MIN_PDF_BYTES,
     generate_pdf_from_html,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 def _module_rank(value: Any) -> int:
@@ -117,6 +121,8 @@ def render_weekly_pdf_html(
     research = list(research_items or [])
     if len(policy) > 20 or len(research) > 20:
         raise ValueError("周报 PDF 每个模块只接受最多 20 条已入选新闻")
+    _validate_module_ranks(policy, "policy")
+    _validate_module_ranks(research, "research")
     identities = [report_item_identity(item) for item in policy + research]
     if (
         any(not identity[1] for identity in identities)
@@ -188,29 +194,40 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
     <h1>农业育种新闻周报</h1>
     <p>统计周期：{_text(period_label)}<br>生成时间：{_text(generated)}<br>入选普通新闻：{total_selected} 条（政策 {len(policy)} 条，科研 {len(research)} 条）</p>
   </section>
-  <section><h2>一、政策动态</h2>
+  <section class="primary-module"><h2>一、政策动态</h2>
     <div class="module-analysis"><span class="label">政策趋势研判</span><br>{_analysis_text(ai_analysis, "policy_trends", "本期暂无政策趋势分析。")}</div>
     {policy_html}
   </section>
-  <section><h2>二、科研进展</h2>
+  <section class="primary-module"><h2>二、科研进展</h2>
     <div class="module-analysis"><span class="label">科研趋势研判</span><br>{_analysis_text(ai_analysis, "research_trends", "本期暂无科研趋势分析。")}</div>
     {research_html}
   </section>
   {_render_weather(agro_weather, ai_analysis)}
-  <section><h2>趋势与指标</h2>
+  <aside class="report-metrics"><h3>趋势与指标</h3>
     <div class="overview-grid">
       <div><span class="label">政策新闻</span><br>{len(policy)} 条（上限 20 条）</div>
       <div><span class="label">科研文献</span><br>{len(research)} 条（上限 20 条）</div>
       <div><span class="label">TOP5 标记</span><br>{total_highlights} 条（每模块最多 5 条）</div>
       <div><span class="label">气象专栏</span><br>{"已纳入" if agro_weather else "本期暂无官方报告"}</div>
     </div>
-  </section>
-  <section><h2>数据与方法说明</h2>
+  </aside>
+  <aside class="report-method"><h3>数据与方法说明</h3>
     <p class="method">普通新闻仅使用自然周筛选后的政策、科研双模块结果，每模块最多 20 条、各自 TOP5 内联标记，每条仅展示一次。农业气象为第三个独立模块，不占新闻名额。无法验证的链接与缺失字段不展示；文本与链接均经过安全处理。</p>
-  </section>
+  </aside>
 </main>
 </body>
 </html>"""
+
+
+def _validate_module_ranks(items: list[dict], module_name: str) -> None:
+    ranks = [item.get("module_rank") for item in items]
+    if (
+        any(not isinstance(rank, int) or isinstance(rank, bool) for rank in ranks)
+        or sorted(ranks) != list(range(1, len(items) + 1))
+    ):
+        raise ValueError(
+            f"周报 PDF {module_name} module_rank 必须是唯一连续正整数 1..N"
+        )
 
 
 def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
@@ -218,7 +235,7 @@ def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
         ai_analysis, "weather_risks", "本期暂无农业气象风险分析。"
     )
     if agro_weather is None:
-        return f"""<section><h2>三、农业气象与灾害风险</h2>
+        return f"""<section class="primary-module"><h2>三、农业气象与灾害风险</h2>
 <div class="module-analysis"><span class="label">气象风险研判</span><br>{analysis}</div>
 <p class="empty">本期未取得可验证的中央气象台农业气象周报。</p></section>"""
     title = _text(getattr(agro_weather, "title", "全国农业气象周报"))
@@ -226,7 +243,7 @@ def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
     outlook = _text(getattr(agro_weather, "outlook", "")) or "暂未提供"
     recommendations = _text(getattr(agro_weather, "recommendations", "")) or "暂未提供"
     source = _link(getattr(agro_weather, "source_url", ""), "中央气象台原页")
-    return f"""<section><h2>三、农业气象与灾害风险</h2>
+    return f"""<section class="primary-module"><h2>三、农业气象与灾害风险</h2>
 <div class="module-analysis"><span class="label">气象风险研判</span><br>{analysis}</div>
 <p><strong>{title}</strong>{("　" + source) if source else ""}</p>
 <div class="weather-grid">
@@ -272,22 +289,54 @@ def build_weekly_pdf(
         replaced_html = True
         os.replace(temp_pdf, pdf_path)
         replaced_pdf = True
-        return str(pdf_path)
     except Exception:
+        preserved_backups = set()
         if replaced_html:
             if had_html and backup_html.is_file():
-                os.replace(backup_html, html_path)
+                try:
+                    os.replace(backup_html, html_path)
+                except Exception as rollback_error:
+                    preserved_backups.add(backup_html)
+                    logger.warning(
+                        "周报 HTML 回滚失败，保留可恢复 backup %s: %s",
+                        backup_html, rollback_error,
+                    )
             elif not had_html:
-                html_path.unlink(missing_ok=True)
+                _cleanup_artifacts((html_path,))
         if replaced_pdf:
             if had_pdf and backup_pdf.is_file():
-                os.replace(backup_pdf, pdf_path)
+                try:
+                    os.replace(backup_pdf, pdf_path)
+                except Exception as rollback_error:
+                    preserved_backups.add(backup_pdf)
+                    logger.warning(
+                        "周报 PDF 回滚失败，保留可恢复 backup %s: %s",
+                        backup_pdf, rollback_error,
+                    )
             elif not had_pdf:
-                pdf_path.unlink(missing_ok=True)
+                _cleanup_artifacts((pdf_path,))
+        _cleanup_artifacts(
+            (temp_html, temp_pdf, backup_html, backup_pdf),
+            preserve=preserved_backups,
+        )
         raise
-    finally:
-        for artifact in (temp_html, temp_pdf, backup_html, backup_pdf):
+    _cleanup_artifacts((temp_html, temp_pdf, backup_html, backup_pdf))
+    return str(pdf_path)
+
+
+def _cleanup_artifacts(
+    artifacts: tuple[Path, ...], *, preserve: set[Path] | None = None
+) -> None:
+    preserved = preserve or set()
+    for artifact in artifacts:
+        if artifact in preserved:
+            continue
+        try:
             artifact.unlink(missing_ok=True)
+        except Exception as cleanup_error:
+            logger.warning(
+                "周报临时文件清理失败，保留 %s: %s", artifact, cleanup_error
+            )
 
 
 def _unique_artifact_path(final_path: Path, suffix: str) -> Path:
@@ -309,12 +358,24 @@ def _validate_weekly_pdf(pdf_path: Path) -> None:
         if pdf_file.read(4) != b"%PDF":
             raise RuntimeError("生成的文件不是有效 PDF")
 
-    info = subprocess.run(
-        ["pdfinfo", str(pdf_path)], capture_output=True, text=True,
-        timeout=30, check=False,
+    pdfinfo_bin = os.environ.get("PDFINFO_BIN", "pdfinfo").strip() or "pdfinfo"
+    pdftotext_bin = (
+        os.environ.get("PDFTOTEXT_BIN", "pdftotext").strip() or "pdftotext"
     )
+    try:
+        info = subprocess.run(
+            [pdfinfo_bin, str(pdf_path)], capture_output=True,
+            encoding="utf-8", errors="replace", timeout=30, check=False,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"无法执行 PDFINFO_BIN（{pdfinfo_bin}）验证周报 PDF"
+        ) from exc
     if info.returncode != 0:
-        raise RuntimeError("pdfinfo 无法验证周报 PDF")
+        detail = (info.stderr or "").strip()[-300:]
+        raise RuntimeError(
+            f"PDFINFO_BIN（{pdfinfo_bin}）无法验证周报 PDF: {detail}"
+        )
     pages = re.search(r"Pages:\s+(\d+)", info.stdout)
     size = re.search(
         r"Page size:\s+59[4-6](?:\.\d+)? x 84[1-2](?:\.\d+)? pts",
@@ -323,14 +384,23 @@ def _validate_weekly_pdf(pdf_path: Path) -> None:
     if pages is None or int(pages.group(1)) < 1 or size is None:
         raise RuntimeError("周报 PDF 不是有效的 A4 文档")
 
-    extracted = subprocess.run(
-        ["pdftotext", str(pdf_path), "-"], capture_output=True, text=True,
-        timeout=30, check=False,
-    )
+    try:
+        extracted = subprocess.run(
+            [pdftotext_bin, "-enc", "UTF-8", str(pdf_path), "-"],
+            capture_output=True, encoding="utf-8", errors="replace",
+            timeout=30, check=False,
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            f"无法执行 PDFTOTEXT_BIN（{pdftotext_bin}）提取周报中文"
+        ) from exc
     if extracted.returncode != 0 or not re.search(
         r"[\u4e00-\u9fff]", extracted.stdout
     ):
-        raise RuntimeError("周报 PDF 无法提取中文文本")
+        detail = (extracted.stderr or "").strip()[-300:]
+        raise RuntimeError(
+            f"PDFTOTEXT_BIN（{pdftotext_bin}）无法提取周报中文文本: {detail}"
+        )
 
 
 def weekly_pdf_output_path(

@@ -7,7 +7,7 @@
 - 政策、科研空态使用需求指定文案；任务 4 的 `policy_trends`、`research_trends`、`weather_risks` 分别进入对应模块，封面和指标分别统计政策与科研数量。
 - 正式 stem 更新为 `农业育种新闻周报_三模块_<开始日>至<结束日>`；主流程的 partial ledger resume 继续通过 `weekly_pdf_output_path()` 命中新路径，先复用既有 PDF digest，不进入渲染或生成。
 - Chromium 先输出到同目录唯一临时文件；通过 `%PDF`、20MB、`pdfinfo` A4/页数和 `pdftotext` 中文校验后才替换正式件。底层 PDF 生成同样不再预删目标文件。
-- 双正式件替换前创建同目录恢复副本；第二次 `os.replace()` 失败会恢复旧 HTML，旧 PDF 保持不变，最后清理本轮临时文件与恢复副本。
+- 正式件采用“单文件原子替换 + 可捕获异常下的双文件回滚”：替换前创建同目录恢复副本；第二次 `os.replace()` 失败会恢复旧 HTML，旧 PDF 保持不变。
 
 ## TDD 与验证
 
@@ -24,7 +24,17 @@
 - 成功路径覆盖两份正式件同时更新；第二次 replace 异常覆盖恢复路径真实执行，而不是让同一个 mock 持续阻断恢复。
 - 独立代码审查未发现 Critical 或 Important 实现缺陷；审查确认各项功能与任务简报对齐。
 
+## 审查修复追加
+
+- 回滚与清理改为显式状态机。回滚 `os.replace()` 自身失败时，唯一可恢复 backup 不再被 `finally` 删除，告警会给出可诊断路径；其余临时件继续逐项清理。
+- 正式 HTML/PDF 均替换成功后，backup 清理失败只告警并保留文件，不会把成功生成伪装成失败。
+- HTML 精确解析测试确认只有政策、科研、气象三个 `primary-module`/`h2` 一级模块；趋势指标和方法说明改为 `aside`/`h3`。
+- renderer 严格要求每模块 `module_rank` 为唯一连续正整数 `1..N`，TOP5 marker 仍只由 `rank <= 5` 决定。
+- Poppler 命令支持 `PDFINFO_BIN`、`PDFTOTEXT_BIN`，兼容 Windows 风格可执行路径；`pdftotext` 固定 `-enc UTF-8`，子进程固定 UTF-8 解码并提供明确错误。
+- 恢复 Chromium 缺失底层回归，验证旧目标不被预删且 staged PDF 被清理。
+- 审查修复 RED：6 项定向测试中 4 个失败、1 个错误；Chromium 缺失回归因既有 staging 行为已正确而直接通过。GREEN：6/6；最终任务 5 三组完整回归 48/48（18.979 秒）。
+
 ## 疑虑
 
-- 两个文件无法获得文件系统级跨文件事务；当前方案保证所有可捕获异常下回滚一致，且恢复副本能覆盖第二次 replace 失败。进程在两个原子 replace 之间被强制终止仍存在极短的不一致窗口，这是双文件顺序替换的固有限制。
+- 两个文件无法获得文件系统级跨文件事务；准确语义是“单文件原子替换 + 可捕获异常双文件回滚”。进程在两个 `os.replace()` 之间遭遇 `SIGKILL`、断电或宿主机崩溃时，Python 回滚无法执行，仍存在极短的不一致窗口；失败 backup 会尽量保留供诊断和人工恢复。
 - `pdfinfo` 和 `pdftotext` 现在是正式生成前的强校验依赖；项目生产 Dockerfile 已安装 `poppler-utils`，非 Docker 部署也需要提供这两个命令。
