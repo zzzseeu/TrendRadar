@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import subprocess
@@ -13,7 +14,6 @@ import pytz
 
 from trendradar.report.weekly_pdf import (
     build_weekly_pdf,
-    flatten_unique_news,
     render_weekly_pdf_html,
 )
 from trendradar.core.weekly import WeeklyNewsSelection
@@ -41,16 +41,37 @@ class WeeklyPdfReportTests(unittest.TestCase):
             source_url="https://www.nmc.cn/publish/agro/ten-week/index.html",
         )
 
-    def test_template_contains_reference_sections_and_all_news(self):
+    def test_template_renders_each_module_once_by_rank_with_inline_top_five(self):
+        policy = [
+            {
+                **item,
+                "title": f"政策 {item['module_rank']}",
+                "url": f"https://example.com/policy/{item['module_rank']}",
+            }
+            for item in (
+                {**self.items[index - 1], "module_rank": index}
+                for index in (3, 1, 7, 2, 6, 5, 4)
+            )
+        ]
+        research = [
+            {
+                **item,
+                "title": f"文献 {item['module_rank']}",
+                "url": f"https://example.com/research/{item['module_rank']}",
+            }
+            for item in (
+                {**self.items[index - 1], "module_rank": index}
+                for index in (7, 2, 4, 1, 6, 3, 5)
+            )
+        ]
         html = render_weekly_pdf_html(
-            policy_items=[],
-            research_items=self.items,
+            policy_items=policy,
+            research_items=research,
             ai_analysis=SimpleNamespace(
                 success=True,
-                core_trends="本周核心趋势",
-                sentiment_controversy="风险分类",
-                signals="关注信号",
-                outlook_strategy="后续建议",
+                policy_trends="政策趋势分析 [policy:1]",
+                research_trends="科研趋势分析 [research:1]",
+                weather_risks="气象风险分析 [weather:official]",
             ),
             agro_weather=self.weather,
             period_label="2026-08-03 00:00—2026-08-10 00:00",
@@ -58,16 +79,25 @@ class WeeklyPdfReportTests(unittest.TestCase):
                 datetime(2026, 8, 10, 10, 0)
             ),
         )
-        for heading in (
-            "核心观点摘要", "重点新闻", "入选新闻",
-            "农业气象与灾害风险", "趋势与指标", "数据与方法说明",
-        ):
+        for heading in ("政策动态", "科研进展", "农业气象与灾害风险", "趋势与指标"):
             self.assertIn(heading, html)
-        for index in range(1, 8):
-            self.assertIn(f"新闻 {index}", html)
-        self.assertEqual(html.count("重点标记"), 5)
-        self.assertIn('href="https://example.com/1"', html)
-        self.assertIn('href="https://search.example.com/1"', html)
+        self.assertNotIn("核心观点摘要", html)
+        self.assertNotIn("重点新闻</h2>", html)
+        self.assertNotIn("入选新闻</h2>", html)
+        self.assertEqual(html.count("重点政策"), 5)
+        self.assertEqual(html.count("重点文献"), 5)
+        self.assertIn("政策趋势分析 [policy:1]", html)
+        self.assertIn("科研趋势分析 [research:1]", html)
+        self.assertIn("气象风险分析 [weather:official]", html)
+        for module, title in (("policy", "政策"), ("research", "文献")):
+            positions = []
+            for index in range(1, 8):
+                self.assertEqual(html.count(f">{title} {index}</h3>"), 1)
+                self.assertEqual(
+                    html.count(f'href="https://example.com/{module}/{index}"'), 1
+                )
+                positions.append(html.index(f">{title} {index}</h3>"))
+            self.assertEqual(positions, sorted(positions))
         self.assertIn("@page", html)
         self.assertIn("size: A4", html)
         self.assertIn("@top-center", html)
@@ -84,14 +114,25 @@ class WeeklyPdfReportTests(unittest.TestCase):
                 generated_at=datetime(2026, 8, 10),
             )
 
-    def test_news_deduplication_and_unsafe_external_content(self):
-        groups = [{"titles": [
+    def test_rejects_cross_module_duplicate_identity(self):
+        duplicated = {"title": "相同标题", "url": "https://example.com/news"}
+        with self.assertRaisesRegex(ValueError, "全局唯一"):
+            render_weekly_pdf_html(
+                policy_items=[{**duplicated, "module_rank": 1}],
+                research_items=[{**duplicated, "module_rank": 1}],
+                ai_analysis=None,
+                agro_weather=None,
+                period_label="period",
+                generated_at=datetime(2026, 8, 10),
+            )
+
+    def test_unsafe_external_content_is_escaped_and_unsafe_link_is_hidden(self):
+        selected = [
             {"title": "相同标题", "url": "https://example.com/news"},
-            {"title": "相同标题", "url": "https://example.com/news?utm_source=x"},
             {"title": "<script>bad</script>", "url": "javascript:alert(1)"},
-        ]}]
-        selected = flatten_unique_news(groups)
-        self.assertEqual(len(selected), 2)
+        ]
+        for index, item in enumerate(selected, start=1):
+            item["module_rank"] = index
         html = render_weekly_pdf_html(
             policy_items=[],
             research_items=selected,
@@ -104,6 +145,15 @@ class WeeklyPdfReportTests(unittest.TestCase):
         self.assertNotIn('href="javascript:', html)
         self.assertNotIn("<img src=x", html)
 
+    def test_empty_policy_and_research_modules_use_exact_copy(self):
+        html = render_weekly_pdf_html(
+            policy_items=[], research_items=[], ai_analysis=None,
+            agro_weather=self.weather, period_label="period",
+            generated_at=datetime(2026, 8, 10),
+        )
+        self.assertIn("本周暂无符合条件的政策新闻", html)
+        self.assertIn("本周暂无符合条件的科研文献", html)
+
     def test_builds_chinese_range_filename(self):
         def create_pdf(_html, pdf):
             Path(pdf).write_bytes(b"%PDF-1.4\ncontent")
@@ -112,13 +162,124 @@ class WeeklyPdfReportTests(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch(
             "trendradar.report.weekly_pdf.generate_pdf_from_html",
             side_effect=create_pdf,
-        ):
+        ), patch("trendradar.report.weekly_pdf._validate_weekly_pdf"):
             path = build_weekly_pdf(
                 tmp, date(2026, 8, 3), date(2026, 8, 10), "<html></html>"
             )
         self.assertEqual(
-            Path(path).name, "农业育种新闻周报_2026-08-03至2026-08-09.pdf"
+            Path(path).name, "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
         )
+
+    def test_build_replaces_both_artifacts_only_after_temp_validation(self):
+        with TemporaryDirectory() as tmp:
+            final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            )
+            final_html = final_pdf.with_suffix(".html")
+            final_pdf.parent.mkdir(parents=True)
+            final_pdf.write_bytes(b"%PDF-old")
+            final_html.write_text("old html", encoding="utf-8")
+
+            def create_pdf(_html, pdf):
+                Path(pdf).write_bytes(b"%PDF-new")
+                return pdf
+
+            with patch(
+                "trendradar.report.weekly_pdf.generate_pdf_from_html",
+                side_effect=create_pdf,
+            ), patch("trendradar.report.weekly_pdf._validate_weekly_pdf"):
+                path = build_weekly_pdf(
+                    tmp, date(2026, 8, 3), date(2026, 8, 10), "new html"
+                )
+
+            self.assertEqual(Path(path), final_pdf)
+            self.assertEqual(final_pdf.read_bytes(), b"%PDF-new")
+            self.assertEqual(final_html.read_text(encoding="utf-8"), "new html")
+            self.assertEqual(list(final_pdf.parent.glob("*.tmp*")), [])
+
+    def test_build_failure_preserves_formal_artifacts_and_removes_temps(self):
+        def chromium_failure(_html, _pdf):
+            raise RuntimeError("Chromium failed")
+
+        def invalid_header(_html, pdf):
+            Path(pdf).write_bytes(b"not a PDF")
+            return pdf
+
+        def oversized(_html, pdf):
+            from trendradar.report.pdf import MAX_PDF_BYTES
+            with Path(pdf).open("wb") as file:
+                file.write(b"%PDF")
+                file.truncate(MAX_PDF_BYTES + 1)
+            return pdf
+
+        for case, generator in (
+            ("chromium", chromium_failure),
+            ("header", invalid_header),
+            ("oversized", oversized),
+        ):
+            with self.subTest(case=case), TemporaryDirectory() as tmp:
+                final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
+                    "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+                )
+                final_html = final_pdf.with_suffix(".html")
+                final_pdf.parent.mkdir(parents=True)
+                final_pdf.write_bytes(b"%PDF-old")
+                final_html.write_text("old html", encoding="utf-8")
+
+                with patch(
+                    "trendradar.report.weekly_pdf.generate_pdf_from_html",
+                    side_effect=generator,
+                ):
+                    with self.assertRaises(RuntimeError):
+                        build_weekly_pdf(
+                            tmp, date(2026, 8, 3), date(2026, 8, 10), "new html"
+                        )
+
+                self.assertEqual(final_pdf.read_bytes(), b"%PDF-old")
+                self.assertEqual(final_html.read_text(encoding="utf-8"), "old html")
+                self.assertEqual(list(final_pdf.parent.glob("*.tmp*")), [])
+
+    def test_second_replace_failure_rolls_back_both_formal_artifacts(self):
+        with TemporaryDirectory() as tmp:
+            final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            )
+            final_html = final_pdf.with_suffix(".html")
+            final_pdf.parent.mkdir(parents=True)
+            final_pdf.write_bytes(b"%PDF-old")
+            final_html.write_text("old html", encoding="utf-8")
+
+            def create_pdf(_html, pdf):
+                Path(pdf).write_bytes(b"%PDF-new")
+                return pdf
+
+            real_replace = os.replace
+            failed = False
+
+            def fail_pdf_replace_once(source, destination):
+                nonlocal failed
+                if Path(destination) == final_pdf and not failed:
+                    failed = True
+                    raise OSError("simulated PDF replace failure")
+                return real_replace(source, destination)
+
+            with patch(
+                "trendradar.report.weekly_pdf.generate_pdf_from_html",
+                side_effect=create_pdf,
+            ), patch(
+                "trendradar.report.weekly_pdf._validate_weekly_pdf"
+            ), patch(
+                "trendradar.report.weekly_pdf.os.replace",
+                side_effect=fail_pdf_replace_once,
+            ):
+                with self.assertRaisesRegex(OSError, "PDF replace"):
+                    build_weekly_pdf(
+                        tmp, date(2026, 8, 3), date(2026, 8, 10), "new html"
+                    )
+
+            self.assertEqual(final_pdf.read_bytes(), b"%PDF-old")
+            self.assertEqual(final_html.read_text(encoding="utf-8"), "old html")
+            self.assertEqual(list(final_pdf.parent.glob("*.tmp*")), [])
 
 
 class WeeklyPdfGenerationValidationTests(unittest.TestCase):
@@ -196,20 +357,23 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
             or shutil.which("google-chrome")
         )
         period = "2026-08-03 00:00—2026-08-10 00:00"
-        html = render_weekly_pdf_html(
-            policy_items=[],
-            research_items=[{
-                "title": f"水稻育种技术进展 {index}",
-                "url": f"https://example.com/rice/{index}",
+        def module_items(module):
+            return [{
+                "title": f"{module}水稻育种技术进展 {index}",
+                "url": f"https://example.com/{module}/{index}",
                 "source_name": "测试来源",
                 "published_at": "2026-08-09",
                 "ai_summary": "中文摘要内容" * 80,
-                "highlight_rank": index if index <= 5 else None,
-                "tags": ["育种"],
-            } for index in range(1, 21)],
+                "module_rank": index,
+            } for index in range(1, 21)]
+
+        html = render_weekly_pdf_html(
+            policy_items=module_items("政策"),
+            research_items=module_items("科研"),
             ai_analysis=SimpleNamespace(
-                success=True, core_trends="核心趋势", sentiment_controversy="风险",
-                signals="信号", outlook_strategy="建议",
+                success=True, policy_trends="政策趋势 [policy:1]",
+                research_trends="科研趋势 [research:1]",
+                weather_risks="暂无气象证据",
             ),
             agro_weather=None,
             period_label=period,
@@ -233,13 +397,14 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
                 ["pdftotext", str(pdf), "-"],
                 capture_output=True, text=True, check=True,
             ).stdout
-            self.assertIn("水稻育种技术进展 1", text)
+            self.assertIn("政策水稻育种技术进展 1", text)
+            self.assertIn("科研水稻育种技术进展 20", text)
             header = rf"农业育种新闻周报\s+周期：{re.escape(period)}"
             self.assertGreaterEqual(len(re.findall(header, text)), 2)
             self.assertRegex(text, r"第\s*1\s*页")
             self.assertRegex(text, r"第\s*2\s*页")
 
-    def test_invalid_or_oversized_pdf_is_deleted(self):
+    def test_invalid_pdf_is_deleted(self):
         from trendradar.report.pdf import generate_pdf_from_html
 
         with TemporaryDirectory() as tmp:
@@ -248,7 +413,10 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
             html.write_text("<html></html>", encoding="utf-8")
 
             def invalid_output(command, **kwargs):
-                pdf.write_bytes(b"not a PDF")
+                output = next(
+                    value for value in command if value.startswith("--print-to-pdf=")
+                )
+                Path(output.split("=", 1)[1]).write_bytes(b"not a PDF")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             with patch("trendradar.report.pdf.shutil.which", return_value="chromium"), patch(
@@ -267,7 +435,10 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
             html.write_text("<html></html>", encoding="utf-8")
 
             def oversized_output(command, **kwargs):
-                with pdf.open("wb") as file:
+                output = next(
+                    value for value in command if value.startswith("--print-to-pdf=")
+                )
+                with Path(output.split("=", 1)[1]).open("wb") as file:
                     file.write(b"%PDF-1.4\n")
                     file.truncate(MAX_PDF_BYTES + 1)
                 return subprocess.CompletedProcess(command, 0, "", "")
@@ -278,20 +449,6 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "20MB"):
                     generate_pdf_from_html(str(html), str(pdf))
             self.assertFalse(pdf.exists())
-
-    def test_missing_chromium_fails_without_pdf_residue(self):
-        from trendradar.report.pdf import generate_pdf_from_html
-
-        with TemporaryDirectory() as tmp:
-            html = Path(tmp) / "report.html"
-            pdf = Path(tmp) / "report.pdf"
-            html.write_text("<html></html>", encoding="utf-8")
-            pdf.write_bytes(b"old")
-            with patch("trendradar.report.pdf.shutil.which", return_value=None):
-                with self.assertRaisesRegex(RuntimeError, "Chromium"):
-                    generate_pdf_from_html(str(html), str(pdf))
-            self.assertFalse(pdf.exists())
-
 
 class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
     def _weekly_pipeline_analyzer(self, filter_method):
@@ -433,7 +590,8 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 html.count(f'href="https://example.org/research/{index}"'), 1
             )
-        self.assertEqual(html.count("重点标记"), 10)
+        self.assertEqual(html.count("重点政策"), 5)
+        self.assertEqual(html.count("重点文献"), 5)
 
     def test_missing_weekly_selection_state_fails_closed(self):
         from trendradar.__main__ import NewsAnalyzer

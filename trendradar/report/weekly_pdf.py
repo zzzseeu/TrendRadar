@@ -3,41 +3,26 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from html import escape
+import os
 from pathlib import Path
+import re
+import shutil
+import subprocess
+import tempfile
 from typing import Any
 from urllib.parse import urlsplit
 
-from trendradar.crawler.news_search import canonicalize_url, normalize_title
-from trendradar.report.pdf import generate_pdf_from_html
+from trendradar.core.weekly import report_item_identity
+from trendradar.report.pdf import (
+    MAX_PDF_BYTES,
+    MIN_PDF_BYTES,
+    generate_pdf_from_html,
+)
 
 
-def flatten_unique_news(groups: list[dict]) -> list[dict]:
-    """Return stable, de-duplicated selected news from weekly topic groups."""
-    ordered = []
-    seen = set()
-    for group in groups:
-        for item in group.get("titles", []):
-            key = canonicalize_url(item.get("url", ""))
-            if not key:
-                key = normalize_title(item.get("title", ""))
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            ordered.append(item)
-    return sorted(
-        ordered,
-        key=lambda item: (
-            _highlight_sort_value(item.get("highlight_rank")),
-            str(item.get("published_at") or ""),
-            str(item.get("title") or ""),
-        ),
-    )
-
-
-def _highlight_sort_value(value: Any) -> int:
+def _module_rank(value: Any) -> int:
     try:
         return int(value or 10**9)
     except (TypeError, ValueError):
@@ -78,25 +63,14 @@ def _link(url: Any, label: str) -> str:
     return f'<a href="{_text(safe_url)}">{_text(label)}</a>'
 
 
-def _news_topic(item: dict) -> str:
-    topics = item.get("weekly_topics") or item.get("tags") or []
-    if isinstance(topics, str):
-        topics = [topics]
-    for topic in topics:
-        normalized = str(topic or "").strip()
-        if normalized:
-            return normalized
-    return "其他"
-
-
-def _render_news_card(item: dict, *, show_marker: bool = False) -> str:
+def _render_news_card(item: dict, *, marker_label: str) -> str:
     title = _text(item.get("title")) or "（无标题）"
     summary = _text(item.get("ai_summary") or item.get("summary"))
     source = _text(item.get("source_name") or item.get("feed_name") or "未标注来源")
     published_at = _text(item.get("published_at") or item.get("time_display") or "未标注时间")
     marker = ""
-    if show_marker:
-        marker = '<span class="highlight-marker">重点标记</span>'
+    if _module_rank(item.get("module_rank")) <= 5:
+        marker = f'<span class="highlight-marker">{_text(marker_label)}</span>'
     links = [
         _link(item.get("url"), "原文链接"),
         _link(item.get("reader_url"), "备用链接"),
@@ -143,54 +117,30 @@ def render_weekly_pdf_html(
     research = list(research_items or [])
     if len(policy) > 20 or len(research) > 20:
         raise ValueError("周报 PDF 每个模块只接受最多 20 条已入选新闻")
-
-    def prepare(items: list[dict]) -> tuple[list[dict], list[dict], OrderedDict]:
-        selected = sorted(
-            items,
-            key=lambda item: (
-                _highlight_sort_value(item.get("highlight_rank")),
-                str(item.get("published_at") or ""),
-                str(item.get("title") or ""),
-            ),
-        )
-        highlights = [
-            item for item in selected
-            if _highlight_sort_value(item.get("highlight_rank")) <= 5
-        ][:5]
-        highlight_objects = {id(item) for item in highlights}
-        topic_groups: OrderedDict[str, list[dict]] = OrderedDict()
-        for item in selected:
-            if id(item) in highlight_objects:
-                continue
-            topic_groups.setdefault(_news_topic(item), []).append(item)
-        return selected, highlights, topic_groups
-
-    policy, policy_highlights, policy_topics = prepare(policy)
-    research, research_highlights, research_topics = prepare(research)
+    identities = [report_item_identity(item) for item in policy + research]
+    if (
+        any(not identity[1] for identity in identities)
+        or len(set(identities)) != len(identities)
+    ):
+        raise ValueError("周报 PDF 入选新闻身份必须全局唯一")
+    policy.sort(key=lambda item: _module_rank(item.get("module_rank")))
+    research.sort(key=lambda item: _module_rank(item.get("module_rank")))
 
     generated = generated_at.strftime("%Y-%m-%d %H:%M")
     page_header = _css_string(
         f"农业育种新闻周报　周期：{period_label}"
     )
-    weather_html = _render_weather(agro_weather)
-    def render_topics(topic_groups: OrderedDict) -> str:
-        return "".join(
-            f'<section class="topic"><h3>{_text(topic)}</h3>'
-            f'{"".join(_render_news_card(item) for item in items)}</section>'
-            for topic, items in topic_groups.items()
-        ) or '<p class="empty">本模块没有入选新闻。</p>'
-
-    policy_topic_html = render_topics(policy_topics)
-    research_topic_html = render_topics(research_topics)
-    policy_highlight_html = "".join(
-        _render_news_card(item, show_marker=True) for item in policy_highlights
-    ) or '<p class="empty">本模块没有重点新闻。</p>'
-    research_highlight_html = "".join(
-        _render_news_card(item, show_marker=True) for item in research_highlights
-    ) or '<p class="empty">本模块没有重点新闻。</p>'
+    policy_html = "".join(
+        _render_news_card(item, marker_label="重点政策") for item in policy
+    ) or '<p class="empty">本周暂无符合条件的政策新闻</p>'
+    research_html = "".join(
+        _render_news_card(item, marker_label="重点文献") for item in research
+    ) or '<p class="empty">本周暂无符合条件的科研文献</p>'
     total_selected = len(policy) + len(research)
-    total_highlights = len(policy_highlights) + len(research_highlights)
-    total_topics = len(policy_topics) + len(research_topics)
+    total_highlights = sum(
+        _module_rank(item.get("module_rank")) <= 5
+        for item in policy + research
+    )
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -221,7 +171,6 @@ h3 {{ font-size: 11.5pt; margin: 0 0 2mm; color: #164e63; }}
 .summary {{ margin: 2mm 0; }}
 .news-card {{ break-inside: avoid-page; border: 1px solid #dbeafe; border-radius: 2mm; padding: 3mm 4mm; margin: 3mm 0; background: #fff; }}
 .highlight-marker {{ display: inline-block; color: #fff; background: #0f766e; padding: 0 1.6mm; border-radius: 1mm; font-size: 8pt; margin-right: 2mm; vertical-align: 1px; }}
-.topic {{ break-inside: avoid-page; }}
 .overview-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 3mm; }}
 .overview-grid > div {{ background: #f8fafc; padding: 3mm; border-radius: 1.5mm; break-inside: avoid-page; }}
 .weather-grid {{ display: block; }}
@@ -239,43 +188,46 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
     <h1>农业育种新闻周报</h1>
     <p>统计周期：{_text(period_label)}<br>生成时间：{_text(generated)}<br>入选普通新闻：{total_selected} 条（政策 {len(policy)} 条，科研 {len(research)} 条）</p>
   </section>
-  <section><h2>核心观点摘要</h2>
-    <div class="overview-grid">
-      <div><span class="label">核心趋势</span><br>{_analysis_text(ai_analysis, "core_trends", "本期未生成 AI 核心趋势。")}</div>
-      <div><span class="label">风险与争议</span><br>{_analysis_text(ai_analysis, "sentiment_controversy", "本期未识别到单独风险分类。")}</div>
-      <div><span class="label">关注信号</span><br>{_analysis_text(ai_analysis, "signals", "本期未识别到新增关注信号。")}</div>
-      <div><span class="label">后续建议</span><br>{_analysis_text(ai_analysis, "outlook_strategy", "持续跟踪种业政策、技术与灾害风险信号。")}</div>
-    </div>
+  <section><h2>一、政策动态</h2>
+    <div class="module-analysis"><span class="label">政策趋势研判</span><br>{_analysis_text(ai_analysis, "policy_trends", "本期暂无政策趋势分析。")}</div>
+    {policy_html}
   </section>
-  <section><h2>重点新闻</h2><h3>政策重点</h3>{policy_highlight_html}<h3>科研重点</h3>{research_highlight_html}</section>
-  <section><h2>入选新闻</h2><h3>政策动态</h3>{policy_topic_html}<h3>科研进展</h3>{research_topic_html}</section>
-  {weather_html}
+  <section><h2>二、科研进展</h2>
+    <div class="module-analysis"><span class="label">科研趋势研判</span><br>{_analysis_text(ai_analysis, "research_trends", "本期暂无科研趋势分析。")}</div>
+    {research_html}
+  </section>
+  {_render_weather(agro_weather, ai_analysis)}
   <section><h2>趋势与指标</h2>
     <div class="overview-grid">
-      <div><span class="label">入选总量</span><br>{total_selected} 条（每模块上限 20 条）</div>
-      <div><span class="label">重点新闻</span><br>{total_highlights} 条（每模块最多 5 条）</div>
-      <div><span class="label">主题覆盖</span><br>{total_topics} 个模块内主题</div>
+      <div><span class="label">政策新闻</span><br>{len(policy)} 条（上限 20 条）</div>
+      <div><span class="label">科研文献</span><br>{len(research)} 条（上限 20 条）</div>
+      <div><span class="label">TOP5 标记</span><br>{total_highlights} 条（每模块最多 5 条）</div>
       <div><span class="label">气象专栏</span><br>{"已纳入" if agro_weather else "本期暂无官方报告"}</div>
     </div>
   </section>
   <section><h2>数据与方法说明</h2>
-    <p class="method">普通新闻仅使用自然周筛选后的政策、科研双模块结果，每模块最多 20 条、各自 TOP5；重点展示不重复计入。农业气象为独立官方专栏，不占新闻名额。按规范去重、按主题组织，无法验证的链接与缺失字段不展示；文本与链接均经过安全处理。</p>
+    <p class="method">普通新闻仅使用自然周筛选后的政策、科研双模块结果，每模块最多 20 条、各自 TOP5 内联标记，每条仅展示一次。农业气象为第三个独立模块，不占新闻名额。无法验证的链接与缺失字段不展示；文本与链接均经过安全处理。</p>
   </section>
 </main>
 </body>
 </html>"""
 
 
-def _render_weather(agro_weather: Any) -> str:
+def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
+    analysis = _analysis_text(
+        ai_analysis, "weather_risks", "本期暂无农业气象风险分析。"
+    )
     if agro_weather is None:
-        return """<section><h2>农业气象与灾害风险</h2>
+        return f"""<section><h2>三、农业气象与灾害风险</h2>
+<div class="module-analysis"><span class="label">气象风险研判</span><br>{analysis}</div>
 <p class="empty">本期未取得可验证的中央气象台农业气象周报。</p></section>"""
     title = _text(getattr(agro_weather, "title", "全国农业气象周报"))
     impact = _text(getattr(agro_weather, "impact", "")) or "暂未提供"
     outlook = _text(getattr(agro_weather, "outlook", "")) or "暂未提供"
     recommendations = _text(getattr(agro_weather, "recommendations", "")) or "暂未提供"
     source = _link(getattr(agro_weather, "source_url", ""), "中央气象台原页")
-    return f"""<section><h2>农业气象与灾害风险</h2>
+    return f"""<section><h2>三、农业气象与灾害风险</h2>
+<div class="module-analysis"><span class="label">气象风险研判</span><br>{analysis}</div>
 <p><strong>{title}</strong>{("　" + source) if source else ""}</p>
 <div class="weather-grid">
   <div><span class="label">气象影响</span><br>{impact}</div>
@@ -291,7 +243,7 @@ def build_weekly_pdf(
     period_end: date,
     html: str,
 ) -> str:
-    """Persist the dedicated template and produce its precisely named PDF."""
+    """Validate unique temporary artifacts before replacing the formal pair."""
     html_path = weekly_pdf_output_path(
         output_dir, period_start, period_end, suffix=".html"
     )
@@ -299,8 +251,86 @@ def build_weekly_pdf(
         output_dir, period_start, period_end, suffix=".pdf"
     )
     html_path.parent.mkdir(parents=True, exist_ok=True)
-    html_path.write_text(html, encoding="utf-8")
-    return generate_pdf_from_html(str(html_path), str(pdf_path))
+    temp_html = _unique_artifact_path(html_path, ".tmp.html")
+    temp_pdf = _unique_artifact_path(pdf_path, ".tmp.pdf")
+    backup_html = _unique_artifact_path(html_path, ".tmp.backup.html")
+    backup_pdf = _unique_artifact_path(pdf_path, ".tmp.backup.pdf")
+    had_html = html_path.is_file()
+    had_pdf = pdf_path.is_file()
+    replaced_html = False
+    replaced_pdf = False
+    try:
+        temp_html.write_text(html, encoding="utf-8")
+        generate_pdf_from_html(str(temp_html), str(temp_pdf))
+        _validate_weekly_pdf(temp_pdf)
+
+        if had_html:
+            shutil.copy2(html_path, backup_html)
+        if had_pdf:
+            shutil.copy2(pdf_path, backup_pdf)
+        os.replace(temp_html, html_path)
+        replaced_html = True
+        os.replace(temp_pdf, pdf_path)
+        replaced_pdf = True
+        return str(pdf_path)
+    except Exception:
+        if replaced_html:
+            if had_html and backup_html.is_file():
+                os.replace(backup_html, html_path)
+            elif not had_html:
+                html_path.unlink(missing_ok=True)
+        if replaced_pdf:
+            if had_pdf and backup_pdf.is_file():
+                os.replace(backup_pdf, pdf_path)
+            elif not had_pdf:
+                pdf_path.unlink(missing_ok=True)
+        raise
+    finally:
+        for artifact in (temp_html, temp_pdf, backup_html, backup_pdf):
+            artifact.unlink(missing_ok=True)
+
+
+def _unique_artifact_path(final_path: Path, suffix: str) -> Path:
+    descriptor, path = tempfile.mkstemp(
+        prefix=f".{final_path.stem}.", suffix=suffix, dir=final_path.parent
+    )
+    os.close(descriptor)
+    artifact = Path(path)
+    artifact.unlink()
+    return artifact
+
+
+def _validate_weekly_pdf(pdf_path: Path) -> None:
+    if not pdf_path.is_file() or pdf_path.stat().st_size < MIN_PDF_BYTES:
+        raise RuntimeError("Chromium 未生成有效 PDF 文件")
+    if pdf_path.stat().st_size > MAX_PDF_BYTES:
+        raise RuntimeError("生成的 PDF 超过 20MB 限制")
+    with pdf_path.open("rb") as pdf_file:
+        if pdf_file.read(4) != b"%PDF":
+            raise RuntimeError("生成的文件不是有效 PDF")
+
+    info = subprocess.run(
+        ["pdfinfo", str(pdf_path)], capture_output=True, text=True,
+        timeout=30, check=False,
+    )
+    if info.returncode != 0:
+        raise RuntimeError("pdfinfo 无法验证周报 PDF")
+    pages = re.search(r"Pages:\s+(\d+)", info.stdout)
+    size = re.search(
+        r"Page size:\s+59[4-6](?:\.\d+)? x 84[1-2](?:\.\d+)? pts",
+        info.stdout,
+    )
+    if pages is None or int(pages.group(1)) < 1 or size is None:
+        raise RuntimeError("周报 PDF 不是有效的 A4 文档")
+
+    extracted = subprocess.run(
+        ["pdftotext", str(pdf_path), "-"], capture_output=True, text=True,
+        timeout=30, check=False,
+    )
+    if extracted.returncode != 0 or not re.search(
+        r"[\u4e00-\u9fff]", extracted.stdout
+    ):
+        raise RuntimeError("周报 PDF 无法提取中文文本")
 
 
 def weekly_pdf_output_path(
@@ -315,7 +345,7 @@ def weekly_pdf_output_path(
         raise ValueError(f"unsupported weekly report suffix: {suffix}")
     folder = Path(output_dir) / "pdf" / period_end.isoformat()
     stem = (
-        f"农业育种新闻周报_{period_start:%Y-%m-%d}至"
+        f"农业育种新闻周报_三模块_{period_start:%Y-%m-%d}至"
         f"{period_end - timedelta(days=1):%Y-%m-%d}"
     )
     return folder / f"{stem}{suffix}"

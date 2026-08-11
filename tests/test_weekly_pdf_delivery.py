@@ -373,7 +373,10 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         second_webhook = f"{WEBHOOK}-account-b"
         dispatcher = self._dispatcher(f"{first_webhook};{second_webhook}")
         account_hashes = dispatcher.weekly_pdf_account_hashes()
-        pdf_path = self._pdf()
+        pdf_path = self._pdf(
+            "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+        )
+        original_pdf = pdf_path.read_bytes()
         pdf_digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
         first_action = NewsAnalyzer._weekly_account_delivery_action(
             pdf_digest, account_hashes[0]
@@ -416,12 +419,21 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         with patch(
             "trendradar.__main__.weekly_pdf_output_path",
             return_value=pdf_path,
-        ), patch(
+        ) as output_path, patch(
             "trendradar.notification.dispatcher.send_wework_pdf_file",
             return_value=True,
-        ) as send:
+        ) as send, patch(
+            "trendradar.__main__.build_weekly_pdf"
+        ) as build, patch(
+            "trendradar.__main__.render_weekly_pdf_html"
+        ) as render:
             self.assertTrue(analyzer.run())
 
+        output_path.assert_called_once()
+        self.assertIn("三模块", pdf_path.name)
+        self.assertEqual(pdf_path.read_bytes(), original_pdf)
+        build.assert_not_called()
+        render.assert_not_called()
         send.assert_called_once()
         self.assertEqual(send.call_args.args[0], second_webhook)
         analyzer._fetch_agro_weather.assert_not_called()

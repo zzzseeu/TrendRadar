@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -35,9 +36,14 @@ def generate_pdf_from_html(
         if output_file_path
         else html_path.with_suffix(".pdf")
     )
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, staged_name = tempfile.mkstemp(
+        prefix=f".{pdf_path.stem}.", suffix=".tmp.pdf", dir=pdf_path.parent
+    )
+    os.close(descriptor)
+    staged_pdf = Path(staged_name)
+    staged_pdf.unlink()
     try:
-        # Never mistake a stale PDF for this Chromium invocation's result.
-        pdf_path.unlink(missing_ok=True)
         if not html_path.is_file():
             raise FileNotFoundError(f"HTML 报告不存在: {html_path}")
 
@@ -45,7 +51,6 @@ def generate_pdf_from_html(
         if not chromium:
             raise RuntimeError("未找到 Chromium，无法生成 PDF 报告")
 
-        pdf_path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="trendradar-chromium-") as profile_dir:
             command = [
                 chromium,
@@ -55,7 +60,7 @@ def generate_pdf_from_html(
                 "--disable-dev-shm-usage",
                 "--no-pdf-header-footer",
                 "--print-to-pdf-no-header",
-                "--print-to-pdf=" + str(pdf_path),
+                "--print-to-pdf=" + str(staged_pdf),
                 "--user-data-dir=" + profile_dir,
                 html_path.as_uri(),
             ]
@@ -76,15 +81,15 @@ def generate_pdf_from_html(
                 f"Chromium 生成 PDF 失败，退出码 {result.returncode}: {detail}"
             )
 
-        if not pdf_path.is_file() or pdf_path.stat().st_size < MIN_PDF_BYTES:
+        if not staged_pdf.is_file() or staged_pdf.stat().st_size < MIN_PDF_BYTES:
             raise RuntimeError("Chromium 未生成有效 PDF 文件")
-        if pdf_path.stat().st_size > MAX_PDF_BYTES:
+        if staged_pdf.stat().st_size > MAX_PDF_BYTES:
             raise RuntimeError("生成的 PDF 超过 20MB 限制")
 
-        with pdf_path.open("rb") as file:
+        with staged_pdf.open("rb") as file:
             if file.read(4) != b"%PDF":
                 raise RuntimeError("生成的文件不是有效 PDF")
+        os.replace(staged_pdf, pdf_path)
         return str(pdf_path)
-    except Exception:
-        pdf_path.unlink(missing_ok=True)
-        raise
+    finally:
+        staged_pdf.unlink(missing_ok=True)
