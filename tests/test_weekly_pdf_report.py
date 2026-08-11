@@ -859,6 +859,10 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         analyzer._operation_run_at = lambda: pytz.timezone("Asia/Shanghai").localize(
             datetime(2026, 8, 10, 10, 0)
         )
+        expected_contract = "a" * 64
+        analyzer._weekly_artifact_contract_hash = MagicMock(
+            return_value=expected_contract
+        )
 
         with patch(
             "trendradar.__main__.build_weekly_pdf",
@@ -873,6 +877,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
                         research_trends="科研趋势 [research:1]",
                         weather_risks="气象风险 [weather:official]",
                     ),
+                    expected_contract,
                 )
             except (TypeError, ValueError) as exc:
                 self.fail(f"真实 renderer 拒绝双模块已选结果: {exc}")
@@ -907,7 +912,9 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
 
         with patch("trendradar.__main__.build_weekly_pdf") as build:
             with self.assertRaisesRegex(RuntimeError, "WeeklyNewsSelection"):
-                analyzer._generate_weekly_pdf_report([], None)
+                analyzer._generate_weekly_pdf_report(
+                    [], None, "a" * 64
+                )
         build.assert_not_called()
 
     def test_weather_only_weekly_report_still_builds_dedicated_pdf(self):
@@ -930,6 +937,10 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         analyzer._operation_run_at = lambda: pytz.timezone("Asia/Shanghai").localize(
             datetime(2026, 8, 10, 10, 0)
         )
+        expected_contract = "a" * 64
+        analyzer._weekly_artifact_contract_hash = MagicMock(
+            return_value=expected_contract
+        )
         with patch("trendradar.__main__.render_weekly_pdf_html", return_value="<html />") as render, patch(
             "trendradar.__main__.build_weekly_pdf", return_value="output/report.pdf"
         ) as build:
@@ -941,6 +952,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
                     research_trends="科研暂无 [research:none]",
                     weather_risks="气象风险 [weather:official]",
                 ),
+                expected_contract,
             )
 
         self.assertEqual(result, "output/report.pdf")
@@ -962,7 +974,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         )
         analyzer._agro_weather_report = None
         with self.assertRaisesRegex(RuntimeError, "新闻和农业气象"):
-            analyzer._generate_weekly_pdf_report([], None)
+            analyzer._generate_weekly_pdf_report([], None, "a" * 64)
 
     def test_news_weekly_report_requires_successful_strict_ai_filter(self):
         from trendradar.__main__ import NewsAnalyzer
@@ -982,6 +994,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
             analyzer._generate_weekly_pdf_report(
                 [],
                 None,
+                "a" * 64,
             )
 
 if __name__ == "__main__":

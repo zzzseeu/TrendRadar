@@ -200,6 +200,7 @@ class NewsAnalyzer:
         self._report_period_label = ""
         self._agro_weather_report = None
         self._weekly_pdf_path = None
+        self._weekly_artifact_contract_expected = None
         self._weekly_ai_filter_succeeded = False
         self._weekly_news_modules = WeeklyNewsSelection(policy=[], research=[])
         # A single run owns one immutable clock snapshot.  Strict storage keys,
@@ -490,13 +491,35 @@ class NewsAnalyzer:
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    def _deliver_weekly_pdf(self, schedule: ResolvedSchedule) -> bool:
+    def _freeze_weekly_artifact_contract(self) -> str:
+        """Freeze one immutable artifact contract for the current run."""
+        expected = getattr(
+            self, "_weekly_artifact_contract_expected", None
+        )
+        if expected is None:
+            expected = self._weekly_artifact_contract_hash()
+            if not isinstance(expected, str) or len(expected) != 64:
+                raise RuntimeError("周报 artifact contract hash 无效")
+            self._weekly_artifact_contract_expected = expected
+        return expected
+
+    def _deliver_weekly_pdf(
+        self,
+        schedule: ResolvedSchedule,
+        expected_contract_hash: str,
+    ) -> bool:
         """Send the dedicated weekly PDF to WeCom and then persist once-push."""
         if not getattr(self, "_weekly_pdf_path", None):
             print("[周报] 未生成有效 PDF，取消投递")
             return False
         if not schedule.period_key:
             print("[周报] 调度周期缺失，取消投递")
+            return False
+        if (
+            not isinstance(expected_contract_hash, str)
+            or len(expected_contract_hash) != 64
+        ):
+            print("[周报] 缺少本轮冻结的 artifact contract，取消投递")
             return False
         window = getattr(self, "_rss_window", None)
         checkpoint_date = (
@@ -514,19 +537,22 @@ class NewsAnalyzer:
         ):
             print("[周报] 本周 PDF 已成功发送，跳过重试")
             return False
-        dispatcher = self.ctx.create_notification_dispatcher(
-            operation_at=self._operation_run_at()
-        )
         try:
             pdf_digest = self._weekly_pdf_digest(self._weekly_pdf_path)
-            artifact_contract_hash = self._weekly_artifact_contract_hash()
+            current_contract_hash = self._weekly_artifact_contract_hash()
         except Exception as exc:
             print(f"[周报] PDF 交付契约计算失败: {type(exc).__name__}")
             return False
+        if current_contract_hash != expected_contract_hash:
+            print("[周报] artifact contract 在投递前发生变化，拒绝发送")
+            return False
+        dispatcher = self.ctx.create_notification_dispatcher(
+            operation_at=self._operation_run_at()
+        )
 
         def account_action(account_hash: str) -> str:
             return self._weekly_account_delivery_action(
-                artifact_contract_hash, pdf_digest, account_hash
+                expected_contract_hash, pdf_digest, account_hash
             )
 
         if not dispatcher.dispatch_weekly_pdf(
@@ -549,7 +575,9 @@ class NewsAnalyzer:
         )
 
     def _resume_weekly_pdf_delivery(
-        self, schedule: ResolvedSchedule
+        self,
+        schedule: ResolvedSchedule,
+        expected_contract_hash: str,
     ) -> Optional[bool]:
         """Resume a durable partial delivery without regenerating its PDF."""
         if not schedule.period_key:
@@ -578,7 +606,6 @@ class NewsAnalyzer:
             return None
         try:
             pdf_digest = self._weekly_pdf_digest(str(pdf_path))
-            artifact_contract_hash = self._weekly_artifact_contract_hash()
         except Exception as exc:
             print(
                 f"[周报] 旧 PDF 交付契约校验失败，执行完整重建: "
@@ -591,7 +618,7 @@ class NewsAnalyzer:
             scheduler.already_executed(
                 schedule.period_key,
                 self._weekly_account_delivery_action(
-                    artifact_contract_hash, pdf_digest, account_hash
+                    expected_contract_hash, pdf_digest, account_hash
                 ),
                 checkpoint_date,
             )
@@ -603,7 +630,9 @@ class NewsAnalyzer:
         self._rss_window = window
         self._weekly_pdf_path = str(pdf_path)
         print("[周报] 检测到部分账号成功账本，复用现有 PDF 继续投递")
-        return self._deliver_weekly_pdf(schedule)
+        return self._deliver_weekly_pdf(
+            schedule, expected_contract_hash
+        )
 
     def _has_notification_configured(self) -> bool:
         """检查是否配置了任何通知渠道"""
@@ -1171,6 +1200,9 @@ class NewsAnalyzer:
         """统一的分析流水线：数据处理 → 统计计算（关键词/AI筛选）→ AI分析 → HTML生成"""
 
         if mode == "weekly":
+            expected_contract_hash = (
+                self._freeze_weekly_artifact_contract()
+            )
             self._weekly_ai_filter_succeeded = False
             self._weekly_news_modules = WeeklyNewsSelection(
                 policy=[], research=[]
@@ -1397,7 +1429,9 @@ class NewsAnalyzer:
         # 专用 PDF 不使用现有 dashboard HTML。运行实例均设置此属性；hasattr
         # 使直接构造的旧分析单测保持其原有职责。
         if mode == "weekly" and hasattr(self, "_agro_weather_report"):
-            self._generate_weekly_pdf_report(rss_items or [], ai_result)
+            self._generate_weekly_pdf_report(
+                rss_items or [], ai_result, expected_contract_hash
+            )
             if (
                 ai_result is not None
                 and ai_result.success
@@ -1455,6 +1489,7 @@ class NewsAnalyzer:
         self,
         rss_items: list[dict],
         ai_result: Optional[AIAnalysisResult],
+        expected_contract_hash: str,
     ) -> str:
         """Build the offline A4 report from selected RSS news and official weather."""
         modules = getattr(self, "_weekly_news_modules", None)
@@ -1490,9 +1525,20 @@ class NewsAnalyzer:
             period_label=window.label,
             generated_at=self._operation_run_at(),
         )
-        self._weekly_pdf_path = build_weekly_pdf(
+        pdf_path = build_weekly_pdf(
             "output", window.start.date(), window.end.date(), html
         )
+        try:
+            current_contract_hash = self._weekly_artifact_contract_hash()
+        except Exception as exc:
+            raise RuntimeError(
+                "周报 PDF 生成后 artifact contract 读取失败"
+            ) from exc
+        if current_contract_hash != expected_contract_hash:
+            raise RuntimeError(
+                "周报 PDF 生成期间 artifact contract 发生变化"
+            )
+        self._weekly_pdf_path = pdf_path
         print(f"[周报] 专用 PDF 已生成: {self._weekly_pdf_path}")
         return self._weekly_pdf_path
 
@@ -1523,7 +1569,12 @@ class NewsAnalyzer:
             if not schedule or not schedule.push:
                 print("[周报] 调度器: 当前时间段不执行推送")
                 return False
-            return self._deliver_weekly_pdf(schedule)
+            return self._deliver_weekly_pdf(
+                schedule,
+                getattr(
+                    self, "_weekly_artifact_contract_expected", None
+                ),
+            )
 
         # 检查是否有有效内容（热榜或RSS）
         has_news_content = self._has_valid_content(stats, new_titles)
@@ -2576,6 +2627,8 @@ class NewsAnalyzer:
         """执行分析流程"""
         weekly_attempt_lock = None
         try:
+            self._weekly_artifact_contract_expected = None
+            self._weekly_pdf_path = None
             self._run_at = self.ctx.get_time()
             self._run_date = self._run_at.strftime("%Y-%m-%d")
             self._run_time_filename = self._run_at.strftime("%H-%M")
@@ -2598,7 +2651,12 @@ class NewsAnalyzer:
                 ):
                     print("[周报] 本周 PDF 已成功发送，跳过重试")
                     return True
-                resumed = self._resume_weekly_pdf_delivery(schedule)
+                expected_contract_hash = (
+                    self._freeze_weekly_artifact_contract()
+                )
+                resumed = self._resume_weekly_pdf_delivery(
+                    schedule, expected_contract_hash
+                )
                 if resumed is not None:
                     return resumed
                 self._agro_weather_report = self._fetch_agro_weather()
