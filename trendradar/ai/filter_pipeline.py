@@ -322,6 +322,7 @@ class AIFilterPipeline:
                     result["news_item_id"],
                     result.get("source_type", "hotlist"),
                     result["tag_id"],
+                    result["module_type"],
                 )
                 for result in total_results
             }
@@ -342,6 +343,7 @@ class AIFilterPipeline:
                     result.get("news_item_id"),
                     result.get("source_type"),
                     result.get("tag_id"),
+                    result.get("module_type"),
                 )
                 for result in all_results
             ]
@@ -561,12 +563,12 @@ class AIFilterPipeline:
 
         self.storage.update_ai_filter_tags_hash(effective_interests_file, current_hash)
 
-        cleared = self.storage.clear_unmatched_analyzed_news(
+        cleared = self.storage.clear_analyzed_news(
             interests_file=effective_interests_file
         )
         if cleared > 0:
             print(
-                f"[AI筛选]   清除 {cleared} 条旧规则下的不匹配记录，"
+                f"[AI筛选]   清除 {cleared} 条旧规则下的分析记录，"
                 "将在新规则下重新分析"
             )
 

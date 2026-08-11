@@ -564,6 +564,7 @@ class StorageBackend(ABC):
         return 0
 
     def save_ai_filter_results(self, results: List[Dict], date: Optional[str] = None) -> int:
+        """保存 policy/research 分类结果；exclude 仅写 analyzed matched=0。"""
         return 0
 
     def get_active_ai_filter_results(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict]:
@@ -604,7 +605,7 @@ class StorageBackend(ABC):
         prompt_hash: str,
         date: Optional[str] = None,
     ) -> Dict[str, int]:
-        """事务性替换本轮分类结果及 matched/unmatched 状态。"""
+        """事务性替换 policy/research 结果及 matched/unmatched 状态。"""
         raise NotImplementedError("存储后端不支持严格 AI 批次替换")
 
     def clear_analyzed_news(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:

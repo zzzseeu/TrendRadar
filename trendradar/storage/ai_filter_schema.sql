@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS ai_filter_results (
     news_item_id INTEGER NOT NULL,       -- 引用 news_items.id 或 rss_items.id
     source_type TEXT NOT NULL DEFAULT 'hotlist',  -- hotlist / rss
     tag_id INTEGER NOT NULL,             -- 引用 ai_filter_tags.id
+    module_type TEXT NOT NULL
+        CHECK(module_type IN ('policy', 'research')), -- 周报展示模块
     relevance_score REAL DEFAULT 0,      -- 相关度 0.0 ~ 1.0
     content_level TEXT DEFAULT 'title_only', -- full_text / summary / title_only
     risk_warning TEXT DEFAULT '',        -- 正文降级后的证据风险提示

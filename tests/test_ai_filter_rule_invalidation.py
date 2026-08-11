@@ -44,13 +44,13 @@ class _IncrementalStorageStub:
     def update_ai_filter_tags_hash(self, interests_file, current_hash):
         return 1
 
-    def clear_unmatched_analyzed_news(self, interests_file):
+    def clear_analyzed_news(self, interests_file):
         self.cleared_files.append(interests_file)
         return 6
 
 
 class IncrementalRuleInvalidationTests(unittest.TestCase):
-    def test_incremental_update_without_new_tags_clears_unmatched_news(self):
+    def test_incremental_update_without_new_tags_clears_all_analyzed_news(self):
         storage = _IncrementalStorageStub()
         pipeline = AIFilterPipeline(
             {"RSS": {"ENABLED": False}, "AI_FILTER": {}},

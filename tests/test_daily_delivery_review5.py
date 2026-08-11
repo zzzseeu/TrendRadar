@@ -586,6 +586,7 @@ class FrozenOperationDateTests(unittest.TestCase):
             "news_item_id": 7,
             "source_type": "rss",
             "tag_id": 1,
+            "module_type": "research",
             "tag": "育种",
             "tag_description": "",
             "tag_priority": 1,
@@ -626,6 +627,7 @@ class FrozenOperationDateTests(unittest.TestCase):
         ai_filter.classify_batch.return_value = [{
             "news_item_id": 7,
             "tag_id": 1,
+            "module_type": "research",
             "relevance_score": 0.9,
             "importance_score": 0.8,
             "ai_summary": "N-day summary",

@@ -859,6 +859,7 @@ class DailyDeliveryAIScopeTests(unittest.TestCase):
                     fake_filter.classify_batch.return_value = [{
                         "news_item_id": rss_id,
                         "tag_id": 1,
+                        "module_type": "research",
                         "relevance_score": 0.9,
                         "importance_score": 0.8,
                         "ai_summary": "水稻育种进展",
@@ -1188,6 +1189,7 @@ class DailyDeliveryStrictAIStorageTests(unittest.TestCase):
             "news_item_id": 7,
             "source_type": "rss",
             "tag_id": 1,
+            "module_type": "research",
             "tag": "育种",
             "relevance_score": 0.9,
             "ai_summary": "育种进展",
@@ -1211,6 +1213,7 @@ class DailyDeliveryStrictAIStorageTests(unittest.TestCase):
         ai_filter.classify_batch.return_value = [{
             "news_item_id": 7,
             "tag_id": 1,
+            "module_type": "research",
             "relevance_score": 0.9,
             "importance_score": 0.8,
             "ai_summary": "育种进展",

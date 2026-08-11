@@ -497,6 +497,7 @@ class RemoteAIMutationRollbackMoreTests(unittest.TestCase):
                             "news_item_id": 7,
                             "source_type": "rss",
                             "tag_id": tag["id"],
+                            "module_type": "research",
                             "relevance_score": 0.9,
                             "importance_score": 0.8,
                             "ai_summary": "不得残留的结果",

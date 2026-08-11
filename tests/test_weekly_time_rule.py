@@ -178,12 +178,14 @@ class WeeklyTimeRuleRemovalTests(unittest.TestCase):
                             "news_item_id": rss_ids["Published this week"],
                             "source_type": "rss",
                             "tag_id": tag_id,
+                            "module_type": "research",
                             "relevance_score": 0.9,
                         },
                         {
                             "news_item_id": rss_ids["Missing publication date"],
                             "source_type": "rss",
                             "tag_id": tag_id,
+                            "module_type": "research",
                             "relevance_score": 0.9,
                         },
                     ]), 2)

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from trendradar.ai.module_contract import PERSISTED_MODULE_TYPES
 from trendradar.crawler.news_search import canonicalize_url, normalize_title
 from trendradar.storage.base import NewsItem, NewsData, RSSItem, RSSData
 from trendradar.utils.time import parse_storage_datetime
@@ -477,42 +478,59 @@ class SQLiteStorageMixin:
 
     def _migrate_ai_filter_schema(self, conn: sqlite3.Connection) -> None:
         """为已有新闻数据库补充 AI 筛选证据、评分和逐条摘要字段。"""
-        cursor = conn.execute("PRAGMA table_info(ai_filter_results)")
-        columns = {row[1] for row in cursor.fetchall()}
-        requires_reclassification = False
-        if "content_level" not in columns:
-            conn.execute(
-                "ALTER TABLE ai_filter_results "
-                "ADD COLUMN content_level TEXT DEFAULT 'title_only'"
-            )
-        if "risk_warning" not in columns:
-            conn.execute(
-                "ALTER TABLE ai_filter_results "
-                "ADD COLUMN risk_warning TEXT DEFAULT ''"
-            )
-        if "content_excerpt" not in columns:
-            conn.execute(
-                "ALTER TABLE ai_filter_results "
-                "ADD COLUMN content_excerpt TEXT DEFAULT ''"
-            )
-        if "importance_score" not in columns:
-            conn.execute(
-                "ALTER TABLE ai_filter_results "
-                "ADD COLUMN importance_score REAL DEFAULT 0"
-            )
-            requires_reclassification = True
-        if "ai_summary" not in columns:
-            conn.execute(
-                "ALTER TABLE ai_filter_results "
-                "ADD COLUMN ai_summary TEXT DEFAULT ''"
-            )
-            requires_reclassification = True
+        owns_transaction = not conn.in_transaction
+        if owns_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = conn.execute("PRAGMA table_info(ai_filter_results)")
+            columns = {row[1] for row in cursor.fetchall()}
+            requires_reclassification = False
+            if "module_type" not in columns:
+                # 旧行不能被猜成任一业务模块；先加 nullable CHECK 列，
+                # 再在同一事务内删除 results/analyzed 两类复用状态。
+                conn.execute(
+                    "ALTER TABLE ai_filter_results ADD COLUMN "
+                    "module_type TEXT "
+                    "CHECK(module_type IN ('policy', 'research'))"
+                )
+                requires_reclassification = True
+            if "content_level" not in columns:
+                conn.execute(
+                    "ALTER TABLE ai_filter_results "
+                    "ADD COLUMN content_level TEXT DEFAULT 'title_only'"
+                )
+            if "risk_warning" not in columns:
+                conn.execute(
+                    "ALTER TABLE ai_filter_results "
+                    "ADD COLUMN risk_warning TEXT DEFAULT ''"
+                )
+            if "content_excerpt" not in columns:
+                conn.execute(
+                    "ALTER TABLE ai_filter_results "
+                    "ADD COLUMN content_excerpt TEXT DEFAULT ''"
+                )
+            if "importance_score" not in columns:
+                conn.execute(
+                    "ALTER TABLE ai_filter_results "
+                    "ADD COLUMN importance_score REAL DEFAULT 0"
+                )
+                requires_reclassification = True
+            if "ai_summary" not in columns:
+                conn.execute(
+                    "ALTER TABLE ai_filter_results "
+                    "ADD COLUMN ai_summary TEXT DEFAULT ''"
+                )
+                requires_reclassification = True
 
-        # 旧分类结果没有逐条摘要和重要性评分。仅在首次升级表结构时清理
-        # 分类缓存，使现有新闻在下一轮按新提示词重新分析。
-        if requires_reclassification:
-            conn.execute("DELETE FROM ai_filter_results")
-            conn.execute("DELETE FROM ai_filter_analyzed_news")
+            if requires_reclassification:
+                conn.execute("DELETE FROM ai_filter_results")
+                conn.execute("DELETE FROM ai_filter_analyzed_news")
+            if owns_transaction:
+                conn.commit()
+        except Exception:
+            if owns_transaction:
+                conn.rollback()
+            raise
 
     # ========================================
     # 新闻数据存储
@@ -2092,11 +2110,40 @@ class SQLiteStorageMixin:
     def _update_tags_hash_impl(
         self, date: Optional[str], interests_file: str, new_hash: str
     ) -> int:
-        """更新指定兴趣文件所有 active 标签的 prompt_hash（增量更新时使用）"""
+        """更新 active 标签 hash，并完整失效旧规则下的复用状态。"""
+        conn = None
         try:
             conn = self._get_connection(date)
             cursor = conn.cursor()
-
+            conn.commit()
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                """SELECT id, prompt_hash FROM ai_filter_tags
+                   WHERE interests_file = ? AND status = 'active'""",
+                (interests_file,),
+            )
+            active_rows = cursor.fetchall()
+            tag_ids = [row[0] for row in active_rows]
+            hash_changed = any(row[1] != new_hash for row in active_rows)
+            if hash_changed and tag_ids:
+                placeholders = ",".join("?" for _ in tag_ids)
+                cursor.execute(
+                    f"""UPDATE ai_filter_results
+                        SET status = 'deprecated', deprecated_at = ?
+                        WHERE status = 'active'
+                          AND tag_id IN ({placeholders})""",
+                    [
+                        self._get_configured_time().strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        *tag_ids,
+                    ],
+                )
+                cursor.execute(
+                    """DELETE FROM ai_filter_analyzed_news
+                       WHERE interests_file = ?""",
+                    (interests_file,),
+                )
             cursor.execute("""
                 UPDATE ai_filter_tags
                 SET prompt_hash = ?
@@ -2107,6 +2154,8 @@ class SQLiteStorageMixin:
             conn.commit()
             return count
         except Exception as e:
+            if conn is not None:
+                conn.rollback()
             print(f"[AI筛选] 更新标签 hash 失败: {e}")
             return 0
 
@@ -2220,9 +2269,33 @@ class SQLiteStorageMixin:
             cursor = conn.cursor()
 
             cursor.execute("""
-                SELECT news_item_id FROM ai_filter_analyzed_news
-                WHERE source_type = ? AND interests_file = ?
-            """, (source_type, interests_file))
+                SELECT a.news_item_id
+                FROM ai_filter_analyzed_news a
+                WHERE a.source_type = ? AND a.interests_file = ?
+                  AND a.prompt_hash = (
+                      SELECT t.prompt_hash
+                      FROM ai_filter_tags t
+                      WHERE t.status = 'active'
+                        AND t.interests_file = ?
+                      ORDER BY t.version DESC, t.id DESC
+                      LIMIT 1
+                  )
+                  AND (
+                      a.matched = 0
+                      OR EXISTS (
+                          SELECT 1
+                          FROM ai_filter_results r
+                          JOIN ai_filter_tags t ON t.id = r.tag_id
+                          WHERE r.news_item_id = a.news_item_id
+                            AND r.source_type = a.source_type
+                            AND r.status = 'active'
+                            AND r.module_type IN ('policy', 'research')
+                            AND t.status = 'active'
+                            AND t.interests_file = a.interests_file
+                            AND t.prompt_hash = a.prompt_hash
+                      )
+                  )
+            """, (source_type, interests_file, interests_file))
 
             return {row[0] for row in cursor.fetchall()}
         except Exception as e:
@@ -2280,34 +2353,48 @@ class SQLiteStorageMixin:
     ) -> int:
         """批量保存分类结果"""
         try:
+            for result in results:
+                if result.get("module_type") not in PERSISTED_MODULE_TYPES:
+                    raise ValueError(
+                        "分类结果 module_type 必须是 policy 或 research"
+                    )
             conn = self._get_connection(date)
             cursor = conn.cursor()
             now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
 
             count = 0
             for r in results:
-                try:
-                    cursor.execute("""
-                        INSERT INTO ai_filter_results
-                        (news_item_id, source_type, tag_id, relevance_score,
-                         content_level, risk_warning, content_excerpt,
-                         importance_score, ai_summary, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        r["news_item_id"],
-                        r.get("source_type", "hotlist"),
-                        r["tag_id"],
-                        r.get("relevance_score", 0.0),
-                        r.get("content_level", "title_only"),
-                        r.get("risk_warning", ""),
-                        r.get("content_excerpt", ""),
-                        r.get("importance_score", 0.0),
-                        r.get("ai_summary", ""),
-                        now_str,
-                    ))
-                    count += 1
-                except sqlite3.IntegrityError:
-                    pass  # 重复记录，跳过
+                cursor.execute("""
+                    INSERT INTO ai_filter_results
+                    (news_item_id, source_type, tag_id, module_type,
+                     relevance_score, content_level, risk_warning,
+                     content_excerpt, importance_score, ai_summary, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(news_item_id, source_type, tag_id) DO UPDATE SET
+                        module_type = excluded.module_type,
+                        relevance_score = excluded.relevance_score,
+                        content_level = excluded.content_level,
+                        risk_warning = excluded.risk_warning,
+                        content_excerpt = excluded.content_excerpt,
+                        importance_score = excluded.importance_score,
+                        ai_summary = excluded.ai_summary,
+                        status = 'active',
+                        deprecated_at = NULL,
+                        created_at = excluded.created_at
+                """, (
+                    r["news_item_id"],
+                    r.get("source_type", "hotlist"),
+                    r["tag_id"],
+                    r["module_type"],
+                    r.get("relevance_score", 0.0),
+                    r.get("content_level", "title_only"),
+                    r.get("risk_warning", ""),
+                    r.get("content_excerpt", ""),
+                    r.get("importance_score", 0.0),
+                    r.get("ai_summary", ""),
+                    now_str,
+                ))
+                count += 1
 
             conn.commit()
             return count
@@ -2356,12 +2443,22 @@ class SQLiteStorageMixin:
         for result in results:
             source_type = result.get("source_type", "hotlist")
             news_item_id = result.get("news_item_id")
+            module_type = result.get("module_type")
+            if module_type not in PERSISTED_MODULE_TYPES:
+                raise ValueError(
+                    "严格分类结果 module_type 必须是 policy 或 research"
+                )
             if (
                 source_type not in succeeded_by_type
                 or news_item_id not in succeeded_by_type[source_type]
             ):
                 raise ValueError("分类结果包含本轮成功集合之外的 ID")
-            key = (news_item_id, source_type, result.get("tag_id"))
+            key = (
+                news_item_id,
+                source_type,
+                result.get("tag_id"),
+                module_type,
+            )
             if key in result_keys:
                 raise ValueError("分类结果包含重复 ID/tag")
             result_keys.add(key)
@@ -2383,14 +2480,15 @@ class SQLiteStorageMixin:
             for result in results:
                 cursor.execute("""
                     INSERT INTO ai_filter_results
-                    (news_item_id, source_type, tag_id, relevance_score,
-                     content_level, risk_warning, content_excerpt,
-                     importance_score, ai_summary, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (news_item_id, source_type, tag_id, module_type,
+                     relevance_score, content_level, risk_warning,
+                     content_excerpt, importance_score, ai_summary, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     result["news_item_id"],
                     result.get("source_type", "hotlist"),
                     result["tag_id"],
+                    result["module_type"],
                     result.get("relevance_score", 0.0),
                     result.get("content_level", "title_only"),
                     result.get("risk_warning", ""),
@@ -2424,7 +2522,7 @@ class SQLiteStorageMixin:
                     continue
                 placeholders = ",".join("?" * len(ids))
                 cursor.execute(
-                    f"SELECT news_item_id, source_type, tag_id "
+                    f"SELECT news_item_id, source_type, tag_id, module_type "
                     f"FROM ai_filter_results WHERE status = 'active' "
                     f"AND source_type = ? AND news_item_id IN ({placeholders}) "
                     f"AND tag_id IN (SELECT id FROM ai_filter_tags "
@@ -2480,8 +2578,8 @@ class SQLiteStorageMixin:
             # 热榜结果
             cursor.execute("""
                 SELECT
-                    r.news_item_id, r.source_type, r.tag_id, r.relevance_score,
-                    r.content_level, r.risk_warning,
+                    r.news_item_id, r.source_type, r.tag_id, r.module_type,
+                    r.relevance_score, r.content_level, r.risk_warning,
                     t.tag, t.description as tag_description, t.priority,
                     n.title, n.platform_id as source_id, p.name as source_name,
                     n.url, n.mobile_url, n.rank,
@@ -2499,21 +2597,27 @@ class SQLiteStorageMixin:
             results = []
             hotlist_news_ids = []
             for row in cursor.fetchall():
+                if row[3] not in PERSISTED_MODULE_TYPES:
+                    raise RuntimeError(
+                        "AI 分类结果包含无效 module_type"
+                    )
                 results.append({
                     "news_item_id": row[0], "source_type": row[1],
-                    "tag_id": row[2], "relevance_score": row[3],
-                    "content_level": row[4] or "title_only",
-                    "risk_warning": row[5] or "",
-                    "tag": row[6], "tag_description": row[7], "tag_priority": row[8],
-                    "title": row[9], "source_id": row[10],
-                    "source_name": row[11] or row[10],
-                    "url": row[12] or "", "mobile_url": row[13] or "",
-                    "rank": row[14],
-                    "first_time": row[15], "last_time": row[16],
-                    "count": row[17],
-                    "content_excerpt": row[18] or "",
-                    "importance_score": row[19] or 0.0,
-                    "ai_summary": row[20] or "",
+                    "tag_id": row[2], "module_type": row[3],
+                    "relevance_score": row[4],
+                    "content_level": row[5] or "title_only",
+                    "risk_warning": row[6] or "",
+                    "tag": row[7], "tag_description": row[8],
+                    "tag_priority": row[9],
+                    "title": row[10], "source_id": row[11],
+                    "source_name": row[12] or row[11],
+                    "url": row[13] or "", "mobile_url": row[14] or "",
+                    "rank": row[15],
+                    "first_time": row[16], "last_time": row[17],
+                    "count": row[18],
+                    "content_excerpt": row[19] or "",
+                    "importance_score": row[20] or 0.0,
+                    "ai_summary": row[21] or "",
                 })
                 hotlist_news_ids.append(row[0])
 
@@ -2561,8 +2665,8 @@ class SQLiteStorageMixin:
 
                 # 从 news 库获取 rss 类型的分类结果 ID
                 cursor.execute("""
-                    SELECT r.news_item_id, r.tag_id, r.relevance_score,
-                           r.content_level, r.risk_warning,
+                    SELECT r.news_item_id, r.tag_id, r.module_type,
+                           r.relevance_score, r.content_level, r.risk_warning,
                            t.tag, t.description, t.priority,
                            r.content_excerpt, r.importance_score, r.ai_summary
                     FROM ai_filter_results r
@@ -2589,6 +2693,10 @@ class SQLiteStorageMixin:
                     rss_info = {row[0]: row for row in rss_cursor.fetchall()}
 
                     for fr_row in rss_filter_rows:
+                        if fr_row[2] not in PERSISTED_MODULE_TYPES:
+                            raise RuntimeError(
+                                "AI 分类结果包含无效 module_type"
+                            )
                         rss_id = fr_row[0]
                         info = rss_info.get(rss_id)
                         if info:
@@ -2596,15 +2704,16 @@ class SQLiteStorageMixin:
                                 "news_item_id": rss_id,
                                 "source_type": "rss",
                                 "tag_id": fr_row[1],
-                                "relevance_score": fr_row[2],
-                                "content_level": fr_row[3] or "title_only",
-                                "risk_warning": fr_row[4] or "",
-                                "tag": fr_row[5],
-                                "tag_description": fr_row[6],
-                                "tag_priority": fr_row[7],
-                                "content_excerpt": fr_row[8] or "",
-                                "importance_score": fr_row[9] or 0.0,
-                                "ai_summary": fr_row[10] or "",
+                                "module_type": fr_row[2],
+                                "relevance_score": fr_row[3],
+                                "content_level": fr_row[4] or "title_only",
+                                "risk_warning": fr_row[5] or "",
+                                "tag": fr_row[6],
+                                "tag_description": fr_row[7],
+                                "tag_priority": fr_row[8],
+                                "content_excerpt": fr_row[9] or "",
+                                "importance_score": fr_row[10] or 0.0,
+                                "ai_summary": fr_row[11] or "",
                                 "title": info[1],
                                 "source_id": info[2],
                                 "source_name": info[3] or info[2],
