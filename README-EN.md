@@ -1,19 +1,23 @@
-# TrendRadar Agricultural Weather Weekly Report
+# TrendRadar Agricultural Breeding Weekly Report
 
-TrendRadar creates a weekly PDF report for agricultural use. It collects data silently every day at 10:00 Beijing time, then produces a report for the previous natural week each Monday.
+TrendRadar produces a weekly PDF report for agriculture. It collects data silently at 10:00 Beijing time from Tuesday through Sunday, then aggregates the previous natural week every Monday.
 
 中文说明：[README.md](README.md)。
 
 ## Weekly report and delivery
 
-On Monday, the system first verifies the current official national agricultural meteorological weekly report. It then uses `published_at` as the sole eligibility filter for content from the previous natural week. Strict AI selection keeps no more than 20 items and produces a dedicated A4 PDF.
+On Monday, `published_at` is the strict eligibility filter for content from the previous natural week, with one global score threshold of `0.5`. The report has exactly three independent modules:
 
-The PDF is uploaded to WeCom with `upload_media`, and WeCom receives exactly one file message. No web preview, summary, or other text message is sent.
+- Policy: up to 20 items.
+- Research: up to 20 items.
+- Agricultural weather is independent of the news quotas; the current official national agricultural meteorological weekly report is verified on Monday and included in this module.
+
+The PDF is uploaded with WeCom `upload_media`, and WeCom receives one PDF file only.
 
 ```text
-Daily 10:00 silent collection → Monday official agricultural weather report verification →
-previous natural-week published_at-only filtering → strict AI (up to 20 items) →
-dedicated A4 PDF → WeCom file message → weekly success checkpoint
+Tuesday through Sunday: silent collection at 10:00 → Monday: aggregate the previous natural week →
+Policy: up to 20 + Research: up to 20 + independent agricultural weather →
+one PDF → WeCom file message
 ```
 
 If the current official agricultural weather report is unavailable on Monday, the system retries between 10:30 and 12:00. The weekly success checkpoint confirms that the PDF was generated and delivered as a file.
@@ -37,6 +41,17 @@ The schedule is defined in `config/daily.crontab`. Run the project with its virt
 ```
 
 Container deployment and environment examples are in `docker/`.
+
+### PDF tools outside Docker
+
+For a non-Docker deployment, install Poppler and make `pdfinfo` and `pdftotext` executable. If they are not on `PATH`, set `PDFINFO_BIN` and `PDFTOTEXT_BIN` to their absolute paths. Windows PowerShell example:
+
+```powershell
+$env:PDFINFO_BIN = 'C:\poppler\Library\bin\pdfinfo.exe'
+$env:PDFTOTEXT_BIN = 'C:\poppler\Library\bin\pdftotext.exe'
+```
+
+The Docker image already includes Poppler, so these variables are unnecessary there.
 
 ## Compatibility entry points
 

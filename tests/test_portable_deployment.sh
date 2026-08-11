@@ -38,6 +38,9 @@ ENTRYPOINT="${PROJECT_ROOT}/docker/entrypoint.sh"
 DOCKER_ENV_EXAMPLE="${PROJECT_ROOT}/docker/.env.example"
 GITIGNORE="${PROJECT_ROOT}/.gitignore"
 CONFIG="${PROJECT_ROOT}/config/config.yaml"
+README_ZH="${PROJECT_ROOT}/README.md"
+README_EN="${PROJECT_ROOT}/README-EN.md"
+TECHNICAL_DOC="${PROJECT_ROOT}/docs/news-push-technical-implementation.md"
 
 bash -n "${SCHEDULER}"
 bash -n "${ENTRYPOINT}"
@@ -94,6 +97,12 @@ assert_contains "${DOCKER_ENV_EXAMPLE}" 'CRON_SCHEDULES="0 10 * * *;30 10 * * 1;
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'IMMEDIATE_RUN=false'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'WEWORK_WEBHOOK_URL='
 assert_contains "${PROJECT_ROOT}/docker/Dockerfile" 'chromium fonts-noto-cjk poppler-utils'
+assert_contains "${README_ZH}" 'PDFINFO_BIN'
+assert_contains "${README_ZH}" 'PDFTOTEXT_BIN'
+assert_contains "${README_EN}" 'PDFINFO_BIN'
+assert_contains "${README_EN}" 'PDFTOTEXT_BIN'
+assert_contains "${TECHNICAL_DOC}" 'PDFINFO_BIN'
+assert_contains "${TECHNICAL_DOC}" 'PDFTOTEXT_BIN'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'AI_API_KEY='
 assert_contains "${CONFIG}" '  api_key: ""'
 assert_contains "${CONFIG}" '  model: "openai//data/minimax-2.5-fp8"'

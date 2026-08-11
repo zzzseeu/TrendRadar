@@ -1,19 +1,23 @@
-# TrendRadar 农业气象周报
+# TrendRadar 农业育种周报
 
-TrendRadar 面向农业场景生成每周 PDF 周报。系统每天北京时间 10:00 静默采集；每周一以独立自然周为范围，生成上一自然周的周报。
+TrendRadar 面向农业场景生成每周 PDF 周报。系统在周二至周日每天北京时间 10:00 静默采集；每周一汇总上一自然周的数据并生成周报。
 
 English documentation: [README-EN.md](README-EN.md)。
 
 ## 周报内容与交付
 
-周一先验证当期官方全国农业气象周报，再根据 `published_at` 严格筛选上一自然周的候选内容。AI 严格筛选最多 20 条，随后生成专用 A4 PDF。
+周一以 `published_at` 严格筛选上一自然周的候选内容，并使用全局 `0.5` 分数阈值。周报只有三个独立模块：
 
-企业微信通过 `upload_media` 上传 PDF，并且只发送一个文件消息。不会发送网页预览、摘要或其他文字消息。
+- 政策动态最多 20 条。
+- 科研进展最多 20 条。
+- 农业气象独立于新闻名额；周一验证当期官方全国农业气象周报后纳入该模块。
+
+企业微信通过 `upload_media` 上传并仅发送一个 PDF 文件。
 
 ```text
-每天 10:00 静默采集 → 周一验证当期官方农业气象周报 →
-上一自然周 published_at 唯一过滤 → 严格 AI（最多 20 条） →
-专用 A4 PDF → 企业微信文件消息 → 周成功检查点
+周二至周日每天 10:00 静默采集 → 周一汇总上一自然周 →
+政策动态最多 20 条 + 科研进展最多 20 条 + 独立农业气象 →
+一个 PDF → 企业微信文件消息
 ```
 
 如果周一未取得当期官方农业气象周报，系统会在 10:30—12:00 的重试窗口继续尝试。周成功检查点用于确认 PDF 已生成并以文件形式交付。
@@ -37,6 +41,17 @@ rss:
 ```
 
 容器部署与环境变量示例见 `docker/` 目录。
+
+### 非 Docker 的 PDF 工具
+
+非 Docker 部署需要安装 Poppler，并让 `pdfinfo` 与 `pdftotext` 可执行。若它们不在 `PATH` 中，请设置 `PDFINFO_BIN` 和 `PDFTOTEXT_BIN` 为对应的绝对路径。Windows PowerShell 示例：
+
+```powershell
+$env:PDFINFO_BIN = 'C:\poppler\Library\bin\pdfinfo.exe'
+$env:PDFTOTEXT_BIN = 'C:\poppler\Library\bin\pdftotext.exe'
+```
+
+Docker 镜像已自带 Poppler，无需设置这两个变量。
 
 ## 兼容功能入口
 

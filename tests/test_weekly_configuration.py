@@ -129,3 +129,73 @@ class WeeklyConfigurationTests(unittest.TestCase):
             for token in required:
                 with self.subTest(filename=filename, token=token):
                     self.assertIn(token, text)
+
+    def test_weekly_public_contract_uses_three_modules_only(self):
+        config = yaml.safe_load(
+            (ROOT / "config/config.yaml").read_text(encoding="utf-8")
+        )
+        self.assertEqual(config["ai_filter"]["min_score"], 0.5)
+
+        prompt = (ROOT / "config/ai_filter/prompt.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("policy、research 或 exclude", prompt)
+
+        docs = {
+            "README.md": (
+                "周二至周日", "上一自然周", "三个独立模块", "政策动态最多 20 条",
+                "科研进展最多 20 条", "气象", "独立", "0.5", "一个 PDF",
+            ),
+            "README-EN.md": (
+                "Tuesday through Sunday", "previous natural week",
+                "exactly three independent modules", "Policy: up to 20",
+                "Research: up to 20", "weather", "0.5", "one PDF",
+            ),
+            "docs/news-push-technical-implementation.md": (
+                "周二至周日", "上一自然周", "三个独立模块", "政策动态最多 20 条",
+                "科研进展最多 20 条", "气象", "独立", "0.5", "一个 PDF",
+            ),
+        }
+        for filename, required in docs.items():
+            text = (ROOT / filename).read_text(encoding="utf-8")
+            for token in required:
+                with self.subTest(filename=filename, token=token):
+                    self.assertIn(token, text)
+
+        weekly_analysis_prompt = (ROOT / "config/ai_analysis_prompt.txt").read_text(
+            encoding="utf-8"
+        )
+        weekly_analysis_prompt = weekly_analysis_prompt[
+            weekly_analysis_prompt.index("7. policy_trends："):
+            weekly_analysis_prompt.index("字符串内部需要换行时")
+        ]
+        weekly_product_texts = {
+            relative: (ROOT / relative).read_text(encoding="utf-8")
+            for relative in (
+                "README.md",
+                "README-EN.md",
+                "docs/news-push-technical-implementation.md",
+            )
+        }
+        weekly_product_texts["config/ai_analysis_prompt.txt (weekly section)"] = (
+            weekly_analysis_prompt
+        )
+        obsolete_weekly_phrases = (
+            "AI 严格筛选最多 20 条",
+            "strict AI up to 20 items",
+            "重点新闻",
+            "入选新闻",
+            "weekly text preview",
+            "weekly fallback",
+            "周报文字预览",
+            "周报文字回退",
+        )
+        for relative, text in weekly_product_texts.items():
+            for phrase in obsolete_weekly_phrases:
+                with self.subTest(relative=relative, phrase=phrase):
+                    self.assertNotIn(phrase, text)
+
+        self.assertNotIn(
+            "min_score: 0.7",
+            (ROOT / "config/config.yaml").read_text(encoding="utf-8"),
+        )
