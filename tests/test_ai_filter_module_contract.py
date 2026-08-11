@@ -119,7 +119,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         }
         for name, payload in cases.items():
             with self.subTest(name=name):
-                with self.assertRaises(Exception):
+                with self.assertRaises(_InvalidClassificationResponse):
                     ai_filter._parse_classify_response(
                         json.dumps(payload), titles, tags, strict=True
                     )
