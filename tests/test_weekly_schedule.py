@@ -138,6 +138,7 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer.ctx = SimpleNamespace(
             config={
                 "DISPLAY": {"REGIONS": {"RSS": True}},
+                "AI_FILTER": {"MIN_SCORE": 0.5},
                 "AI_ANALYSIS": {"ENABLED": False},
                 "AI_TRANSLATION": {"ENABLED": False},
                 "STORAGE": {"FORMATS": {"HTML": False}},

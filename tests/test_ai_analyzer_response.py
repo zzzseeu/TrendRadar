@@ -232,6 +232,11 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         invalid_reviews = (
             {"policy_trends": "虚构政策 [policy:99]"},
             {"policy_trends": "跨模块事实 [research:1]"},
+            {
+                "policy_trends": (
+                    "政策事实 [policy:1] 夹带未知引用 [unknown:9]"
+                )
+            },
         )
         for override in invalid_reviews:
             with self.subTest(override=override):
@@ -260,6 +265,75 @@ class AIAnalyzerResponseTests(unittest.TestCase):
                 )
                 self.assertFalse(result.success)
                 self.assertIn("证据引用", result.error)
+
+    def test_weekly_rejects_invalid_draft_citation_without_grounding_call(self):
+        invalid_draft = json.dumps({
+            "policy_trends": "虚构政策 [policy:99]",
+            "research_trends": "科研事实 [research:1]",
+            "weather_risks": "气象事实 [weather:official]",
+        }, ensure_ascii=False)
+        legal_review_that_must_not_be_used = json.dumps({
+            "policy_trends": "政策事实 [policy:1]",
+            "research_trends": "科研事实 [research:1]",
+            "weather_risks": "气象事实 [weather:official]",
+        }, ensure_ascii=False)
+        analyzer = self._weekly_analyzer(
+            invalid_draft, legal_review_that_must_not_be_used
+        )
+
+        result = analyzer.analyze(
+            stats=[],
+            rss_stats=[{"word": "周报", "titles": [
+                {"title": "政策事实", "module_type": "policy", "module_rank": 1},
+                {"title": "科研事实", "module_type": "research", "module_rank": 1},
+            ]}],
+            report_mode="weekly",
+            strict=True,
+            weather_report=SimpleNamespace(
+                title="气象周报", impact="气象事实",
+                outlook="气象展望", recommendations="官方建议",
+                source_url="https://www.nmc.cn/publish/agro/ten-week/index.html",
+            ),
+        )
+
+        self.assertFalse(result.success)
+        self.assertIn("证据引用", result.error)
+        self.assertEqual(analyzer.client.chat.call_count, 1)
+
+    def test_weekly_forces_selected_rss_evidence_when_include_rss_is_false(self):
+        response = json.dumps({
+            "policy_trends": "政策事实 [policy:1]",
+            "research_trends": "科研事实 [research:1]",
+            "weather_risks": "气象事实 [weather:official]",
+        }, ensure_ascii=False)
+        analyzer = self._weekly_analyzer(response, response)
+        analyzer.include_rss = False
+
+        result = analyzer.analyze(
+            stats=[],
+            rss_stats=[{"word": "周报", "titles": [
+                {
+                    "title": "政策证据", "module_type": "policy",
+                    "module_rank": 1, "content_excerpt": "政策原文内容",
+                },
+                {
+                    "title": "科研证据", "module_type": "research",
+                    "module_rank": 1, "content_excerpt": "科研摘要内容",
+                },
+            ]}],
+            report_mode="weekly",
+            strict=True,
+            weather_report=SimpleNamespace(
+                title="气象周报", impact="气象事实",
+                outlook="气象展望", recommendations="官方建议",
+                source_url="https://www.nmc.cn/publish/agro/ten-week/index.html",
+            ),
+        )
+
+        self.assertTrue(result.success, result.error)
+        first_prompt = analyzer.client.chat.call_args_list[0].args[0][-1]["content"]
+        self.assertIn("政策原文内容", first_prompt)
+        self.assertIn("科研摘要内容", first_prompt)
 
     def test_weekly_rejects_incomplete_weather_before_model_call(self):
         analyzer = self._weekly_analyzer()

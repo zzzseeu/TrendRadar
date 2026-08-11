@@ -330,6 +330,15 @@ class AIAnalyzer:
                 result.success = False
                 result.error = "严格分析缺少必要摘要内容"
 
+            # 非法的首轮引用不允许借 grounding 洗成合法结果。
+            if strict and report_mode == "weekly" and result.success:
+                citation_error = self._validate_weekly_citations(
+                    result, weekly_evidence_ids
+                )
+                if citation_error:
+                    result.success = False
+                    result.error = citation_error
+
             # 第二遍仅做证据校审：删除或泛化原始输入无法直接支持的细节。
             # 这一步不负责重新分析，避免模型用领域常识补齐病害、实验方法等事实。
             if (
@@ -477,7 +486,7 @@ class AIAnalyzer:
                     break
 
         # RSS 内容（仅在启用时构建）
-        if self.include_rss and rss_stats:
+        if (self.include_rss or report_mode == "weekly") and rss_stats:
             remaining = (
                 None if news_limit is None else news_limit - news_count
             )
@@ -667,7 +676,7 @@ class AIAnalyzer:
         evidence_ids: Dict[str, set[str]],
     ) -> str:
         citation_pattern = re.compile(
-            r"\[(?:policy|research|weather):[A-Za-z0-9_-]+\]"
+            r"\[[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9_-]+\]"
         )
         for field_name, module_type in (
             ("policy_trends", "policy"),
