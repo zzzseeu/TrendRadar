@@ -8,7 +8,6 @@ import pytz
 from trendradar.core.weekly import (
     WeeklyRSSAggregator,
     previous_natural_week,
-    select_weekly_news,
 )
 from trendradar.core.rss_snapshot import (
     item_identity,
@@ -19,7 +18,6 @@ from trendradar.core.rss_snapshot import (
 from trendradar.crawler.news_search import normalize_title
 from trendradar.ai.filter import AIFilterResult
 from trendradar.ai.filter_pipeline import AIFilterPipeline
-from trendradar.__main__ import NewsAnalyzer
 from trendradar.storage.base import RSSData, RSSItem
 from trendradar.storage.sqlite_mixin import SQLiteStorageMixin
 
@@ -102,77 +100,6 @@ class WeeklyAIFilterScopeTests(unittest.TestCase):
         self.assertEqual(
             [item["title"] for item in rss_stats[0]["titles"]],
             ["Allowed"],
-        )
-
-    def test_weekly_report_conversion_preserves_published_order_for_selection(self):
-        result = AIFilterResult(success=True, tags=[{
-            "tag": "育种", "count": 2, "items": [
-                {
-                    "id": 1,
-                    "news_item_id": 1,
-                    "title": "Alpha older report",
-                    "source_type": "rss",
-                    "source_id": "journal",
-                    "source_name": "Alpha Source",
-                    "url": "https://example.org/older",
-                    "published_at": "2026-08-03T08:00:00+08:00",
-                    "relevance_score": 0.8,
-                    "importance_score": 0.8,
-                    "highlight_rank": 9,
-                },
-                {
-                    "id": 2,
-                    "news_item_id": 2,
-                    "title": "Zulu newer report",
-                    "source_type": "rss",
-                    "source_id": "journal",
-                    "source_name": "Zulu Source",
-                    "url": "https://example.org/newer",
-                    "published_at": "2026-08-09T08:00:00+08:00",
-                    "relevance_score": 0.8,
-                    "importance_score": 0.8,
-                    "highlight_rank": 9,
-                },
-            ],
-        }])
-
-        _, rss_stats, _ = self.pipeline.convert_to_report_data(
-            result, mode="weekly"
-        )
-        selected = NewsAnalyzer._select_weekly_rss_items(rss_stats)
-
-        self.assertEqual(
-            [item.get("published_at") for item in rss_stats[0]["titles"]],
-            ["2026-08-03T08:00:00+08:00", "2026-08-09T08:00:00+08:00"],
-        )
-        self.assertEqual(
-            [item["title"] for item in selected[0]["titles"]],
-            ["Zulu newer report", "Alpha older report"],
-        )
-
-    def test_weekly_selector_uses_source_and_title_for_missing_dates(self):
-        selected = select_weekly_news([
-            {
-                "title": "Bravo missing date",
-                "source_name": "Bravo Source",
-                "url": "https://example.org/bravo",
-                "weekly_topics": ["育种"],
-                "ai_score": 0.8,
-                "highlight_rank": 9,
-            },
-            {
-                "title": "Alpha missing date",
-                "source_name": "Alpha Source",
-                "url": "https://example.org/alpha",
-                "weekly_topics": ["育种"],
-                "ai_score": 0.8,
-                "highlight_rank": 9,
-            },
-        ])
-
-        self.assertEqual(
-            [item["title"] for item in selected],
-            ["Alpha missing date", "Bravo missing date"],
         )
 
     def test_partial_weekly_batch_failure_returns_failed_filter_result(self):
@@ -347,72 +274,6 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
             "2026-08-10T10:00:00+08:00",
         )
 
-    def test_select_weekly_news_caps_at_twenty_and_balances_remaining_topics(self):
-        items = [
-            {
-                "title": f"Same topic {index}",
-                "url": f"https://example.org/same-{index}",
-                "weekly_topics": ["育种"],
-                "ai_score": 100 - index,
-            }
-            for index in range(30)
-        ] + [
-            {
-                "title": f"Topic {topic} {index}",
-                "url": f"https://example.org/{topic}-{index}",
-                "weekly_topics": [topic],
-                "ai_score": 50 - index,
-            }
-            for topic in ("基因编辑", "种质资源", "生物育种")
-            for index in range(3)
-        ]
-
-        selected = select_weekly_news(items)
-
-        self.assertEqual(len(selected), 20)
-        self.assertEqual(
-            [item["title"] for item in selected[:5]],
-            [f"Same topic {index}" for index in range(5)],
-        )
-        self.assertTrue(
-            {"基因编辑", "种质资源", "生物育种"}.issubset(
-                {item["weekly_topics"][0] for item in selected[5:]}
-            )
-        )
-
-    def test_select_weekly_news_deduplicates_and_is_stable_when_under_limit(self):
-        items = [
-            {
-                "title": "Duplicate lower score",
-                "url": "https://example.org/duplicate?utm_source=one",
-                "weekly_topics": ["育种"],
-                "ai_score": 1,
-            },
-            {
-                "title": "Duplicate higher score",
-                "url": "https://example.org/duplicate?utm_source=two",
-                "weekly_topics": ["基因编辑"],
-                "ai_score": 2,
-            },
-            {
-                "title": "Only other item",
-                "url": "https://example.org/other",
-                "weekly_topics": ["种质资源"],
-                "ai_score": 1,
-            },
-        ]
-
-        first = select_weekly_news(items)
-        second = select_weekly_news(items)
-
-        self.assertEqual(len(first), 2)
-        self.assertEqual(
-            [item["url"] for item in first], [item["url"] for item in second]
-        )
-        self.assertEqual(
-            [item["title"] for item in first],
-            ["Duplicate higher score", "Only other item"],
-        )
     def test_shared_snapshot_identity_prefers_canonical_url(self):
         item = RSSItem(
             title="Rice breeding update",

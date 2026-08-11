@@ -1186,6 +1186,66 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
         )
         self.assertEqual(title["search_hotspot_rank"], 1)
 
+    def test_module_fields_survive_filter_and_report_with_one_half_admission(self):
+        raw_results = []
+        for module_type, base_id in (("policy", 100), ("research", 200)):
+            raw_results.extend([
+                {
+                    "news_item_id": base_id,
+                    "tag": "育种",
+                    "title": f"{module_type} below",
+                    "source_id": "journal",
+                    "source_name": "Journal",
+                    "source_type": "rss",
+                    "module_type": module_type,
+                    "url": f"https://example.org/{module_type}/below",
+                    "guid": f"{module_type}-below-guid",
+                    "relevance_score": 0.499,
+                    "importance_score": 0.9,
+                    "content_level": "summary",
+                },
+                {
+                    "news_item_id": base_id + 1,
+                    "tag": "育种",
+                    "title": f"{module_type} admitted",
+                    "source_id": "journal",
+                    "source_name": "Journal",
+                    "source_type": "rss",
+                    "module_type": module_type,
+                    "url": f"https://example.org/{module_type}/admitted",
+                    "guid": f"{module_type}-guid",
+                    "relevance_score": 0.5,
+                    "importance_score": 0.8,
+                    "content_level": "full_text",
+                },
+            ])
+
+        pipeline = self._pipeline(min_score=0.5)
+        result = pipeline._build_filter_result(
+            raw_results=raw_results,
+            tags=[{"tag": "育种", "priority": 1}],
+            total_processed=4,
+        )
+        _, rss_stats, _ = pipeline.convert_to_report_data(result)
+        report_items = rss_stats[0]["titles"]
+
+        self.assertEqual(result.total_matched, 2)
+        self.assertEqual(
+            {item["module_type"] for item in result.tags[0]["items"]},
+            {"policy", "research"},
+        )
+        self.assertEqual(len(report_items), 2)
+        for item in report_items:
+            self.assertEqual(
+                {
+                    "module_type", "relevance_score", "importance_score",
+                    "content_level", "news_item_id", "guid", "source_id",
+                    "source_name",
+                } - item.keys(),
+                set(),
+            )
+            self.assertEqual(item["relevance_score"], 0.5)
+
     def test_final_hot_score_controls_filter_and_report_order(self):
         high_final = self._search_result(
             1,

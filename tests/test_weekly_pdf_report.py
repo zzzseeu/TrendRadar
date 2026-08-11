@@ -294,6 +294,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer.ctx = SimpleNamespace(
             config={
+                "AI_FILTER": {"MIN_SCORE": 0.5},
                 "AI_ANALYSIS": {"ENABLED": False},
                 "AI_TRANSLATION": {"ENABLED": False},
                 "STORAGE": {"FORMATS": {"HTML": False}},
@@ -324,7 +325,9 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
     def _news_group():
         return [{"word": "育种", "count": 1, "titles": [{
             "title": "普通新闻", "url": "https://example.com/news",
-            "ai_summary": "摘要",
+            "ai_summary": "摘要", "module_type": "research",
+            "relevance_score": 0.8, "importance_score": 0.8,
+            "content_level": "summary",
         }]}]
 
     def test_keyword_weekly_news_fails_closed_without_pdf(self):

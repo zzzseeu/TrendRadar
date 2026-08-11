@@ -1,6 +1,5 @@
 """自然周时间窗口和 RSS 周快照聚合。"""
 
-from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 import re
@@ -82,6 +81,9 @@ def report_item_identity(item: dict) -> tuple[str, str]:
     url = canonicalize_url(str(item.get("url") or ""))
     if url:
         return ("url", url)
+    guid = str(item.get("guid") or "").strip()
+    if guid:
+        return ("guid", guid)
     return ("title", normalize_title(str(item.get("title") or "")))
 
 
@@ -93,29 +95,31 @@ def primary_weekly_topic(item: dict) -> str:
     return normalized[0] if normalized else "其他"
 
 
-def weekly_value_sort_key(item: dict) -> tuple:
+def _weekly_score(value) -> float:
     try:
-        highlight = int(item.get("highlight_rank") or 10**9)
+        return float(value or 0.0)
     except (TypeError, ValueError):
-        highlight = 10**9
-    try:
-        score = float(item.get("ai_score") or item.get("score") or 0.0)
-    except (TypeError, ValueError):
-        score = 0.0
+        return 0.0
+
+
+def weekly_module_sort_key(item: dict) -> tuple:
+    evidence_weight = {"full_text": 2, "summary": 1, "title_only": 0}
     published = parse_week_published_at(
         str(item.get("published_at") or ""), "Asia/Shanghai"
     )
     published_epoch = published.timestamp() if published else 0.0
     return (
-        highlight,
-        -score,
+        -_weekly_score(item.get("importance_score")),
+        -_weekly_score(item.get("relevance_score")),
+        -evidence_weight.get(str(item.get("content_level") or "title_only"), 0),
         -published_epoch,
         str(item.get("source_name") or ""),
         str(item.get("title") or ""),
+        report_item_identity(item),
     )
 
 
-def deduplicate_report_items(items: list[dict]) -> list[dict]:
+def _deduplicate_module_items(items: list[dict]) -> list[dict]:
     merged: dict[tuple[str, str], dict] = {}
     for raw in items:
         item = dict(raw)
@@ -123,40 +127,65 @@ def deduplicate_report_items(items: list[dict]) -> list[dict]:
         if not key[1]:
             continue
         existing = merged.get(key)
-        if existing is None or weekly_value_sort_key(item) < weekly_value_sort_key(existing):
+        if (
+            existing is None
+            or weekly_module_sort_key(item) < weekly_module_sort_key(existing)
+        ):
             merged[key] = item
     return list(merged.values())
 
 
-def select_weekly_news(
-    items: list[dict], *, limit: int = 20, highlight_count: int = 5,
-) -> list[dict]:
-    """Select a stable, topic-balanced weekly news list without padding."""
-    unique = deduplicate_report_items(items)
-    ranked = sorted(unique, key=weekly_value_sort_key)
-    selected = ranked[:min(highlight_count, limit)]
-    selected_keys = {report_item_identity(item) for item in selected}
-    buckets: dict[str, deque[dict]] = {}
-    for item in ranked:
-        if report_item_identity(item) in selected_keys:
-            continue
-        topic = primary_weekly_topic(item) or "其他"
-        buckets.setdefault(topic, deque()).append(item)
-    topics = sorted(buckets)
-    while len(selected) < limit and topics:
-        next_topics = []
-        for topic in topics:
-            bucket = buckets[topic]
-            if bucket and len(selected) < limit:
-                item = bucket.popleft()
-                selected.append(item)
-                selected_keys.add(report_item_identity(item))
-            if bucket:
-                next_topics.append(topic)
-        topics = next_topics
-    for rank, item in enumerate(selected[:highlight_count], start=1):
-        item["highlight_rank"] = rank
-    return selected
+@dataclass
+class WeeklyNewsSelection:
+    policy: list[dict]
+    research: list[dict]
+
+
+def select_weekly_modules(
+    items: list[dict], *, min_score: float,
+    limit_per_module: int = 20, highlight_count: int = 5,
+) -> WeeklyNewsSelection:
+    """Select independent policy/research rankings with policy precedence."""
+    threshold = _weekly_score(min_score)
+    eligible_policy = [
+        item for item in items
+        if item.get("module_type") == "policy"
+        and _weekly_score(item.get("relevance_score")) >= threshold
+    ]
+    policy_identities = {
+        report_item_identity(item)
+        for item in eligible_policy
+        if report_item_identity(item)[1]
+    }
+    eligible_research = [
+        item for item in items
+        if item.get("module_type") == "research"
+        and _weekly_score(item.get("relevance_score")) >= threshold
+        and report_item_identity(item) not in policy_identities
+    ]
+
+    limit = max(0, int(limit_per_module))
+    highlights = max(0, int(highlight_count))
+
+    def select(module_items: list[dict]) -> list[dict]:
+        ranked = sorted(
+            _deduplicate_module_items(module_items),
+            key=weekly_module_sort_key,
+        )[:limit]
+        selected = []
+        for module_rank, raw in enumerate(ranked, start=1):
+            item = dict(raw)
+            item.pop("highlight_rank", None)
+            item["module_rank"] = module_rank
+            if module_rank <= highlights:
+                item["highlight_rank"] = module_rank
+            selected.append(item)
+        return selected
+
+    return WeeklyNewsSelection(
+        policy=select(eligible_policy),
+        research=select(eligible_research),
+    )
 
 
 @dataclass

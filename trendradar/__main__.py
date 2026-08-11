@@ -36,11 +36,12 @@ from trendradar.ai import AIAnalyzer, AIAnalysisResult
 from trendradar.core.daily_delivery import DailyDeliveryAggregator
 from trendradar.core.scheduler import ResolvedSchedule, WeeklyAttemptLock
 from trendradar.core.weekly import (
+    WeeklyNewsSelection,
     WeeklyRSSAggregator,
     current_natural_week,
     previous_natural_week,
     primary_weekly_topic,
-    select_weekly_news,
+    select_weekly_modules,
 )
 from trendradar.report.weekly_pdf import (
     build_weekly_pdf,
@@ -191,6 +192,7 @@ class NewsAnalyzer:
         self._agro_weather_report = None
         self._weekly_pdf_path = None
         self._weekly_ai_filter_succeeded = False
+        self._weekly_news_modules = WeeklyNewsSelection(policy=[], research=[])
         # A single run owns one immutable clock snapshot.  Strict storage keys,
         # delivery windows and scheduler decisions must never straddle midnight.
         self._run_at = None
@@ -1056,6 +1058,9 @@ class NewsAnalyzer:
 
         if mode == "weekly":
             self._weekly_ai_filter_succeeded = False
+            self._weekly_news_modules = WeeklyNewsSelection(
+                policy=[], research=[]
+            )
 
         strict_operation_date = None
         if mode == "daily_delivery":
@@ -1064,7 +1069,7 @@ class NewsAnalyzer:
             strict_operation_date = self._rss_window.end.strftime("%Y-%m-%d")
 
         # 周报普通新闻只允许权威自然周快照经过严格 AI filter；不允许
-        # keyword 或其他未筛选路径把普通新闻带入 select_weekly_news/PDF。
+        # keyword 或其他未筛选路径把普通新闻带入双模块选择/PDF。
         if mode == "weekly" and rss_items and self.filter_method != "ai":
             raise RuntimeError("周报普通新闻仅支持严格 AI 筛选")
 
@@ -1128,8 +1133,7 @@ class NewsAnalyzer:
                 mode=mode, global_filters=global_filters, quiet=quiet,
             )
 
-        # 周报只使用同一批 select_weekly_news 选出的普通新闻，统一覆盖
-        # AI 筛选和关键词筛选路径，避免专用 PDF 绕过 20 条上限。
+        # 周报普通新闻在这里完成唯一一次双模块选择；摘要和 PDF 复用结果。
         if mode == "weekly" and rss_items:
             rss_items = self._select_weekly_rss_items(rss_items)
 
@@ -1253,9 +1257,10 @@ class NewsAnalyzer:
 
         return stats, html_file, ai_result, rss_items, standalone_data, rss_new_items
 
-    @staticmethod
-    def _select_weekly_rss_items(rss_stats: list[dict] | None) -> list[dict]:
-        """Apply the weekly cap once across all AI-approved RSS tag groups."""
+    def _select_weekly_rss_items(
+        self, rss_stats: list[dict] | None
+    ) -> list[dict]:
+        """Select both weekly modules once and group them for the summary model."""
         candidates: list[dict] = []
         for stat in rss_stats or []:
             topic = str(stat.get("word") or "").strip()
@@ -1269,13 +1274,17 @@ class NewsAnalyzer:
                 item["weekly_topics"] = sorted({
                     str(value).strip() for value in topics if str(value).strip()
                 })
-                item.setdefault("ai_score", item.get("importance_score", 0))
-                item.setdefault("score", item.get("relevance_score", 0))
                 candidates.append(item)
 
-        selected = select_weekly_news(candidates)
+        self._weekly_news_modules = select_weekly_modules(
+            candidates,
+            min_score=self.ctx.config["AI_FILTER"]["MIN_SCORE"],
+        )
         grouped: dict[str, list[dict]] = {}
-        for item in selected:
+        for item in (
+            self._weekly_news_modules.policy
+            + self._weekly_news_modules.research
+        ):
             topic = primary_weekly_topic(item)
             grouped.setdefault(topic, []).append(item)
         return [
@@ -1289,7 +1298,11 @@ class NewsAnalyzer:
         ai_result: Optional[AIAnalysisResult],
     ) -> str:
         """Build the offline A4 report from selected RSS news and official weather."""
-        selected_news = flatten_unique_news(rss_items)
+        modules = getattr(self, "_weekly_news_modules", None)
+        if modules is None:
+            selected_news = flatten_unique_news(rss_items)
+        else:
+            selected_news = [*modules.policy, *modules.research]
         weather = self._agro_weather_report
         if not selected_news and weather is None:
             raise RuntimeError("周报没有入选新闻和农业气象报告，无法生成 PDF")

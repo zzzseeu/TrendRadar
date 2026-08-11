@@ -866,8 +866,13 @@ class AIFilterPipeline:
 
         tag_groups: Dict[str, Dict] = {}
         seen_titles: Dict[str, set] = {}
+        min_score = self._score_value(
+            self._filter_config.get("MIN_SCORE", 0)
+        )
 
         for r in raw_results:
+            if self._score_value(r.get("relevance_score")) < min_score:
+                continue
             tag_name = r["tag"]
             if tag_name not in tag_groups:
                 raw_priority = r.get("tag_priority", tag_priority_map.get(tag_name, 9999))
@@ -892,10 +897,12 @@ class AIFilterPipeline:
             tag_groups[tag_name]["items"].append({
                 "id": r.get("news_item_id"),
                 "news_item_id": r.get("news_item_id"),
+                "module_type": r.get("module_type", "research"),
                 "title": title,
                 "source_id": r.get("source_id", ""),
                 "source_name": r.get("source_name", ""),
                 "url": r.get("url", ""),
+                "guid": r.get("guid", ""),
                 "reader_url": build_reader_url(
                     r.get("source_id", ""),
                     r.get("url", ""),
@@ -927,12 +934,9 @@ class AIFilterPipeline:
         # 跨标签、跨来源统一选择重点新闻。importance_score 是科研/育种价值，
         # relevance_score 是与用户兴趣的相关性；证据层级仅用于同分时优先。
         evidence_weight = {"full_text": 2, "summary": 1, "title_only": 0}
-        min_score = float(self._filter_config.get("MIN_SCORE", 0) or 0)
         all_items = []
         for group in tag_groups.values():
             for item in group.get("items", []):
-                if float(item.get("relevance_score", 0) or 0) < min_score:
-                    continue
                 if item.get("source_type") == "rss":
                     if not self._is_rss_item_in_scope(item):
                         continue
@@ -1120,7 +1124,9 @@ class AIFilterPipeline:
         hotlist_stats = []
         rss_stats = []
         rss_new_stats = []
-        min_score = self._filter_config.get("MIN_SCORE", 0)
+        min_score = self._score_value(
+            self._filter_config.get("MIN_SCORE", 0)
+        )
 
         latest_time = None
         if mode == "current":
@@ -1154,10 +1160,8 @@ class AIFilterPipeline:
                         filtered_count += 1
                         continue
 
-                if min_score > 0:
-                    score = item.get("relevance_score", 0)
-                    if score < min_score:
-                        continue
+                if self._score_value(item.get("relevance_score")) < min_score:
+                    continue
 
                 first_time = item.get("first_time", "")
                 last_time = item.get("last_time", "")
@@ -1192,9 +1196,13 @@ class AIFilterPipeline:
                     continue
 
                 title_entry = {
+                    "news_item_id": item.get("news_item_id"),
+                    "module_type": item.get("module_type", "research"),
                     "title": item.get("title", ""),
+                    "source_id": item.get("source_id", ""),
                     "source_name": item.get("source_name", ""),
                     "url": item.get("url", ""),
+                    "guid": item.get("guid", ""),
                     "reader_url": item.get("reader_url", ""),
                     "mobile_url": item.get("mobile_url", ""),
                     "ranks": item.get("ranks", []),
@@ -1205,6 +1213,7 @@ class AIFilterPipeline:
                     "published_at": item.get("published_at", ""),
                     "matched_keyword": tag_name,
                     "content_level": item.get("content_level", "title_only"),
+                    "relevance_score": item.get("relevance_score", 0),
                     "risk_warning": item.get("risk_warning", ""),
                     "content_excerpt": item.get("content_excerpt", ""),
                     "importance_score": item.get("importance_score", 0),
