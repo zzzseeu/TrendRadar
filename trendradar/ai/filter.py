@@ -677,7 +677,10 @@ class AIFilter:
                     )
                 seen_news_ids.add(news_id)
                 module_type = item["module_type"]
-                if module_type not in CLASSIFICATION_MODULE_TYPES:
+                if (
+                    not isinstance(module_type, str)
+                    or module_type not in CLASSIFICATION_MODULE_TYPES
+                ):
                     raise _InvalidClassificationResponse(
                         f"严格模式分类模块类型无效: {module_type!r}"
                     )

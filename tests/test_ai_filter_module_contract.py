@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import yaml
 
-from trendradar.ai.filter import AIFilter
+from trendradar.ai.filter import AIFilter, _InvalidClassificationResponse
 from trendradar.core.loader import _load_ai_filter_config
 
 
@@ -123,6 +123,71 @@ class AIFilterModuleContractTests(unittest.TestCase):
                     ai_filter._parse_classify_response(
                         json.dumps(payload), titles, tags, strict=True
                     )
+
+    def test_strict_classification_rejects_non_string_module_types(self):
+        ai_filter = AIFilter.__new__(AIFilter)
+        ai_filter.debug = False
+        titles = [{"id": 1, "title": "政策"}, {"id": 2, "title": "无关"}]
+        tags = [{"id": 11, "tag": "政策"}]
+        valid = {
+            "id": 1, "module_type": "policy", "tag_id": 11,
+            "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
+        }
+        for module_type in ([], {}):
+            with self.subTest(module_type=module_type):
+                payload = [
+                    dict(valid, module_type=module_type),
+                    {
+                        "id": 2, "module_type": "exclude", "score": 0.1,
+                        "importance_score": 0.1, "summary": "内容无关",
+                    },
+                ]
+                with self.assertRaises(_InvalidClassificationResponse):
+                    ai_filter._parse_classify_response(
+                        json.dumps(payload), titles, tags, strict=True
+                    )
+
+    def test_non_string_module_type_triggers_one_repair(self):
+        ai_filter = AIFilter.__new__(AIFilter)
+        ai_filter.debug = False
+        ai_filter.classify_system = "只返回 JSON"
+        ai_filter.classify_user = "{interests_content}\n{tags_list}\n{news_count}\n{news_list}"
+        ai_filter.summary_grounding_review_enabled = False
+        ai_filter.client = MagicMock()
+        invalid = json.dumps([
+            {
+                "id": 1, "module_type": [], "tag_id": 11,
+                "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
+            },
+            {
+                "id": 2, "module_type": "exclude", "score": 0.1,
+                "importance_score": 0.1, "summary": "内容无关",
+            },
+        ])
+        repaired = json.dumps([
+            {
+                "id": 1, "module_type": "policy", "tag_id": 11,
+                "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
+            },
+            {
+                "id": 2, "module_type": "exclude", "score": 0.1,
+                "importance_score": 0.1, "summary": "内容无关",
+            },
+        ])
+        ai_filter.client.chat.side_effect = [invalid, repaired]
+
+        result = ai_filter.classify_batch(
+            [
+                {"id": 1, "title": "政策", "content": "政策"},
+                {"id": 2, "title": "无关", "content": "无关"},
+            ],
+            [{"id": 11, "tag": "政策"}],
+            "政策优先",
+            strict=True,
+        )
+
+        self.assertEqual([item["news_item_id"] for item in result], [1])
+        self.assertEqual(ai_filter.client.chat.call_count, 2)
 
     def test_raw_scores_are_never_rewritten_by_content_level(self):
         ai_filter = AIFilter.__new__(AIFilter)
