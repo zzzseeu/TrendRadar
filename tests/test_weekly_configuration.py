@@ -131,15 +131,24 @@ class WeeklyConfigurationTests(unittest.TestCase):
                     self.assertIn(token, text)
 
     def test_weekly_public_contract_uses_three_modules_only(self):
-        config = yaml.safe_load(
-            (ROOT / "config/config.yaml").read_text(encoding="utf-8")
-        )
-        self.assertEqual(config["ai_filter"]["min_score"], 0.5)
+        for relative in ("config/config.yaml", "config/config.en.yaml"):
+            text = (ROOT / relative).read_text(encoding="utf-8")
+            config = yaml.safe_load(text)
+            with self.subTest(relative=relative):
+                self.assertEqual(config["ai_filter"]["min_score"], 0.5)
+                self.assertNotIn("min_score: 0.7", text)
 
         prompt = (ROOT / "config/ai_filter/prompt.txt").read_text(
             encoding="utf-8"
         )
         self.assertIn("policy、research 或 exclude", prompt)
+        self.assertIn("政策优先", prompt)
+        self.assertIn("领导调研", prompt)
+        self.assertIn(
+            "不得仅因会议、宣传稿或调研这种载体排除真实政策或科研信息",
+            prompt,
+        )
+        self.assertNotIn("会议宣传、培训招生和纯营销内容", prompt)
 
         docs = {
             "README.md": (
@@ -194,8 +203,3 @@ class WeeklyConfigurationTests(unittest.TestCase):
             for phrase in obsolete_weekly_phrases:
                 with self.subTest(relative=relative, phrase=phrase):
                     self.assertNotIn(phrase, text)
-
-        self.assertNotIn(
-            "min_score: 0.7",
-            (ROOT / "config/config.yaml").read_text(encoding="utf-8"),
-        )
