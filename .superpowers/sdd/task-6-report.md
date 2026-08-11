@@ -30,3 +30,15 @@
 - selection 复用测试使用对象身份断言；零账号成功重试测试观察到两次不同 selection、两次 renderer 和两个不同 PDF 路径，不只统计 pipeline mock。
 - partial retry 断言发送顺序为 A、B、B；resume 测试断言复用原 PDF 字节/digest 且 weather/crawl/renderer/builder 均不调用；global checkpoint retry 断言外呼总数不增加。
 - 独立审查最初提出三个 Important 测试证据问题（主链拆段、伪阶段 mock、重建未观察 build），均已按上述真实 run 测试修正；生产代码未发现 Critical 或明确功能回归。
+
+## 独立审查后续修复
+
+- 权威周快照没有新闻 ID 时，主链直接保留空 `WeeklyNewsSelection`，不调用新闻 AI filter、标签提取、分类转换或相关存储；官方气象叙事、PDF 和 push 仍继续执行。
+- weekly 已存在 `analyze` 但 global `push` 尚未成功时，无论 `once_push` 是否开启都允许重新分类、叙事和构建 PDF。partial account ledger 的已有 PDF 续投仍在天气、抓取和分析之前短路。
+- 恢复独立兼容回归，覆盖 daily 的 once-analyze 跳过语义、`run()==False` 时 CLI 退出码 1、`--force-weekly` 透传，以及 scheduler preset/force 解析；未恢复重复的逐账号账本 mock。
+- 后续定向验证共 8 项通过（0.027 秒）；最终 brief 三模块集合 51/51 通过（4.084 秒），恢复兼容项 7/7 通过（0.009 秒）。
+
+## 外部副作用边界
+
+- 企业微信文件发送成功与账号 delivery ledger 写入是两个无法组成原子事务的外部操作。如果进程在外呼成功后、账本成功写入前崩溃，或账本写入失败，下一次重试可能再次向该账号发送同一 PDF。
+- 因此逐账号投递语义是 **at-least-once**，不能宣称绝对 exactly-once。账本只保证已成功持久化的账号在后续重试中被跳过；系统无法从企业微信侧反向确认“发送成功但本地未记账”的窗口。

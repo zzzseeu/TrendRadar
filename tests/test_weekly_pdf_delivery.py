@@ -128,7 +128,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         analyzer.filter_method = "ai"
         analyzer.interests_file = None
         analyzer._rss_window = self.window
-        analyzer._allowed_rss_ids = set()
+        analyzer._allowed_rss_ids = set(range(1, len(selected_items) + 1))
         analyzer._rss_ids_authoritative = True
         analyzer._agro_weather_report = self.weather if weather else None
         analyzer._rss_total_count = len(selected_items)
@@ -153,9 +153,9 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         analyzer._has_notification_configured = MagicMock(return_value=True)
         return analyzer, scheduler, dispatcher
 
-    def _prepare_run(self, analyzer):
+    def _prepare_run(self, analyzer, *, resolved_schedule=None):
         analyzer._resolve_and_apply_schedule = MagicMock(
-            return_value=schedule()
+            return_value=resolved_schedule or schedule()
         )
         lock = MagicMock()
         lock.acquire.return_value = True
@@ -277,7 +277,20 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         analyzer, scheduler, dispatcher = self._analyzer([
             self._item("policy")
         ])
-        lock = self._prepare_run(analyzer)
+        pending_schedule = schedule(once_push=False)
+        lock = self._prepare_run(
+            analyzer, resolved_schedule=pending_schedule
+        )
+        analyzer._run_ai_analysis = NewsAnalyzer._run_ai_analysis.__get__(
+            analyzer, NewsAnalyzer
+        )
+        executed = set()
+        scheduler.already_executed.side_effect = (
+            lambda _period, action, _date: action in executed
+        )
+        scheduler.record_execution.side_effect = (
+            lambda _period, action, _date: executed.add(action) or True
+        )
         dispatcher.dispatch_weekly_pdf.side_effect = [False, True]
         built_paths = []
 
@@ -286,13 +299,19 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             built_paths.append(path)
             return path
 
-        with patch(
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class, patch(
             "trendradar.__main__.render_weekly_pdf_html",
             return_value="<html />",
         ) as render, patch(
             "trendradar.__main__.build_weekly_pdf",
             side_effect=build_pdf,
         ) as build:
+            analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+                success=True,
+                policy_trends="政策趋势 [policy:1]",
+                research_trends="科研暂无 [research:none]",
+                weather_risks="气象风险 [weather:official]",
+            )
             self.assertFalse(analyzer.run())
             first_selection = analyzer._weekly_news_modules
             self.assertTrue(analyzer.run())
@@ -305,12 +324,15 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             "output/rebuilt-1.pdf", "output/rebuilt-2.pdf"
         ])
         self.assertEqual(dispatcher.dispatch_weekly_pdf.call_count, 2)
+        self.assertEqual(analyzer_class.return_value.analyze.call_count, 2)
         self.assertEqual(lock.release.call_count, 2)
         push_calls = [
             item for item in scheduler.record_execution.call_args_list
             if item.args[1] == "push"
         ]
         self.assertEqual(len(push_calls), 1)
+        self.assertIn("analyze", executed)
+        self.assertIn("push", executed)
 
     def test_weekly_mainline_allows_either_news_module_to_be_empty(self):
         for module_type in ("policy", "research"):
@@ -334,7 +356,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
                 self.assertEqual(render.call_args.kwargs[f"{other}_items"], [])
 
     def test_weekly_mainline_allows_weather_only_content(self):
-        analyzer, _, _ = self._analyzer([])
+        analyzer, scheduler, dispatcher = self._analyzer([])
         self._prepare_run(analyzer)
         with patch(
             "trendradar.__main__.render_weekly_pdf_html",
@@ -348,6 +370,18 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         self.assertEqual(render.call_args.kwargs["policy_items"], [])
         self.assertEqual(render.call_args.kwargs["research_items"], [])
         self.assertIs(render.call_args.kwargs["agro_weather"], self.weather)
+        analyzer.ctx.run_ai_filter.assert_not_called()
+        analyzer.ctx.convert_ai_filter_to_report_data.assert_not_called()
+        analyzer._run_ai_analysis.assert_called_once()
+        self.assertEqual(analyzer._weekly_news_modules.policy, [])
+        self.assertEqual(analyzer._weekly_news_modules.research, [])
+        self.assertFalse(analyzer._weekly_ai_filter_succeeded)
+        dispatcher.dispatch_weekly_pdf.assert_called_once()
+        push_calls = [
+            item for item in scheduler.record_execution.call_args_list
+            if item.args[1] == "push"
+        ]
+        self.assertEqual(len(push_calls), 1)
 
     def test_weekly_mainline_rejects_three_empty_modules(self):
         analyzer, scheduler, dispatcher = self._analyzer([], weather=False)
@@ -417,7 +451,9 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         )
 
     def test_weekly_classification_failure_writes_no_checkpoint(self):
-        analyzer, scheduler, dispatcher = self._analyzer([])
+        analyzer, scheduler, dispatcher = self._analyzer([
+            self._item("policy")
+        ])
         self._prepare_run(analyzer)
         analyzer.ctx.run_ai_filter.return_value = SimpleNamespace(
             success=False, error="classification failed"

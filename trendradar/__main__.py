@@ -676,13 +676,18 @@ class NewsAnalyzer:
             scheduler = self.ctx.create_scheduler()
             date_str = self._delivery_checkpoint_date(mode)
             if scheduler.already_executed(schedule.period_key, "analyze", date_str):
-                strict_push_pending = (
-                    self._is_strict_delivery_mode(mode)
-                    and schedule.once_push
-                    and not scheduler.already_executed(
+                if mode == "weekly":
+                    strict_push_pending = not scheduler.already_executed(
                         schedule.period_key, "push", date_str
                     )
-                )
+                else:
+                    strict_push_pending = (
+                        mode == "daily_delivery"
+                        and schedule.once_push
+                        and not scheduler.already_executed(
+                            schedule.period_key, "push", date_str
+                        )
+                    )
                 if not strict_push_pending:
                     print(f"[AI] 调度器: 时间段 {schedule.period_name or schedule.period_key} 今天已分析过，跳过")
                     return None
@@ -1081,8 +1086,22 @@ class NewsAnalyzer:
         if mode == "weekly" and rss_items and self.filter_method != "ai":
             raise RuntimeError("周报普通新闻仅支持严格 AI 筛选")
 
+        weekly_has_no_news_candidates = (
+            mode == "weekly"
+            and getattr(self, "_rss_ids_authoritative", False)
+            and not getattr(self, "_allowed_rss_ids", None)
+        )
+
+        # 权威周快照为空时不启动新闻分类、标签或分类账本写入；气象叙事
+        # 和专用 PDF 继续使用显式的空 WeeklyNewsSelection。
+        if weekly_has_no_news_candidates:
+            print("[周报] 权威周快照没有普通新闻，跳过新闻 AI 筛选")
+            stats = []
+            total_titles = 0
+            rss_items = []
+            rss_new_items = []
         # 根据筛选策略选择数据处理方式
-        if self.filter_method == "ai":
+        elif self.filter_method == "ai":
             # === AI 筛选策略 ===
             print("[筛选] 使用 AI 智能筛选策略")
             ai_filter_result = self.ctx.run_ai_filter(
