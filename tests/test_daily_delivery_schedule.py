@@ -721,6 +721,80 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
             analyzer_class.return_value.analyze.call_args.kwargs["strict"]
         )
 
+    @patch("trendradar.__main__.AIAnalyzer")
+    def test_weekly_ai_uses_official_weather_and_records_only_complete_result(
+        self, analyzer_class
+    ):
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = False
+        scheduler.record_execution.return_value = True
+        weather = SimpleNamespace(title="全国农业气象周报", impact="高温")
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={
+                "AI": {},
+                "AI_ANALYSIS": {"ENABLED": True, "MODE": "follow_report"},
+                "DEBUG": False,
+            },
+            create_scheduler=MagicMock(return_value=scheduler),
+        )
+        analyzer._agro_weather_report = weather
+        analyzer._operation_run_at = MagicMock(return_value=NOW)
+        analyzer._delivery_checkpoint_date = MagicMock(return_value="2026-08-03")
+        weekly_schedule = delivery_schedule(
+            period_key="monday_weekly",
+            period_name="自然周周报",
+            report_mode="weekly",
+            ai_mode="weekly",
+        )
+        analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+            success=True,
+            policy_trends="政策趋势",
+            research_trends="科研趋势",
+            weather_risks="气象风险",
+        )
+
+        result = analyzer._run_ai_analysis(
+            [],
+            [{"word": "周报", "titles": [{
+                "title": "政策原文", "module_type": "policy", "module_rank": 1,
+            }]}],
+            "weekly",
+            "自然周周报",
+            {},
+            schedule=weekly_schedule,
+        )
+
+        self.assertTrue(result.success)
+        call_kwargs = analyzer_class.return_value.analyze.call_args.kwargs
+        self.assertIs(call_kwargs["weather_report"], weather)
+        self.assertEqual(call_kwargs["report_mode"], "weekly")
+        scheduler.record_execution.assert_called_once_with(
+            "monday_weekly", "analyze", "2026-08-03"
+        )
+
+        scheduler.reset_mock()
+        analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+            success=False,
+            policy_trends="政策趋势",
+            research_trends="科研趋势",
+            weather_risks="",
+            error="严格分析缺少必要摘要内容",
+        )
+        malformed = analyzer._run_ai_analysis(
+            [],
+            [{"word": "周报", "titles": [{
+                "title": "政策原文", "module_type": "policy", "module_rank": 1,
+            }]}],
+            "weekly",
+            "自然周周报",
+            {},
+            schedule=weekly_schedule,
+        )
+
+        self.assertFalse(malformed.success)
+        scheduler.record_execution.assert_not_called()
+
     def test_strict_translation_failure_aborts_without_checkpoint(self):
         analyzer, scheduler, dispatcher = self.build_analyzer(
             rss_items=[RSS_STAT],

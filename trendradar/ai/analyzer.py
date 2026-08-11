@@ -7,6 +7,7 @@ AI 分析器模块
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
@@ -36,8 +37,19 @@ def _normalize_narrative_text(value: Any) -> str:
     return str(value)
 
 
-def has_required_narrative(result: "AIAnalysisResult") -> bool:
-    """最终可交付分析对象至少包含一个非空叙事字段。"""
+def has_required_narrative(
+    result: "AIAnalysisResult", report_mode: str = "daily"
+) -> bool:
+    """验证最终可交付分析对象的叙事契约。"""
+    if report_mode == "weekly":
+        return all(
+            _normalize_narrative_text(value).strip()
+            for value in (
+                result.policy_trends,
+                result.research_trends,
+                result.weather_risks,
+            )
+        )
     values = (
         result.core_trends,
         result.sentiment_controversy,
@@ -59,6 +71,11 @@ class AIAnalysisResult:
     rss_insights: str = ""               # RSS 深度洞察
     outlook_strategy: str = ""           # 研判与策略建议
     standalone_summaries: Dict[str, str] = field(default_factory=dict)  # 独立展示区概括 {源ID: 概括}
+
+    # 周报三段可追溯叙事；默认空值保持日报/当前模式兼容。
+    policy_trends: str = ""
+    research_trends: str = ""
+    weather_risks: str = ""
 
     # 基础元数据
     raw_response: str = ""               # 原始响应
@@ -148,6 +165,7 @@ class AIAnalyzer:
         keywords: Optional[List[str]] = None,
         standalone_data: Optional[Dict] = None,
         strict: bool = False,
+        weather_report: Any = None,
     ) -> AIAnalysisResult:
         """
         执行 AI 分析
@@ -187,11 +205,40 @@ class AIAnalyzer:
                 error="未配置 AI API Key，请在 config.yaml 或环境变量 AI_API_KEY 中设置"
             )
 
-        # 准备新闻内容并获取统计数据
-        prepared = self._prepare_news_content(stats, rss_stats)
+        if strict and report_mode == "weekly":
+            input_error = self._validate_weekly_news_input(stats, rss_stats)
+            if input_error:
+                return AIAnalysisResult(success=False, error=input_error)
+            if weather_report is None:
+                return AIAnalysisResult(
+                    success=False, error="严格周报缺少官方气象证据"
+                )
+            weather_error = self._validate_weekly_weather(weather_report)
+            if weather_error:
+                return AIAnalysisResult(success=False, error=weather_error)
+
+        # 准备新闻与气象内容并获取统计数据
+        prepared = self._prepare_news_content(
+            stats, rss_stats, report_mode=report_mode
+        )
+        weather_content = self._prepare_weather_content(weather_report)
+        weekly_evidence_ids = self._weekly_evidence_ids(stats, rss_stats)
+        policy_evidence = ""
+        research_evidence = ""
+        if report_mode == "weekly":
+            policy_evidence = self._prepare_weekly_module_content(
+                stats, rss_stats, "policy"
+            )
+            research_evidence = self._prepare_weekly_module_content(
+                stats, rss_stats, "research"
+            )
         total_news = prepared.hotlist_total + prepared.rss_total
 
-        if not prepared.news_content and not prepared.rss_content:
+        if (
+            not prepared.news_content
+            and not prepared.rss_content
+            and not (report_mode == "weekly" and weather_content)
+        ):
             return AIAnalysisResult(
                 success=False,
                 skipped=True,
@@ -221,7 +268,23 @@ class AIAnalyzer:
         user_prompt = user_prompt.replace("{keywords}", ", ".join(keywords[:20]) if keywords else "无")
         user_prompt = user_prompt.replace("{news_content}", prepared.news_content)
         user_prompt = user_prompt.replace("{rss_content}", prepared.rss_content)
+        user_prompt = user_prompt.replace("{weather_content}", weather_content)
         user_prompt = user_prompt.replace("{language}", self.language)
+        if report_mode == "weekly":
+            citation_lines = []
+            for module_type, field_name in (
+                ("policy", "policy_trends"),
+                ("research", "research_trends"),
+                ("weather", "weather_risks"),
+            ):
+                allowed = weekly_evidence_ids[module_type]
+                citation_lines.append(
+                    f"- {field_name}：{' '.join(sorted(allowed))}"
+                )
+            user_prompt += (
+                "\n\n周报合法证据引用（每段至少保留一个对应引用，"
+                "不得跨模块）：\n" + "\n".join(citation_lines)
+            )
 
         # 构建独立展示区内容
         standalone_content = ""
@@ -261,14 +324,18 @@ class AIAnalyzer:
                 result.success = False
                 result.error = f"严格分析拒绝降级结果: {result.error}"
 
-            if strict and result.success and not has_required_narrative(result):
+            if strict and result.success and not has_required_narrative(
+                result, report_mode=report_mode
+            ):
                 result.success = False
                 result.error = "严格分析缺少必要摘要内容"
 
             # 第二遍仅做证据校审：删除或泛化原始输入无法直接支持的细节。
             # 这一步不负责重新分析，避免模型用领域常识补齐病害、实验方法等事实。
             if (
-                self.grounding_review_enabled
+                (self.grounding_review_enabled or (
+                    strict and report_mode == "weekly"
+                ))
                 and result.success
                 and not result.error
             ):
@@ -277,6 +344,9 @@ class AIAnalyzer:
                     prepared.news_content,
                     prepared.rss_content,
                     standalone_content,
+                    weather_content,
+                    policy_evidence,
+                    research_evidence,
                 )
                 if reviewed_result is not None:
                     result = reviewed_result
@@ -294,9 +364,19 @@ class AIAnalyzer:
 
             # grounding 可能返回合法但全空的 JSON，配置裁剪也可能移除唯一叙事字段；
             # strict 契约必须检查最终实际可交付对象，而不是首轮草稿。
-            if strict and result.success and not has_required_narrative(result):
+            if strict and result.success and not has_required_narrative(
+                result, report_mode=report_mode
+            ):
                 result.success = False
                 result.error = "严格分析缺少必要摘要内容"
+
+            if strict and report_mode == "weekly" and result.success:
+                citation_error = self._validate_weekly_citations(
+                    result, weekly_evidence_ids
+                )
+                if citation_error:
+                    result.success = False
+                    result.error = citation_error
 
             # 填充统计数据
             result.total_news = total_news
@@ -328,11 +408,13 @@ class AIAnalyzer:
         self,
         stats: List[Dict],
         rss_stats: Optional[List[Dict]] = None,
+        report_mode: str = "daily",
     ) -> PreparedNewsContent:
         news_lines = []
         rss_lines = []
         news_count = 0
         rss_count = 0
+        news_limit = None if report_mode == "weekly" else self.max_news
 
         # 计算总新闻数
         hotlist_total = sum(len(s.get("titles", [])) for s in stats) if stats else 0
@@ -384,19 +466,23 @@ class AIAnalyzer:
                             timeline_str = self._format_rank_timeline(rank_timeline)
                             line += f" | 轨迹:{timeline_str}"
 
+                        if report_mode == "weekly":
+                            line += self._format_weekly_item_evidence(t, title)
                         news_lines.append(line)
 
                         news_count += 1
-                        if news_count >= self.max_news:
+                        if news_limit is not None and news_count >= news_limit:
                             break
-                if news_count >= self.max_news:
+                if news_limit is not None and news_count >= news_limit:
                     break
 
         # RSS 内容（仅在启用时构建）
         if self.include_rss and rss_stats:
-            remaining = self.max_news - news_count
+            remaining = (
+                None if news_limit is None else news_limit - news_count
+            )
             for stat in rss_stats:
-                if rss_count >= remaining:
+                if remaining is not None and rss_count >= remaining:
                     break
                 word = stat.get("word", "")
                 titles = stat.get("titles", [])
@@ -425,25 +511,28 @@ class AIAnalyzer:
 
                         # 复用 AI 筛选阶段获取的正文/摘要证据。新闻正文是不可信
                         # 外部文本，只作为事实材料，不允许其中的指令改变分析任务。
-                        content_excerpt = " ".join(
-                            str(t.get("content_excerpt", "")).split()
-                        )
-                        content_level = t.get("content_level", "title_only")
-                        if content_excerpt:
-                            level_name = {
-                                "full_text": "正文摘录",
-                                "summary": "摘要",
-                                "title_only": "标题",
-                            }.get(content_level, content_level)
-                            line += f"\n  证据层级：{level_name}\n  证据内容：{content_excerpt[:1200]}"
+                        if report_mode == "weekly":
+                            line += self._format_weekly_item_evidence(t, title)
+                        else:
+                            content_excerpt = " ".join(
+                                str(t.get("content_excerpt", "")).split()
+                            )
+                            content_level = t.get("content_level", "title_only")
+                            if content_excerpt:
+                                level_name = {
+                                    "full_text": "正文摘录",
+                                    "summary": "摘要",
+                                    "title_only": "标题",
+                                }.get(content_level, content_level)
+                                line += f"\n  证据层级：{level_name}\n  证据内容：{content_excerpt[:1200]}"
 
-                        risk_warning = str(t.get("risk_warning", "")).strip()
-                        if risk_warning:
-                            line += f"\n  风险提示：{risk_warning}"
+                            risk_warning = str(t.get("risk_warning", "")).strip()
+                            if risk_warning:
+                                line += f"\n  风险提示：{risk_warning}"
                         rss_lines.append(line)
 
                         rss_count += 1
-                        if rss_count >= remaining:
+                        if remaining is not None and rss_count >= remaining:
                             break
 
         news_content = "\n".join(news_lines) if news_lines else ""
@@ -459,6 +548,174 @@ class AIAnalyzer:
             hotlist_analyzed=news_count,
             rss_analyzed=rss_count,
         )
+
+    @staticmethod
+    def _validate_weekly_news_input(
+        stats: Optional[List[Dict]], rss_stats: Optional[List[Dict]]
+    ) -> str:
+        """周报只接受已由双榜选择器标记和排名的新闻。"""
+        for groups in (stats or [], rss_stats or []):
+            for collection in groups:
+                for item in collection.get("titles") or []:
+                    if not isinstance(item, dict):
+                        return "严格周报新闻必须是结构化对象"
+                    module_type = item.get("module_type")
+                    if module_type not in {"policy", "research"}:
+                        return "严格周报新闻缺少合法 module_type"
+                    rank = item.get("module_rank")
+                    if (
+                        isinstance(rank, bool)
+                        or not isinstance(rank, int)
+                        or rank < 1
+                    ):
+                        return "严格周报新闻缺少合法 module_rank"
+        return ""
+
+    @staticmethod
+    def _validate_weekly_weather(weather_report: Any) -> str:
+        """官方气象叙事不允许从空对象或部分对象补全。"""
+        missing = [
+            field_name
+            for field_name in (
+                "title", "impact", "outlook", "recommendations", "source_url"
+            )
+            if not str(getattr(weather_report, field_name, "") or "").strip()
+        ]
+        if missing:
+            return f"严格周报官方气象证据缺少字段: {', '.join(missing)}"
+        return ""
+
+    @staticmethod
+    def _format_weekly_item_evidence(item: Dict, title: str) -> str:
+        module_type = item.get("module_type", "")
+        module_rank = item.get("module_rank", "")
+        content_excerpt = " ".join(
+            str(item.get("content_excerpt", "")).split()
+        )
+        content_level = item.get("content_level", "title_only")
+        level_name = {
+            "full_text": "正文摘录",
+            "summary": "摘要",
+            "title_only": "标题",
+        }.get(content_level, content_level)
+        evidence_text = content_excerpt[:1200] if content_excerpt else title
+        lines = [
+            f"\n  模块：{module_type}",
+            f"\n  模块内排名：{module_rank}",
+            f"\n  证据ID：[{module_type}:{module_rank}]",
+            f"\n  证据层级：{level_name}",
+            f"\n  证据内容：{evidence_text}",
+        ]
+        risk_warning = str(item.get("risk_warning", "")).strip()
+        if risk_warning:
+            lines.append(f"\n  风险提示：{risk_warning}")
+        return "".join(lines)
+
+    @staticmethod
+    def _weekly_evidence_ids(
+        stats: Optional[List[Dict]], rss_stats: Optional[List[Dict]]
+    ) -> Dict[str, set[str]]:
+        evidence_ids: Dict[str, set[str]] = {
+            "policy": set(),
+            "research": set(),
+            "weather": {"[weather:official]"},
+        }
+        for groups in (stats or [], rss_stats or []):
+            for group in groups:
+                for item in group.get("titles") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    module_type = item.get("module_type")
+                    if module_type in {"policy", "research"}:
+                        evidence_ids[module_type].add(
+                            f"[{module_type}:{item.get('module_rank')}]"
+                        )
+        for module_type in ("policy", "research"):
+            if not evidence_ids[module_type]:
+                evidence_ids[module_type].add(f"[{module_type}:none]")
+        return evidence_ids
+
+    def _prepare_weekly_module_content(
+        self,
+        stats: Optional[List[Dict]],
+        rss_stats: Optional[List[Dict]],
+        module_type: str,
+    ) -> str:
+        def filtered(groups: Optional[List[Dict]]) -> List[Dict]:
+            result = []
+            for group in groups or []:
+                items = [
+                    item for item in group.get("titles") or []
+                    if isinstance(item, dict)
+                    and item.get("module_type") == module_type
+                ]
+                if items:
+                    result.append({**group, "titles": items})
+            return result
+
+        prepared = self._prepare_news_content(
+            filtered(stats), filtered(rss_stats), report_mode="weekly"
+        )
+        content = "\n".join(
+            part for part in (prepared.news_content, prepared.rss_content) if part
+        )
+        return content or f"本期无入选证据 [{module_type}:none]"
+
+    @staticmethod
+    def _validate_weekly_citations(
+        result: AIAnalysisResult,
+        evidence_ids: Dict[str, set[str]],
+    ) -> str:
+        citation_pattern = re.compile(
+            r"\[(?:policy|research|weather):[A-Za-z0-9_-]+\]"
+        )
+        for field_name, module_type in (
+            ("policy_trends", "policy"),
+            ("research_trends", "research"),
+            ("weather_risks", "weather"),
+        ):
+            citations = set(citation_pattern.findall(getattr(result, field_name)))
+            allowed = evidence_ids[module_type]
+            if not citations:
+                return f"严格周报 {field_name} 缺少可追溯证据引用"
+            invalid = citations - allowed
+            if invalid:
+                return (
+                    f"严格周报 {field_name} 存在无效或跨模块证据引用: "
+                    + ", ".join(sorted(invalid))
+                )
+            if not citations & allowed:
+                return f"严格周报 {field_name} 未引用对应模块证据"
+        return ""
+
+    @staticmethod
+    def _prepare_weather_content(weather_report: Any) -> str:
+        """将官方农业气象报告序列化为独立证据区。"""
+        if weather_report is None:
+            return ""
+
+        def value(name: str, fallback: str = "") -> Any:
+            result = getattr(weather_report, name, None)
+            if result is None and fallback:
+                result = getattr(weather_report, fallback, None)
+            if isinstance(result, (list, tuple, set)):
+                return "、".join(str(item) for item in result if str(item).strip())
+            return "" if result is None else str(result).strip()
+
+        fields = (
+            ("证据ID", "[weather:official]"),
+            ("标题", value("title")),
+            ("发布日期", value("report_date")),
+            ("回顾起始", value("reviewed_start", "review_start")),
+            ("回顾结束", value("reviewed_end", "review_end")),
+            ("农业影响", value("impact")),
+            ("风险展望", value("outlook")),
+            ("官方建议", value("recommendations")),
+            ("风险区域", value("risk_regions")),
+            ("风险作物", value("risk_crops")),
+            ("官方原页", value("source_url")),
+        )
+        return "\n".join(f"- {label}：{text}" for label, text in fields if text)
 
     def _call_ai(self, user_prompt: str) -> str:
         """调用 AI API（使用 LiteLLM）"""
@@ -518,6 +775,9 @@ class AIAnalyzer:
         news_content: str,
         rss_content: str,
         standalone_content: str,
+        weather_content: str = "",
+        policy_content: str = "",
+        research_content: str = "",
     ) -> Optional[AIAnalysisResult]:
         """用独立模型调用对照原始证据校审摘要，失败时保留首轮结果。"""
         draft_json = json.dumps(
@@ -528,14 +788,26 @@ class AIAnalyzer:
                 "rss_insights": draft.rss_insights,
                 "outlook_strategy": draft.outlook_strategy,
                 "standalone_summaries": draft.standalone_summaries,
+                "policy_trends": draft.policy_trends,
+                "research_trends": draft.research_trends,
+                "weather_risks": draft.weather_risks,
             },
             ensure_ascii=False,
         )
         evidence = "\n".join(
             part for part in (
-                "热榜证据：\n" + news_content if news_content else "",
-                "RSS证据：\n" + rss_content if rss_content else "",
+                (
+                    "policy_trends 唯一证据：\n" + policy_content
+                    if policy_content else ""
+                ),
+                (
+                    "research_trends 唯一证据：\n" + research_content
+                    if research_content else ""
+                ),
+                "热榜证据：\n" + news_content if news_content and not policy_content else "",
+                "RSS证据：\n" + rss_content if rss_content and not research_content else "",
                 "独立展示区证据：\n" + standalone_content if standalone_content else "",
+                "官方气象证据：\n" + weather_content if weather_content else "",
             )
             if part
         )
@@ -548,6 +820,9 @@ class AIAnalyzer:
                     "删除证据未直接出现的具体实体、病害、基因、实验方法、数据、资源状态和验证结论；"
                     "上位概念不得擅自细化；“输入未提供”不得改写成“来源未发布或未开源”；"
                     "应用潜力不得改写成已经应用。可以把无依据细节泛化为证据中的原词。"
+                    "policy_trends 只能使用 policy_trends 证据区且必须保留 policy 证据ID；"
+                    "research_trends 只能使用 research_trends 证据区且必须保留 research 证据ID；"
+                    "weather_risks 只能使用官方气象证据且必须保留 [weather:official]。"
                     "不要解释修改过程，不要在输出中列举被删除的词。"
                     "只返回与草稿相同字段结构的合法 JSON 对象。"
                 ),
@@ -791,6 +1066,19 @@ class AIAnalyzer:
             result.outlook_strategy = _normalize_narrative_text(
                 data.get("outlook_strategy", "")
             )
+
+            for field_name in (
+                "policy_trends", "research_trends", "weather_risks"
+            ):
+                value = data.get(field_name, "")
+                if not isinstance(value, (str, list, tuple)):
+                    result.error = f"字段 {field_name} 只接受字符串或列表"
+                    return result
+                setattr(
+                    result,
+                    field_name,
+                    _normalize_narrative_text(value),
+                )
 
             # 解析独立展示区概括
             summaries = data.get("standalone_summaries", {})

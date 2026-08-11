@@ -783,6 +783,11 @@ class NewsAnalyzer:
                 keywords=keywords,
                 standalone_data=ai_standalone,
                 strict=mode in {"daily_delivery", "weekly"},
+                weather_report=(
+                    getattr(self, "_agro_weather_report", None)
+                    if mode == "weekly"
+                    else None
+                ),
             )
 
             # 设置 AI 分析使用的模式
@@ -1161,7 +1166,14 @@ class NewsAnalyzer:
         ai_config = self.ctx.config.get("AI_ANALYSIS", {})
         if (
             ai_config.get("ENABLED", False)
-            and (stats or rss_items)
+            and (
+                stats
+                or rss_items
+                or (
+                    mode == "weekly"
+                    and getattr(self, "_agro_weather_report", None) is not None
+                )
+            )
             and (schedule is None or schedule.analyze)
         ):
             # 获取模式策略来确定报告类型

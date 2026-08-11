@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytz
@@ -206,6 +207,19 @@ class WeeklyThreeModuleSelectionTests(unittest.TestCase):
             {row["module_type"] for group in grouped for row in group["titles"]},
             {"policy", "research"},
         )
+
+    def test_ai_prompt_requests_three_grounded_sections_without_carrier_blacklist(self):
+        prompt = (
+            Path(__file__).resolve().parents[1] / "config" / "ai_analysis_prompt.txt"
+        ).read_text(encoding="utf-8")
+
+        for field in ("policy_trends", "research_trends", "weather_risks"):
+            self.assertIn(field, prompt)
+        self.assertIn("会议", prompt)
+        self.assertIn("调研", prompt)
+        self.assertIn("企业稿", prompt)
+        self.assertIn("核心政策或科研事实", prompt)
+        self.assertIn("{weather_content}", prompt)
 
     def test_weekly_pipeline_keeps_same_title_with_distinct_module_urls(self):
         pipeline = self._weekly_pipeline()
