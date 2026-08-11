@@ -722,7 +722,7 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         )
 
     @patch("trendradar.__main__.AIAnalyzer")
-    def test_weekly_ai_uses_official_weather_and_records_only_complete_result(
+    def test_weekly_ai_uses_official_weather_without_prepdf_checkpoint(
         self, analyzer_class
     ):
         scheduler = MagicMock()
@@ -769,9 +769,10 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         call_kwargs = analyzer_class.return_value.analyze.call_args.kwargs
         self.assertIs(call_kwargs["weather_report"], weather)
         self.assertEqual(call_kwargs["report_mode"], "weekly")
-        scheduler.record_execution.assert_called_once_with(
-            "monday_weekly", "analyze", "2026-08-03"
-        )
+        # Weekly analyze is durable only after the dedicated PDF has been
+        # generated and validated by _run_analysis_pipeline().  This helper
+        # must not advance the checkpoint on its own.
+        scheduler.record_execution.assert_not_called()
 
         scheduler.reset_mock()
         analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
