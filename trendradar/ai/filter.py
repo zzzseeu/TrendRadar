@@ -15,11 +15,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from trendradar.ai.client import AIClient
+from trendradar.ai.module_contract import (
+    CLASSIFICATION_MODULE_TYPES,
+    EXCLUDE,
+    PERSISTED_MODULE_TYPES,
+)
 from trendradar.ai.prompt_loader import load_prompt_template
 
 
-TITLE_ONLY_SCORE_MIN = 0.70
-TITLE_ONLY_SCORE_MAX = 0.78
 TAG_JSON_REPAIR_PROMPT = (
     '上一个响应不是可解析的 JSON。请修正语法并仅返回一个 JSON 对象，'
     '格式必须为 {"tags":[{"tag":"标签名","description":"描述"}]}。'
@@ -27,8 +30,10 @@ TAG_JSON_REPAIR_PROMPT = (
 )
 CLASSIFY_JSON_REPAIR_PROMPT = (
     "上一个响应不是可解析的分类 JSON。请修正语法并仅返回严格 JSON 数组。"
-    "数组元素必须包含 id、tag_id、score、importance_score 和 summary；"
-    "如果没有匹配新闻，请返回 []。不要添加 Markdown 或解释。"
+    "必须为每个输入新闻恰好返回一项，数组长度必须等于输入新闻数；"
+    "数组元素必须包含 id、module_type、score、importance_score 和 summary；"
+    "policy/research 必须包含有效 tag_id，exclude 可以没有 tag_id。"
+    "不要添加 Markdown 或解释。"
 )
 
 
@@ -637,13 +642,14 @@ class AIFilter:
 
         if strict:
             if not data:
-                if (response or "").strip() != "[]":
+                if title_ids:
                     raise _InvalidClassificationResponse(
-                        "严格模式的合法无匹配响应必须精确为 []"
+                        "严格模式分类遗漏 news id: "
+                        f"{sorted(title_ids)}"
                     )
                 return []
             required_fields = {
-                "id", "tag_id", "score", "importance_score", "summary"
+                "id", "module_type", "score", "importance_score", "summary"
             }
             seen_news_ids = set()
             for index, item in enumerate(data):
@@ -670,15 +676,25 @@ class AIFilter:
                         f"严格模式分类包含重复 news id: {news_id!r}"
                     )
                 seen_news_ids.add(news_id)
-                tag_id = item["tag_id"]
-                if type(tag_id) is not int:
+                module_type = item["module_type"]
+                if module_type not in CLASSIFICATION_MODULE_TYPES:
                     raise _InvalidClassificationResponse(
-                        "严格模式分类 tag id 必须为整数"
+                        f"严格模式分类模块类型无效: {module_type!r}"
                     )
-                if tag_id not in tag_id_set:
+                if module_type in PERSISTED_MODULE_TYPES and "tag_id" not in item:
                     raise _InvalidClassificationResponse(
-                        f"严格模式分类包含未知 tag id: {item['tag_id']!r}"
+                        f"严格模式分类缺少 tag id: {news_id!r}"
                     )
+                if "tag_id" in item:
+                    tag_id = item["tag_id"]
+                    if type(tag_id) is not int:
+                        raise _InvalidClassificationResponse(
+                            "严格模式分类 tag id 必须为整数"
+                        )
+                    if tag_id not in tag_id_set:
+                        raise _InvalidClassificationResponse(
+                            f"严格模式分类包含未知 tag id: {tag_id!r}"
+                        )
                 raw_score = item["score"]
                 raw_importance = item["importance_score"]
                 if (
@@ -708,6 +724,30 @@ class AIFilter:
                     raise _InvalidClassificationResponse(
                         f"严格模式分类摘要为空: {news_id!r}"
                     )
+
+            if seen_news_ids != title_ids:
+                missing = sorted(title_ids - seen_news_ids)
+                raise _InvalidClassificationResponse(
+                    f"严格模式分类遗漏 news id: {missing}"
+                )
+
+            results = []
+            for item in data:
+                if item["module_type"] == EXCLUDE:
+                    continue
+                news_id = item["id"]
+                results.append({
+                    "news_item_id": news_id,
+                    "module_type": item["module_type"],
+                    "tag_id": item["tag_id"],
+                    "relevance_score": float(item["score"]),
+                    "importance_score": float(item["importance_score"]),
+                    "ai_summary": " ".join(item["summary"].split())[:300],
+                })
+            for result in results:
+                result.update(title_metadata.get(result["news_item_id"], {}))
+                result.pop("title", None)
+            return results
 
         # 每条新闻只保留一个最高分的 tag
         best_per_news: Dict[int, Dict] = {}  # news_id -> {"tag_id": ..., "score": ...}
@@ -775,13 +815,6 @@ class AIFilter:
                 except (ValueError, TypeError):
                     importance_score = best_score
 
-                relevance_score = best_score
-                if metadata.get("content_level") == "title_only":
-                    relevance_score = max(
-                        TITLE_ONLY_SCORE_MIN,
-                        min(TITLE_ONLY_SCORE_MAX, relevance_score),
-                    )
-
                 ai_summary = " ".join(str(item.get("summary", "")).split())[:300]
                 if not ai_summary:
                     original_title = metadata.get("title", title_map.get(news_id, ""))
@@ -796,7 +829,7 @@ class AIFilter:
                     best_per_news[news_id] = {
                         "news_item_id": news_id,
                         "tag_id": best_tag_id,
-                        "relevance_score": relevance_score,
+                        "relevance_score": best_score,
                         "importance_score": importance_score,
                         "ai_summary": ai_summary,
                     }

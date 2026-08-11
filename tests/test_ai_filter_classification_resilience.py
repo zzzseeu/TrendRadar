@@ -23,7 +23,7 @@ class ClassificationResponseResilienceTests(unittest.TestCase):
 
     def test_valid_match_uses_zero_temperature(self):
         self.ai_filter.client.chat.return_value = (
-            '[{"id":1,"tag_id":18,"score":0.82,'
+            '[{"id":1,"module_type":"research","tag_id":18,"score":0.82,'
             '"importance_score":0.78,"summary":"仅标题显示：木豆基因组完成"}]'
         )
         result = self.ai_filter.classify_batch(self.titles, self.tags, "育种")

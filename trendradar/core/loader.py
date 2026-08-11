@@ -418,7 +418,7 @@ def _load_ai_filter_config(config_data: Dict) -> Dict:
         "EXTRACT_PROMPT_FILE": ai_filter.get("extract_prompt_file", "extract_prompt.txt"),
         "UPDATE_TAGS_PROMPT_FILE": ai_filter.get("update_tags_prompt_file", "update_tags_prompt.txt"),
         "RECLASSIFY_THRESHOLD": ai_filter.get("reclassify_threshold", 0.6),
-        "MIN_SCORE": float(ai_filter.get("min_score", 0)),
+        "MIN_SCORE": float(ai_filter.get("min_score", 0.5)),
         "HIGHLIGHT_TOP_N": max(0, int(ai_filter.get("highlight_top_n", 5))),
         "SUMMARY_GROUNDING_REVIEW_ENABLED": ai_filter.get(
             "summary_grounding_review_enabled", True

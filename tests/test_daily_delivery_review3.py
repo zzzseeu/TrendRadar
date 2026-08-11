@@ -647,13 +647,17 @@ class DailyDeliveryStrictClassificationProtocolTests(unittest.TestCase):
         self.tags = [
             {"id": 18, "tag": "水稻育种", "description": "育种进展"}
         ]
-        self.valid = json.dumps([{
-            "id": 1,
-            "tag_id": 18,
-            "score": 0.82,
-            "importance_score": 0.78,
-            "summary": "第一条新闻的证据摘要",
-        }])
+        self.valid = json.dumps([
+            {
+                "id": 1, "module_type": "policy", "tag_id": 18,
+                "score": 0.82, "importance_score": 0.78,
+                "summary": "第一条新闻的证据摘要",
+            },
+            {
+                "id": 2, "module_type": "exclude", "score": 0.1,
+                "importance_score": 0.1, "summary": "第二条新闻无关",
+            },
+        ])
 
     def test_each_strict_protocol_violation_triggers_one_successful_repair(self):
         invalid_responses = {
@@ -694,9 +698,7 @@ class DailyDeliveryStrictClassificationProtocolTests(unittest.TestCase):
                 result = self.ai_filter.classify_batch(
                     self.titles, self.tags, "育种", strict=True
                 )
-                self.assertEqual(
-                    [item["news_item_id"] for item in result], [1]
-                )
+                self.assertEqual([item["news_item_id"] for item in result], [1])
                 self.assertEqual(self.ai_filter.client.chat.call_count, 2)
 
     def test_strict_protocol_violation_after_repair_fails_whole_batch(self):

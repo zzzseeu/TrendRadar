@@ -187,7 +187,7 @@ ai_filter:
   batch_size: 200                         # Titles sent to the AI per batch; auto-batched beyond this
   batch_interval: 2                       # Batch interval (seconds) to avoid API rate limits; 0=no wait
 
-  min_score: 0.7                          # Min push-score threshold (0.0~1.0); higher is stricter
+  min_score: 0.5                          # Min push-score threshold (0.0~1.0); higher is stricter
                                           # Recommend starting at 0.5~0.7; 0=no filtering
 
   # Interest description file (defaults to config/ai_interests.txt; no need to configure)

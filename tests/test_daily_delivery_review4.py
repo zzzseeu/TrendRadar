@@ -546,6 +546,7 @@ class StrictClassificationScalarTypeTests(unittest.TestCase):
     def test_strict_scalar_types_reject_json_coercions_and_nonfinite_numbers(self):
         valid = {
             "id": 1,
+            "module_type": "research",
             "tag_id": 9,
             "score": 0.8,
             "importance_score": 0.7,
@@ -580,6 +581,7 @@ class StrictClassificationScalarTypeTests(unittest.TestCase):
     def test_invalid_scalar_triggers_one_repair_and_accepts_valid_repair(self):
         invalid = json.dumps([{
             "id": 1,
+            "module_type": "research",
             "tag_id": 9,
             "score": "0.8",
             "importance_score": 0.7,
@@ -587,6 +589,7 @@ class StrictClassificationScalarTypeTests(unittest.TestCase):
         }])
         valid = json.dumps([{
             "id": 1,
+            "module_type": "research",
             "tag_id": 9,
             "score": 0.8,
             "importance_score": 0.7,
@@ -602,6 +605,7 @@ class StrictClassificationScalarTypeTests(unittest.TestCase):
     def test_invalid_scalar_after_repair_rejects_entire_batch(self):
         invalid = json.dumps([{
             "id": 1,
+            "module_type": "research",
             "tag_id": 9,
             "score": True,
             "importance_score": 0.7,
