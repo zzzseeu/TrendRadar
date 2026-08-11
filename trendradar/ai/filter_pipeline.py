@@ -932,7 +932,12 @@ class AIFilterPipeline:
             })
             tag_groups[tag_name]["count"] += 1
 
-        self._limit_search_hotspots(tag_groups)
+        # The authoritative natural-week snapshot must reach the policy-first
+        # selector intact. Ordinary reports still use the display hotspot cap.
+        if not (
+            self._rss_window is not None and self._rss_ids_authoritative
+        ):
+            self._limit_search_hotspots(tag_groups)
 
         # 跨标签、跨来源统一选择重点新闻。importance_score 是科研/育种价值，
         # relevance_score 是与用户兴趣的相关性；证据层级仅用于同分时优先。

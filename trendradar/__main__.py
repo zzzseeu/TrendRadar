@@ -8,6 +8,7 @@ TrendRadar 主程序
 
 import argparse
 import hashlib
+import json
 import os
 import webbrowser
 from collections.abc import Mapping
@@ -32,7 +33,15 @@ from trendradar.storage import convert_crawl_results_to_news_data
 from trendradar.storage.base import RSSItem
 from trendradar.utils.article_links import build_reader_url
 from trendradar.utils.time import DEFAULT_TIMEZONE
-from trendradar.ai import AIAnalyzer, AIAnalysisResult
+from trendradar.ai import AIAnalyzer, AIAnalysisResult, AIFilter
+from trendradar.ai.analyzer import has_required_narrative
+from trendradar.ai.module_contract import (
+    CLASSIFICATION_MODULE_TYPES,
+    MODULE_CONTRACT_VERSION,
+    MODULE_STORAGE_SCHEMA_VERSION,
+    PERSISTED_MODULE_TYPES,
+)
+from trendradar.ai.prompt_loader import load_prompt_template
 from trendradar.core.daily_delivery import DailyDeliveryAggregator
 from trendradar.core.scheduler import ResolvedSchedule, WeeklyAttemptLock
 from trendradar.core.weekly import (
@@ -55,6 +64,7 @@ from trendradar.commands.version import _fetch_remote_version, _parse_version
 
 SEARCH_FEED_ID = "agri-breeding-search"
 SEARCH_FEED_NAME = "农业育种热点搜索"
+WEEKLY_ARTIFACT_CONTRACT_VERSION = 1
 
 
 def _mark_news_search_failed(rss_data) -> None:
@@ -401,9 +411,84 @@ class NewsAnalyzer:
 
     @staticmethod
     def _weekly_account_delivery_action(
-        pdf_digest: str, account_hash: str
+        artifact_contract_hash: str,
+        pdf_digest: str,
+        account_hash: str,
     ) -> str:
-        return f"weekly-pdf:{pdf_digest}:{account_hash}"
+        return (
+            f"weekly-pdf:{artifact_contract_hash}:"
+            f"{pdf_digest}:{account_hash}"
+        )
+
+    def _weekly_artifact_contract_hash(self) -> str:
+        """Bind partial delivery to the complete current weekly artifact contract."""
+        config = self.ctx.config
+        filter_config = {
+            "PROMPT_FILE": "prompt.txt",
+            "EXTRACT_PROMPT_FILE": "extract_prompt.txt",
+            "UPDATE_TAGS_PROMPT_FILE": "update_tags_prompt.txt",
+            **config.get("AI_FILTER", {}),
+        }
+        ai_filter = AIFilter(
+            config.get("AI", {}),
+            filter_config,
+            self._operation_run_at,
+        )
+        interests_file = (
+            getattr(self, "interests_file", None)
+            or filter_config.get("INTERESTS_FILE")
+        )
+        interests_content = ai_filter.load_interests_content(interests_file)
+        if not interests_content:
+            raise RuntimeError("周报 artifact contract 缺少兴趣内容")
+        if not ai_filter.classify_system or not ai_filter.classify_user:
+            raise RuntimeError("周报 artifact contract 缺少分类 Prompt")
+
+        analysis_config = config.get("AI_ANALYSIS", {})
+        analysis_prompt_file = analysis_config.get(
+            "PROMPT_FILE", "ai_analysis_prompt.txt"
+        )
+        analysis_system, analysis_user = load_prompt_template(
+            analysis_prompt_file, label="AI"
+        )
+        if not analysis_system or not analysis_user:
+            raise RuntimeError("周报 artifact contract 缺少分析 Prompt")
+
+        payload = {
+            "artifact_contract_version": WEEKLY_ARTIFACT_CONTRACT_VERSION,
+            "classification_prompt": {
+                "file": filter_config.get("PROMPT_FILE", "prompt.txt"),
+                "system": ai_filter.classify_system,
+                "user": ai_filter.classify_user,
+            },
+            "interests": {
+                "file": interests_file or "ai_interests.txt",
+                "content": interests_content,
+            },
+            "analysis_prompt": {
+                "file": analysis_prompt_file,
+                "system": analysis_system,
+                "user": analysis_user,
+            },
+            "min_score": filter_config.get("MIN_SCORE", 0.5),
+            "module_contract": {
+                "version": MODULE_CONTRACT_VERSION,
+                "classification_types": sorted(
+                    CLASSIFICATION_MODULE_TYPES
+                ),
+                "persisted_types": sorted(PERSISTED_MODULE_TYPES),
+                "storage_schema_version": MODULE_STORAGE_SCHEMA_VERSION,
+                "weekly_selection_fields": [
+                    "module_type", "module_rank", "highlight_rank",
+                    "weekly_topics",
+                ],
+            },
+        }
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     def _deliver_weekly_pdf(self, schedule: ResolvedSchedule) -> bool:
         """Send the dedicated weekly PDF to WeCom and then persist once-push."""
@@ -434,13 +519,14 @@ class NewsAnalyzer:
         )
         try:
             pdf_digest = self._weekly_pdf_digest(self._weekly_pdf_path)
+            artifact_contract_hash = self._weekly_artifact_contract_hash()
         except Exception as exc:
-            print(f"[周报] PDF 摘要计算失败: {type(exc).__name__}")
+            print(f"[周报] PDF 交付契约计算失败: {type(exc).__name__}")
             return False
 
         def account_action(account_hash: str) -> str:
             return self._weekly_account_delivery_action(
-                pdf_digest, account_hash
+                artifact_contract_hash, pdf_digest, account_hash
             )
 
         if not dispatcher.dispatch_weekly_pdf(
@@ -468,6 +554,13 @@ class NewsAnalyzer:
         """Resume a durable partial delivery without regenerating its PDF."""
         if not schedule.period_key:
             return None
+        if (
+            not schedule.analyze
+            or not self.ctx.config.get("AI_ANALYSIS", {}).get(
+                "ENABLED", False
+            )
+        ):
+            return None
         window = previous_natural_week(
             self._operation_run_at(), self.ctx.timezone
         )
@@ -483,14 +576,22 @@ class NewsAnalyzer:
         account_hashes = dispatcher.weekly_pdf_account_hashes()
         if not account_hashes:
             return None
-        pdf_digest = self._weekly_pdf_digest(str(pdf_path))
+        try:
+            pdf_digest = self._weekly_pdf_digest(str(pdf_path))
+            artifact_contract_hash = self._weekly_artifact_contract_hash()
+        except Exception as exc:
+            print(
+                f"[周报] 旧 PDF 交付契约校验失败，执行完整重建: "
+                f"{type(exc).__name__}"
+            )
+            return None
         checkpoint_date = window.end.strftime("%Y-%m-%d")
         scheduler = self.ctx.create_scheduler()
         delivered = [
             scheduler.already_executed(
                 schedule.period_key,
                 self._weekly_account_delivery_action(
-                    pdf_digest, account_hash
+                    artifact_contract_hash, pdf_digest, account_hash
                 ),
                 checkpoint_date,
             )
@@ -1215,6 +1316,14 @@ class NewsAnalyzer:
                 error = ai_result.error if ai_result is not None else "无有效结果"
                 raise RuntimeError(f"{label} AI 摘要失败: {error}")
 
+        if mode == "weekly" and (
+            ai_result is None
+            or not ai_result.success
+            or not has_required_narrative(ai_result, report_mode="weekly")
+        ):
+            error = ai_result.error if ai_result is not None else "未执行 AI 分析"
+            raise RuntimeError(f"周报 AI 三段叙事失败: {error}")
+
         # 翻译 RSS 和独立展示区内容（如果启用）— 在 HTML 生成前执行，确保网页版也能展示翻译内容
         # standalone_data 在此翻译一次后贯穿到推送阶段复用，避免重复翻译并保证网页与推送译文一致
         # 热榜翻译在推送时由 dispatch_all 处理 report_data
@@ -1361,6 +1470,12 @@ class NewsAnalyzer:
             self, "_weekly_ai_filter_succeeded", False
         ):
             raise RuntimeError("周报普通新闻缺少成功的严格 AI 筛选，无法生成 PDF")
+        if (
+            ai_result is None
+            or not ai_result.success
+            or not has_required_narrative(ai_result, report_mode="weekly")
+        ):
+            raise RuntimeError("周报缺少成功且完整的 AI 三段叙事，无法生成 PDF")
 
         window = self._rss_window
         if window is None:

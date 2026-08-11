@@ -1,5 +1,8 @@
 """AI 新闻分类模块的共享契约。"""
 
+MODULE_CONTRACT_VERSION = 1
+MODULE_STORAGE_SCHEMA_VERSION = 1
+
 POLICY = "policy"
 RESEARCH = "research"
 EXCLUDE = "exclude"

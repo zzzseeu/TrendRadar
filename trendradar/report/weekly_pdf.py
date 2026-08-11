@@ -15,7 +15,7 @@ import tempfile
 from typing import Any
 from urllib.parse import urlsplit
 
-from trendradar.core.weekly import report_item_identity
+from trendradar.core.weekly import primary_weekly_topic, report_item_identity
 from trendradar.report.pdf import (
     MAX_PDF_BYTES,
     MIN_PDF_BYTES,
@@ -67,7 +67,9 @@ def _link(url: Any, label: str) -> str:
     return f'<a href="{_text(safe_url)}">{_text(label)}</a>'
 
 
-def _render_news_card(item: dict, *, marker_label: str) -> str:
+def _render_news_card(
+    item: dict, *, module_type: str, marker_label: str
+) -> str:
     title = _text(item.get("title")) or "（无标题）"
     summary = _text(item.get("ai_summary") or item.get("summary"))
     source = _text(item.get("source_name") or item.get("feed_name") or "未标注来源")
@@ -84,9 +86,14 @@ def _render_news_card(item: dict, *, marker_label: str) -> str:
         f'<p class="summary">{summary}</p>' if summary else ""
     )
     links_html = f'<p class="links">{"　".join(links)}</p>' if links else ""
+    module_rank = _module_rank(item.get("module_rank"))
+    evidence_id = f"[{module_type}:{module_rank}]"
+    primary_topic = primary_weekly_topic(item)
     return (
         '<article class="news-card">'
         f'<h3>{marker}{title}</h3>'
+        f'<p class="evidence-meta">模块排名：{module_rank}　'
+        f'证据ID：{_text(evidence_id)}　主主题：{_text(primary_topic)}</p>'
         f'<p class="meta">来源：{source}　发布时间：{published_at}</p>'
         f'{summary_html}{links_html}'
         '</article>'
@@ -137,16 +144,22 @@ def render_weekly_pdf_html(
         f"农业育种新闻周报　周期：{period_label}"
     )
     policy_html = "".join(
-        _render_news_card(item, marker_label="重点政策") for item in policy
+        _render_news_card(
+            item, module_type="policy", marker_label="重点政策"
+        ) for item in policy
     ) or '<p class="empty">本周暂无符合条件的政策新闻</p>'
     research_html = "".join(
-        _render_news_card(item, marker_label="重点文献") for item in research
+        _render_news_card(
+            item, module_type="research", marker_label="重点文献"
+        ) for item in research
     ) or '<p class="empty">本周暂无符合条件的科研文献</p>'
     total_selected = len(policy) + len(research)
     total_highlights = sum(
         _module_rank(item.get("module_rank")) <= 5
         for item in policy + research
     )
+    policy_topics = _module_topic_coverage(policy)
+    research_topics = _module_topic_coverage(research)
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -174,6 +187,7 @@ h1 {{ margin: 0 0 3mm; color: #134e4a; font-size: 25pt; }}
 h2 {{ color: #0f766e; font-size: 15pt; border-bottom: 1px solid #99f6e4; padding-bottom: 2mm; margin-top: 8mm; }}
 h3 {{ font-size: 11.5pt; margin: 0 0 2mm; color: #164e63; }}
 .meta {{ color: #475569; margin: 0 0 2mm; font-size: 9pt; }}
+.evidence-meta {{ color: #0f766e; margin: 0 0 1mm; font-size: 9pt; font-weight: 600; }}
 .summary {{ margin: 2mm 0; }}
 .news-card {{ break-inside: avoid-page; border: 1px solid #dbeafe; border-radius: 2mm; padding: 3mm 4mm; margin: 3mm 0; background: #fff; }}
 .highlight-marker {{ display: inline-block; color: #fff; background: #0f766e; padding: 0 1.6mm; border-radius: 1mm; font-size: 8pt; margin-right: 2mm; vertical-align: 1px; }}
@@ -207,6 +221,8 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
     <div class="overview-grid">
       <div><span class="label">政策新闻</span><br>{len(policy)} 条（上限 20 条）</div>
       <div><span class="label">科研文献</span><br>{len(research)} 条（上限 20 条）</div>
+      <div><span class="label">政策主题覆盖</span><br>{_format_collection(policy_topics)}</div>
+      <div><span class="label">科研主题覆盖</span><br>{_format_collection(research_topics)}</div>
       <div><span class="label">TOP5 标记</span><br>{total_highlights} 条（每模块最多 5 条）</div>
       <div><span class="label">气象专栏</span><br>{"已纳入" if agro_weather else "本期暂无官方报告"}</div>
     </div>
@@ -230,6 +246,20 @@ def _validate_module_ranks(items: list[dict], module_name: str) -> None:
         )
 
 
+def _module_topic_coverage(items: list[dict]) -> list[str]:
+    topics = set()
+    for item in items:
+        values = item.get("weekly_topics") or item.get("tags") or []
+        if isinstance(values, str):
+            values = [values]
+        topics.update(
+            str(value).strip()
+            for value in values
+            if str(value).strip()
+        )
+    return sorted(topics)
+
+
 def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
     analysis = _analysis_text(
         ai_analysis, "weather_risks", "本期暂无农业气象风险分析。"
@@ -245,6 +275,7 @@ def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
     source = _link(getattr(agro_weather, "source_url", ""), "中央气象台原页")
     return f"""<section class="primary-module"><h2>三、农业气象与灾害风险</h2>
 <div class="module-analysis"><span class="label">气象风险研判</span><br>{analysis}</div>
+<p class="evidence-meta">证据ID：<span class="evidence-id">[weather:official]</span></p>
 <p><strong>{title}</strong>{("　" + source) if source else ""}</p>
 <div class="weather-grid">
   <div><span class="label">气象影响</span><br>{impact}</div>

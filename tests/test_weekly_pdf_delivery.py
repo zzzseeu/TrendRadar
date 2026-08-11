@@ -334,6 +334,69 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         self.assertIn("analyze", executed)
         self.assertIn("push", executed)
 
+    def test_contract_change_rejects_partial_artifact_before_rebuilding(self):
+        analyzer, scheduler, dispatcher = self._analyzer([
+            self._item("policy")
+        ])
+        self._prepare_run(analyzer)
+        analyzer._resume_weekly_pdf_delivery = (
+            NewsAnalyzer._resume_weekly_pdf_delivery.__get__(
+                analyzer, NewsAnalyzer
+            )
+        )
+        dispatcher.weekly_pdf_account_hashes.return_value = [
+            "account-a", "account-b"
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            old_pdf = Path(tmp) / (
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            )
+            old_pdf.write_bytes(b"%PDF-1.4\nold-contract")
+            old_digest = hashlib.sha256(old_pdf.read_bytes()).hexdigest()
+            old_contract = analyzer._weekly_artifact_contract_hash()
+            delivered_actions = {
+                NewsAnalyzer._weekly_account_delivery_action(
+                    old_contract, old_digest, "account-a"
+                )
+            }
+            scheduler.already_executed.side_effect = (
+                lambda _period, action, _date: action in delivered_actions
+            )
+            scheduler.record_execution.side_effect = (
+                lambda _period, action, _date:
+                delivered_actions.add(action) or True
+            )
+
+            analyzer.ctx.config["AI_FILTER"]["MIN_SCORE"] = 0.6
+            new_pdf = Path(tmp) / "rebuilt.pdf"
+            new_pdf.write_bytes(b"%PDF-1.4\nnew-contract")
+            with patch(
+                "trendradar.__main__.weekly_pdf_output_path",
+                return_value=old_pdf,
+            ), patch(
+                "trendradar.__main__.render_weekly_pdf_html",
+                return_value="<html />",
+            ), patch(
+                "trendradar.__main__.build_weekly_pdf",
+                return_value=str(new_pdf),
+            ) as build:
+                self.assertTrue(analyzer.run())
+
+        build.assert_called_once()
+        dispatcher.dispatch_weekly_pdf.assert_called_once()
+        self.assertEqual(
+            dispatcher.dispatch_weekly_pdf.call_args.args[0], str(new_pdf)
+        )
+        queried_actions = {
+            call.args[1] for call in scheduler.already_executed.call_args_list
+        }
+        self.assertNotIn(
+            NewsAnalyzer._weekly_account_delivery_action(
+                old_contract, old_digest, "account-a"
+            ),
+            queried_actions,
+        )
+
     def test_weekly_mainline_allows_either_news_module_to_be_empty(self):
         for module_type in ("policy", "research"):
             with self.subTest(module_type=module_type):
@@ -382,6 +445,56 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             if item.args[1] == "push"
         ]
         self.assertEqual(len(push_calls), 1)
+
+    def test_weekly_ai_analysis_disabled_fails_before_pdf_or_delivery(self):
+        analyzer, scheduler, dispatcher = self._analyzer([])
+        analyzer.ctx.config["AI_ANALYSIS"]["ENABLED"] = False
+        self._prepare_run(analyzer)
+        with patch("trendradar.__main__.render_weekly_pdf_html") as render, patch(
+            "trendradar.__main__.build_weekly_pdf"
+        ) as build:
+            self.assertFalse(analyzer.run())
+
+        analyzer._run_ai_analysis.assert_not_called()
+        render.assert_not_called()
+        build.assert_not_called()
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+
+    def test_weekly_schedule_without_analysis_fails_before_pdf_or_delivery(self):
+        analyzer, scheduler, dispatcher = self._analyzer([])
+        self._prepare_run(
+            analyzer, resolved_schedule=schedule(analyze=False)
+        )
+        with patch("trendradar.__main__.render_weekly_pdf_html") as render, patch(
+            "trendradar.__main__.build_weekly_pdf"
+        ) as build:
+            self.assertFalse(analyzer.run())
+
+        analyzer._run_ai_analysis.assert_not_called()
+        render.assert_not_called()
+        build.assert_not_called()
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+
+    def test_weekly_incomplete_three_part_narrative_fails_closed(self):
+        analyzer, scheduler, dispatcher = self._analyzer([])
+        analyzer._run_ai_analysis.return_value = AIAnalysisResult(
+            success=True,
+            policy_trends="政策暂无 [policy:none]",
+            research_trends="科研暂无 [research:none]",
+            weather_risks="",
+        )
+        self._prepare_run(analyzer)
+        with patch("trendradar.__main__.render_weekly_pdf_html") as render, patch(
+            "trendradar.__main__.build_weekly_pdf"
+        ) as build:
+            self.assertFalse(analyzer.run())
+
+        render.assert_not_called()
+        build.assert_not_called()
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+        scheduler.record_execution.assert_not_called()
 
     def test_weekly_mainline_rejects_three_empty_modules(self):
         analyzer, scheduler, dispatcher = self._analyzer([], weather=False)
@@ -785,6 +898,8 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         )
         analyzer._weekly_pdf_path = str(self._pdf())
 
+        artifact_contract = analyzer._weekly_artifact_contract_hash()
+
         with patch(
             "trendradar.notification.dispatcher.send_wework_pdf_file",
             side_effect=[True, False, True],
@@ -802,6 +917,9 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
             Path(analyzer._weekly_pdf_path).read_bytes()
         ).hexdigest()
         self.assertTrue(all(pdf_digest in action for action in account_actions))
+        self.assertTrue(all(
+            artifact_contract in action for action in account_actions
+        ))
         self.assertTrue(all("webhook" not in action for action in account_actions))
         self.assertTrue(all("key=" not in action for action in account_actions))
 
@@ -876,10 +994,7 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         )
         original_pdf = pdf_path.read_bytes()
         pdf_digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
-        first_action = NewsAnalyzer._weekly_account_delivery_action(
-            pdf_digest, account_hashes[0]
-        )
-        recorded_actions = {first_action}
+        recorded_actions = set()
         scheduler = MagicMock()
         scheduler.already_executed.side_effect = (
             lambda _period, action, _date: action in recorded_actions
@@ -896,12 +1011,19 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer.ctx = SimpleNamespace(
             cleanup=MagicMock(),
-            config={"DEBUG": False},
+            config={
+                "DEBUG": False,
+                "AI_ANALYSIS": {"ENABLED": True},
+            },
             timezone="Asia/Shanghai",
             get_time=MagicMock(return_value=run_at),
             create_scheduler=MagicMock(return_value=scheduler),
             create_notification_dispatcher=MagicMock(return_value=dispatcher),
         )
+        artifact_contract = analyzer._weekly_artifact_contract_hash()
+        recorded_actions.add(NewsAnalyzer._weekly_account_delivery_action(
+            artifact_contract, pdf_digest, account_hashes[0]
+        ))
         analyzer.proxy_url = ""
         analyzer._resolve_and_apply_schedule = MagicMock(
             return_value=self.schedule
@@ -939,6 +1061,77 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         analyzer._crawl_data.assert_not_called()
         analyzer._crawl_rss_data.assert_not_called()
         self.assertIn("push", recorded_actions)
+
+    def test_resume_refuses_partial_pdf_when_schedule_disables_analysis(self):
+        pdf_path = self._pdf(
+            "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+        )
+        dispatcher = MagicMock()
+        dispatcher.weekly_pdf_account_hashes.return_value = [
+            "account-a", "account-b"
+        ]
+        scheduler = MagicMock()
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        analyzer.ctx = SimpleNamespace(
+            config={"AI_ANALYSIS": {"ENABLED": True}},
+            timezone="Asia/Shanghai",
+            get_time=MagicMock(return_value=run_at),
+            create_scheduler=MagicMock(return_value=scheduler),
+            create_notification_dispatcher=MagicMock(return_value=dispatcher),
+        )
+        analyzer._run_at = run_at
+        analyzer.interests_file = None
+        analyzer.proxy_url = ""
+        contract = analyzer._weekly_artifact_contract_hash()
+        digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
+        delivered_action = NewsAnalyzer._weekly_account_delivery_action(
+            contract, digest, "account-a"
+        )
+        scheduler.already_executed.side_effect = (
+            lambda _period, action, _date: action == delivered_action
+        )
+
+        with patch(
+            "trendradar.__main__.weekly_pdf_output_path",
+            return_value=pdf_path,
+        ):
+            result = analyzer._resume_weekly_pdf_delivery(
+                schedule(analyze=False)
+            )
+
+        self.assertIsNone(result)
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+
+    def test_resume_refuses_partial_pdf_when_ai_analysis_is_disabled(self):
+        pdf_path = self._pdf(
+            "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+        )
+        create_dispatcher = MagicMock()
+        run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            config={"AI_ANALYSIS": {"ENABLED": False}},
+            timezone="Asia/Shanghai",
+            get_time=MagicMock(return_value=run_at),
+            create_notification_dispatcher=create_dispatcher,
+            create_scheduler=MagicMock(),
+        )
+        analyzer._run_at = run_at
+
+        with patch(
+            "trendradar.__main__.weekly_pdf_output_path",
+            return_value=pdf_path,
+        ):
+            result = analyzer._resume_weekly_pdf_delivery(schedule())
+
+        self.assertIsNone(result)
+        create_dispatcher.assert_not_called()
 
     def test_same_week_checkpoint_prevents_a_second_dispatch(self):
         scheduler = MagicMock()

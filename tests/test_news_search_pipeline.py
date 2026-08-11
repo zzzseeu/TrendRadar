@@ -18,7 +18,11 @@ from trendradar.__main__ import (
 )
 from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.loader import _load_rss_config
-from trendradar.core.weekly import WeeklyRSSAggregator
+from trendradar.core.weekly import (
+    WeeklyRSSAggregator,
+    previous_natural_week,
+    select_weekly_modules,
+)
 from trendradar.crawler.news_search import NewsSearchResult, SearchArticle
 from trendradar.report.formatter import format_title_for_platform
 from trendradar.storage.base import RSSData, RSSItem
@@ -935,7 +939,23 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
 
 class NewsSearchHotspotRankingTests(unittest.TestCase):
     @staticmethod
-    def _pipeline(max_hotspots=5, min_score=0, highlight_top_n=20):
+    def _pipeline(
+        max_hotspots=5, min_score=0, highlight_top_n=20, *, weekly=False
+    ):
+        weekly_kwargs = {}
+        if weekly:
+            run_at = pytz.timezone("Asia/Shanghai").localize(
+                datetime(2026, 8, 12, 15, 0)
+            )
+            weekly_kwargs = {
+                "rss_window": previous_natural_week(
+                    run_at, "Asia/Shanghai"
+                ),
+                "allowed_rss_ids": set(range(1, 100)),
+                "rss_ids_authoritative": True,
+                "strict": True,
+                "operation_date": "2026-08-10",
+            }
         return AIFilterPipeline(
             {
                 "RSS": {
@@ -953,6 +973,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             },
             storage_manager=None,
             get_time_func=lambda: None,
+            **weekly_kwargs,
         )
 
     @staticmethod
@@ -1010,6 +1031,69 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
         self.assertEqual(
             highest["final_hot_score"],
             round(0.45 * 0.6 + 0.35 * 0.6 + 0.20 * 0.3, 4),
+        )
+
+    def test_weekly_keeps_all_search_candidates_for_policy_priority_selector(self):
+        published_at = "2026-08-06T08:00:00+08:00"
+        shared_url = "https://example.org/shared-policy-research"
+        policy = self._search_result(
+            6,
+            tag="政策",
+            module_type="policy",
+            title="第六热点政策部署",
+            url=shared_url,
+            published_at=published_at,
+            relevance_score=0.51,
+            importance_score=0.51,
+            pre_hot_score=0.01,
+        )
+        conflicting_research = self._search_result(
+            7,
+            tag="科研",
+            module_type="research",
+            title="同一事项科研解读",
+            url=shared_url,
+            published_at=published_at,
+            relevance_score=0.99,
+            importance_score=0.99,
+            pre_hot_score=0.99,
+        )
+        other_research = [
+            self._search_result(
+                index,
+                tag="科研",
+                module_type="research",
+                published_at=published_at,
+                relevance_score=0.8 + index / 100,
+                importance_score=0.8,
+                pre_hot_score=0.8,
+            )
+            for index in range(1, 6)
+        ]
+
+        result = self._pipeline(
+            max_hotspots=5, min_score=0.5, weekly=True
+        )._build_filter_result(
+            raw_results=[*other_research, policy, conflicting_research],
+            tags=[
+                {"tag": "政策", "priority": 1},
+                {"tag": "科研", "priority": 2},
+            ],
+            total_processed=7,
+        )
+        candidates = [
+            item for group in result.tags for item in group["items"]
+        ]
+        self.assertEqual(len(candidates), 7)
+
+        selection = select_weekly_modules(candidates, min_score=0.5)
+        self.assertEqual(
+            [item["title"] for item in selection.policy],
+            ["第六热点政策部署"],
+        )
+        self.assertNotIn(
+            "同一事项科研解读",
+            [item["title"] for item in selection.research],
         )
 
     def test_reserved_feed_id_without_search_metadata_remains_regular_rss(self):

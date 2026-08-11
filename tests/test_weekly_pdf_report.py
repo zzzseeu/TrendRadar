@@ -146,6 +146,68 @@ class WeeklyPdfReportTests(unittest.TestCase):
         self.assertIn("@top-center", html)
         self.assertNotIn("position: fixed", html)
 
+    def test_narrative_evidence_maps_to_unique_visible_cards_and_topics(self):
+        policy = [{
+            **self.items[index - 1],
+            "title": f"政策证据 {index}",
+            "url": f"https://example.com/policy-evidence/{index}",
+            "module_rank": index,
+            "weekly_topics": ["种业监管", "品种审定"],
+        } for index in range(1, 3)]
+        research = [{
+            **self.items[index - 1],
+            "title": f"科研证据 {index}",
+            "url": f"https://example.com/research-evidence/{index}",
+            "module_rank": index,
+            "weekly_topics": ["基因编辑", "水稻育种"],
+        } for index in range(1, 3)]
+        analysis = SimpleNamespace(
+            success=True,
+            policy_trends="政策判断 [policy:1] [policy:2]",
+            research_trends="科研判断 [research:1] [research:2]",
+            weather_risks="气象判断 [weather:official]",
+        )
+
+        html = render_weekly_pdf_html(
+            policy_items=policy,
+            research_items=research,
+            ai_analysis=analysis,
+            agro_weather=self.weather,
+            period_label="period",
+            generated_at=datetime(2026, 8, 10),
+        )
+
+        cards = re.findall(
+            r'<article class="news-card"[^>]*>(.*?)</article>',
+            html,
+            flags=re.DOTALL,
+        )
+        for module_type, narrative in (
+            ("policy", analysis.policy_trends),
+            ("research", analysis.research_trends),
+        ):
+            for evidence_id in re.findall(
+                rf"\[{module_type}:\d+\]", narrative
+            ):
+                self.assertEqual(
+                    sum(evidence_id in card for card in cards),
+                    1,
+                    evidence_id,
+                )
+        self.assertIn("模块排名：1", html)
+        self.assertIn("证据ID：[policy:1]", html)
+        self.assertIn("主主题：品种审定", html)
+        self.assertIn("证据ID：[research:1]", html)
+        self.assertIn("主主题：基因编辑", html)
+        self.assertIn("政策主题覆盖", html)
+        self.assertIn("品种审定、种业监管", html)
+        self.assertIn("科研主题覆盖", html)
+        self.assertIn("基因编辑、水稻育种", html)
+        self.assertEqual(
+            html.count('<span class="evidence-id">[weather:official]</span>'),
+            1,
+        )
+
     def test_rejects_more_than_twenty_unselected_news_items(self):
         with self.assertRaisesRegex(ValueError, "20"):
             render_weekly_pdf_html(
@@ -738,6 +800,15 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
 
     def test_successful_strict_ai_filter_is_required_before_pdf(self):
         analyzer = self._weekly_pipeline_analyzer("ai")
+        analyzer.report_mode = "weekly"
+        analyzer.ctx.config["AI_ANALYSIS"]["ENABLED"] = True
+        analyzer._run_ai_analysis = MagicMock(return_value=SimpleNamespace(
+            success=True,
+            error="",
+            policy_trends="政策暂无 [policy:none]",
+            research_trends="科研趋势 [research:1]",
+            weather_risks="气象风险 [weather:official]",
+        ))
         captured = {}
 
         def run_filter(**kwargs):
@@ -754,6 +825,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
             analyzer._run_analysis_pipeline({}, "weekly", {}, {}, [], [], {})
         self.assertTrue(captured["strict"])
         self.assertTrue(analyzer._weekly_ai_filter_succeeded)
+        analyzer._run_ai_analysis.assert_called_once()
         render.assert_called_once()
         build.assert_called_once()
 
@@ -793,7 +865,15 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
             return_value="output/report.pdf",
         ) as build:
             try:
-                analyzer._generate_weekly_pdf_report([], None)
+                analyzer._generate_weekly_pdf_report(
+                    [],
+                    SimpleNamespace(
+                        success=True,
+                        policy_trends="政策趋势 [policy:1]",
+                        research_trends="科研趋势 [research:1]",
+                        weather_risks="气象风险 [weather:official]",
+                    ),
+                )
             except (TypeError, ValueError) as exc:
                 self.fail(f"真实 renderer 拒绝双模块已选结果: {exc}")
 
@@ -853,7 +933,15 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         with patch("trendradar.__main__.render_weekly_pdf_html", return_value="<html />") as render, patch(
             "trendradar.__main__.build_weekly_pdf", return_value="output/report.pdf"
         ) as build:
-            result = analyzer._generate_weekly_pdf_report([], None)
+            result = analyzer._generate_weekly_pdf_report(
+                [],
+                SimpleNamespace(
+                    success=True,
+                    policy_trends="政策暂无 [policy:none]",
+                    research_trends="科研暂无 [research:none]",
+                    weather_risks="气象风险 [weather:official]",
+                ),
+            )
 
         self.assertEqual(result, "output/report.pdf")
         self.assertEqual(analyzer._weekly_pdf_path, "output/report.pdf")
