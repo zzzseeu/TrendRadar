@@ -1,7 +1,11 @@
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
+import pytz
+
 from trendradar.__main__ import NewsAnalyzer
+from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.weekly import select_weekly_modules
 from trendradar.crawler.news_search import canonicalize_url, normalize_title
 
@@ -32,6 +36,26 @@ def _item(module_type, index, **overrides):
 
 
 class WeeklyThreeModuleSelectionTests(unittest.TestCase):
+    @staticmethod
+    def _weekly_pipeline(*, max_news=0):
+        tz = pytz.timezone("Asia/Shanghai")
+        start = tz.localize(datetime(2026, 8, 3))
+        from trendradar.core.weekly import NaturalWeekWindow
+
+        return AIFilterPipeline(
+            {
+                "TIMEZONE": "Asia/Shanghai",
+                "MAX_NEWS_PER_KEYWORD": max_news,
+                "RSS": {"ENABLED": True, "FEEDS": []},
+                "AI_FILTER": {"MIN_SCORE": 0.5, "HIGHLIGHT_TOP_N": 5},
+                "FILTER": {},
+            },
+            storage_manager=None,
+            get_time_func=lambda: None,
+            rss_window=NaturalWeekWindow(start, start + timedelta(days=7), "Asia/Shanghai"),
+            rss_ids_authoritative=True,
+        )
+
     def test_selects_independent_top_twenty_and_reserves_all_policy_identities(self):
         policy = [_item("policy", index) for index in range(25)]
         research = [_item("research", index) for index in range(25)]
@@ -182,6 +206,101 @@ class WeeklyThreeModuleSelectionTests(unittest.TestCase):
             {row["module_type"] for group in grouped for row in group["titles"]},
             {"policy", "research"},
         )
+
+    def test_weekly_pipeline_keeps_same_title_with_distinct_module_urls(self):
+        pipeline = self._weekly_pipeline()
+        raw_results = [
+            {
+                "news_item_id": 1,
+                "tag": "育种",
+                "title": "同标题新闻",
+                "source_id": "policy-source",
+                "source_name": "政策来源",
+                "source_type": "rss",
+                "module_type": "policy",
+                "url": "https://example.org/policy-item",
+                "published_at": "2026-08-08T08:00:00+08:00",
+                "relevance_score": 0.8,
+                "importance_score": 0.8,
+                "content_level": "summary",
+            },
+            {
+                "news_item_id": 2,
+                "tag": "育种",
+                "title": "同标题新闻",
+                "source_id": "research-source",
+                "source_name": "科研来源",
+                "source_type": "rss",
+                "module_type": "research",
+                "url": "https://example.org/research-item",
+                "published_at": "2026-08-08T08:00:00+08:00",
+                "relevance_score": 0.8,
+                "importance_score": 0.8,
+                "content_level": "summary",
+            },
+        ]
+
+        result = pipeline._build_filter_result(
+            raw_results, [{"tag": "育种", "priority": 1}], 2
+        )
+        _, rss_stats, _ = pipeline.convert_to_report_data(result, mode="weekly")
+        selection = select_weekly_modules(
+            rss_stats[0]["titles"], min_score=0.5
+        )
+
+        self.assertEqual(result.total_matched, 2)
+        self.assertEqual(len(selection.policy), 1)
+        self.assertEqual(len(selection.research), 1)
+
+    def test_ordinary_pipeline_still_deduplicates_same_title(self):
+        pipeline = self._weekly_pipeline()
+        pipeline._rss_window = None
+        pipeline._rss_ids_authoritative = False
+        raw_results = [
+            {
+                "news_item_id": index,
+                "tag": "育种",
+                "title": "普通模式同标题",
+                "source_id": f"source-{index}",
+                "source_type": "rss",
+                "module_type": "research",
+                "url": f"https://example.org/{index}",
+                "relevance_score": 0.8,
+            }
+            for index in (1, 2)
+        ]
+
+        result = pipeline._build_filter_result(
+            raw_results, [{"tag": "育种", "priority": 1}], 2
+        )
+
+        self.assertEqual(result.total_matched, 1)
+
+    def test_weekly_report_bypasses_per_keyword_cap_but_daily_keeps_it(self):
+        pipeline = self._weekly_pipeline(max_news=1)
+        raw_results = [
+            {
+                "news_item_id": index,
+                "tag": "育种",
+                "title": f"周报候选 {index}",
+                "source_id": "journal",
+                "source_type": "rss",
+                "module_type": "research",
+                "url": f"https://example.org/candidate/{index}",
+                "published_at": "2026-08-08T08:00:00+08:00",
+                "relevance_score": 0.8,
+            }
+            for index in range(1, 4)
+        ]
+        result = pipeline._build_filter_result(
+            raw_results, [{"tag": "育种", "priority": 1}], 3
+        )
+
+        _, weekly_stats, _ = pipeline.convert_to_report_data(result, mode="weekly")
+        _, daily_stats, _ = pipeline.convert_to_report_data(result, mode="daily")
+
+        self.assertEqual(len(weekly_stats[0]["titles"]), 3)
+        self.assertEqual(len(daily_stats[0]["titles"]), 1)
 
 
 if __name__ == "__main__":

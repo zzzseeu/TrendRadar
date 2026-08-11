@@ -45,7 +45,6 @@ from trendradar.core.weekly import (
 )
 from trendradar.report.weekly_pdf import (
     build_weekly_pdf,
-    flatten_unique_news,
     render_weekly_pdf_html,
     weekly_pdf_output_path,
 )
@@ -1299,10 +1298,11 @@ class NewsAnalyzer:
     ) -> str:
         """Build the offline A4 report from selected RSS news and official weather."""
         modules = getattr(self, "_weekly_news_modules", None)
-        if modules is None:
-            selected_news = flatten_unique_news(rss_items)
-        else:
-            selected_news = [*modules.policy, *modules.research]
+        if not isinstance(modules, WeeklyNewsSelection):
+            raise RuntimeError(
+                "周报缺少显式 WeeklyNewsSelection，已拒绝生成 PDF"
+            )
+        selected_news = [*modules.policy, *modules.research]
         weather = self._agro_weather_report
         if not selected_news and weather is None:
             raise RuntimeError("周报没有入选新闻和农业气象报告，无法生成 PDF")
@@ -1317,7 +1317,8 @@ class NewsAnalyzer:
                 self._operation_run_at(), self.ctx.timezone
             )
         html = render_weekly_pdf_html(
-            news_items=selected_news,
+            policy_items=modules.policy,
+            research_items=modules.research,
             ai_analysis=ai_result,
             agro_weather=weather,
             period_label=window.label,

@@ -866,6 +866,9 @@ class AIFilterPipeline:
 
         tag_groups: Dict[str, Dict] = {}
         seen_titles: Dict[str, set] = {}
+        deduplicate_titles = not (
+            self._rss_window is not None and self._rss_ids_authoritative
+        )
         min_score = self._score_value(
             self._filter_config.get("MIN_SCORE", 0)
         )
@@ -890,7 +893,7 @@ class AIFilterPipeline:
                 seen_titles[tag_name] = set()
 
             title = r["title"]
-            if title in seen_titles[tag_name]:
+            if deduplicate_titles and title in seen_titles[tag_name]:
                 continue
             seen_titles[tag_name].add(title)
 
@@ -1230,7 +1233,7 @@ class AIFilterPipeline:
                     hotlist_titles.append(title_entry)
 
             if hotlist_titles:
-                if self._max_news > 0:
+                if self._max_news > 0 and mode != "weekly":
                     hotlist_titles = hotlist_titles[:self._max_news]
                 hotlist_stats.append({
                     "word": tag_name,
@@ -1240,7 +1243,7 @@ class AIFilterPipeline:
                 })
 
             if rss_titles:
-                if self._max_news > 0:
+                if self._max_news > 0 and mode != "weekly":
                     rss_titles = rss_titles[:self._max_news]
                 rss_stats.append({
                     "word": tag_name,

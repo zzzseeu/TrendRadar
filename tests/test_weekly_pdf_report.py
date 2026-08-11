@@ -16,6 +16,7 @@ from trendradar.report.weekly_pdf import (
     flatten_unique_news,
     render_weekly_pdf_html,
 )
+from trendradar.core.weekly import WeeklyNewsSelection
 
 
 class WeeklyPdfReportTests(unittest.TestCase):
@@ -42,7 +43,8 @@ class WeeklyPdfReportTests(unittest.TestCase):
 
     def test_template_contains_reference_sections_and_all_news(self):
         html = render_weekly_pdf_html(
-            news_items=self.items,
+            policy_items=[],
+            research_items=self.items,
             ai_analysis=SimpleNamespace(
                 success=True,
                 core_trends="本周核心趋势",
@@ -74,7 +76,8 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_rejects_more_than_twenty_unselected_news_items(self):
         with self.assertRaisesRegex(ValueError, "20"):
             render_weekly_pdf_html(
-                news_items=self.items * 3,
+                policy_items=[],
+                research_items=self.items * 3,
                 ai_analysis=None,
                 agro_weather=self.weather,
                 period_label="period",
@@ -90,7 +93,8 @@ class WeeklyPdfReportTests(unittest.TestCase):
         selected = flatten_unique_news(groups)
         self.assertEqual(len(selected), 2)
         html = render_weekly_pdf_html(
-            news_items=selected,
+            policy_items=[],
+            research_items=selected,
             ai_analysis=None,
             agro_weather=None,
             period_label='<img src=x onerror=alert(1)>',
@@ -121,7 +125,8 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
     def test_long_weather_content_stays_above_repeated_page_furniture(self):
         period = "2026-08-03—2026-08-09"
         html = render_weekly_pdf_html(
-            news_items=[],
+            policy_items=[],
+            research_items=[],
             ai_analysis=None,
             agro_weather=SimpleNamespace(
                 title="全国农业气象周报",
@@ -192,7 +197,8 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
         )
         period = "2026-08-03 00:00—2026-08-10 00:00"
         html = render_weekly_pdf_html(
-            news_items=[{
+            policy_items=[],
+            research_items=[{
                 "title": f"水稻育种技术进展 {index}",
                 "url": f"https://example.com/rice/{index}",
                 "source_name": "测试来源",
@@ -313,6 +319,9 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         analyzer._rss_ids_authoritative = False
         analyzer._agro_weather_report = SimpleNamespace(title="气象")
         analyzer._weekly_ai_filter_succeeded = False
+        analyzer._weekly_news_modules = WeeklyNewsSelection(
+            policy=[], research=[]
+        )
         analyzer._rss_total_count = 0
         analyzer._rss_source_total = 0
         analyzer._rss_source_failed = 0
@@ -374,10 +383,85 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         render.assert_called_once()
         build.assert_called_once()
 
+    def test_real_renderer_accepts_twenty_items_and_five_highlights_per_module(self):
+        from trendradar.__main__ import NewsAnalyzer
+
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer._weekly_news_modules = WeeklyNewsSelection(
+            policy=[{
+                "title": f"政策新闻 {index}",
+                "url": f"https://example.org/policy/{index}",
+                "module_type": "policy",
+                "module_rank": index,
+                **({"highlight_rank": index} if index <= 5 else {}),
+            } for index in range(1, 21)],
+            research=[{
+                "title": f"科研新闻 {index}",
+                "url": f"https://example.org/research/{index}",
+                "module_type": "research",
+                "module_rank": index,
+                **({"highlight_rank": index} if index <= 5 else {}),
+            } for index in range(1, 21)],
+        )
+        analyzer._weekly_ai_filter_succeeded = True
+        analyzer._agro_weather_report = None
+        analyzer._rss_window = SimpleNamespace(
+            start=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 3)),
+            end=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 10)),
+            label="2026-08-03—2026-08-09",
+        )
+        analyzer._operation_run_at = lambda: pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 10, 10, 0)
+        )
+
+        with patch(
+            "trendradar.__main__.build_weekly_pdf",
+            return_value="output/report.pdf",
+        ) as build:
+            try:
+                analyzer._generate_weekly_pdf_report([], None)
+            except (TypeError, ValueError) as exc:
+                self.fail(f"真实 renderer 拒绝双模块已选结果: {exc}")
+
+        html = build.call_args.args[3]
+        for index in range(1, 21):
+            self.assertIn(f"政策新闻 {index}", html)
+            self.assertIn(f"科研新闻 {index}", html)
+            self.assertEqual(
+                html.count(f'href="https://example.org/policy/{index}"'), 1
+            )
+            self.assertEqual(
+                html.count(f'href="https://example.org/research/{index}"'), 1
+            )
+        self.assertEqual(html.count("重点标记"), 10)
+
+    def test_missing_weekly_selection_state_fails_closed(self):
+        from trendradar.__main__ import NewsAnalyzer
+
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer._weekly_ai_filter_succeeded = True
+        analyzer._agro_weather_report = SimpleNamespace(title="气象")
+        analyzer._rss_window = SimpleNamespace(
+            start=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 3)),
+            end=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 10)),
+            label="2026-08-03—2026-08-09",
+        )
+        analyzer._operation_run_at = lambda: pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 10, 10, 0)
+        )
+
+        with patch("trendradar.__main__.build_weekly_pdf") as build:
+            with self.assertRaisesRegex(RuntimeError, "WeeklyNewsSelection"):
+                analyzer._generate_weekly_pdf_report([], None)
+        build.assert_not_called()
+
     def test_weather_only_weekly_report_still_builds_dedicated_pdf(self):
         from trendradar.__main__ import NewsAnalyzer
 
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer._weekly_news_modules = WeeklyNewsSelection(
+            policy=[], research=[]
+        )
         analyzer._rss_window = SimpleNamespace(
             start=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 3)),
             end=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 10)),
@@ -405,6 +489,9 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         from trendradar.__main__ import NewsAnalyzer
 
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer._weekly_news_modules = WeeklyNewsSelection(
+            policy=[], research=[]
+        )
         analyzer._rss_window = SimpleNamespace(
             start=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 3)),
             end=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 10)),
@@ -418,13 +505,19 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         from trendradar.__main__ import NewsAnalyzer
 
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer._weekly_news_modules = WeeklyNewsSelection(
+            policy=[],
+            research=[{
+                "title": "普通新闻",
+                "url": "https://example.com/news",
+                "module_type": "research",
+            }],
+        )
         analyzer._agro_weather_report = None
         analyzer._weekly_ai_filter_succeeded = False
         with self.assertRaisesRegex(RuntimeError, "严格 AI 筛选"):
             analyzer._generate_weekly_pdf_report(
-                [{"word": "育种", "titles": [{
-                    "title": "普通新闻", "url": "https://example.com/news",
-                }]}],
+                [],
                 None,
             )
 

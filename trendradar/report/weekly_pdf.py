@@ -131,46 +131,66 @@ def _format_collection(value: Any) -> str:
 
 def render_weekly_pdf_html(
     *,
-    news_items: list[dict],
+    policy_items: list[dict],
+    research_items: list[dict],
     ai_analysis: Any,
     agro_weather: Any,
     period_label: str,
     generated_at: datetime,
 ) -> str:
     """Render only the selected weekly news into an offline A4 HTML document."""
-    selected = list(news_items or [])
-    if len(selected) > 20:
-        raise ValueError("周报 PDF 只接受最多 20 条已入选新闻")
+    policy = list(policy_items or [])
+    research = list(research_items or [])
+    if len(policy) > 20 or len(research) > 20:
+        raise ValueError("周报 PDF 每个模块只接受最多 20 条已入选新闻")
 
-    selected = sorted(
-        selected,
-        key=lambda item: (
-            _highlight_sort_value(item.get("highlight_rank")),
-            str(item.get("published_at") or ""),
-            str(item.get("title") or ""),
-        ),
-    )
-    highlights = [
-        item for item in selected
-        if _highlight_sort_value(item.get("highlight_rank")) <= 5
-    ][:5]
-    topic_groups: OrderedDict[str, list[dict]] = OrderedDict()
-    for item in selected:
-        topic_groups.setdefault(_news_topic(item), []).append(item)
+    def prepare(items: list[dict]) -> tuple[list[dict], list[dict], OrderedDict]:
+        selected = sorted(
+            items,
+            key=lambda item: (
+                _highlight_sort_value(item.get("highlight_rank")),
+                str(item.get("published_at") or ""),
+                str(item.get("title") or ""),
+            ),
+        )
+        highlights = [
+            item for item in selected
+            if _highlight_sort_value(item.get("highlight_rank")) <= 5
+        ][:5]
+        highlight_objects = {id(item) for item in highlights}
+        topic_groups: OrderedDict[str, list[dict]] = OrderedDict()
+        for item in selected:
+            if id(item) in highlight_objects:
+                continue
+            topic_groups.setdefault(_news_topic(item), []).append(item)
+        return selected, highlights, topic_groups
+
+    policy, policy_highlights, policy_topics = prepare(policy)
+    research, research_highlights, research_topics = prepare(research)
 
     generated = generated_at.strftime("%Y-%m-%d %H:%M")
     page_header = _css_string(
         f"农业育种新闻周报　周期：{period_label}"
     )
     weather_html = _render_weather(agro_weather)
-    topic_html = "".join(
-        f'<section class="topic"><h3>{_text(topic)}</h3>'
-        f'{"".join(_render_news_card(item) for item in items)}</section>'
-        for topic, items in topic_groups.items()
-    ) or '<p class="empty">本期没有入选普通新闻。</p>'
-    highlight_html = "".join(
-        _render_news_card(item, show_marker=True) for item in highlights
-    ) or '<p class="empty">本期没有重点新闻。</p>'
+    def render_topics(topic_groups: OrderedDict) -> str:
+        return "".join(
+            f'<section class="topic"><h3>{_text(topic)}</h3>'
+            f'{"".join(_render_news_card(item) for item in items)}</section>'
+            for topic, items in topic_groups.items()
+        ) or '<p class="empty">本模块没有入选新闻。</p>'
+
+    policy_topic_html = render_topics(policy_topics)
+    research_topic_html = render_topics(research_topics)
+    policy_highlight_html = "".join(
+        _render_news_card(item, show_marker=True) for item in policy_highlights
+    ) or '<p class="empty">本模块没有重点新闻。</p>'
+    research_highlight_html = "".join(
+        _render_news_card(item, show_marker=True) for item in research_highlights
+    ) or '<p class="empty">本模块没有重点新闻。</p>'
+    total_selected = len(policy) + len(research)
+    total_highlights = len(policy_highlights) + len(research_highlights)
+    total_topics = len(policy_topics) + len(research_topics)
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -217,7 +237,7 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
 <main>
   <section class="cover">
     <h1>农业育种新闻周报</h1>
-    <p>统计周期：{_text(period_label)}<br>生成时间：{_text(generated)}<br>入选普通新闻：{len(selected)} 条（TOP5 为同批重点）</p>
+    <p>统计周期：{_text(period_label)}<br>生成时间：{_text(generated)}<br>入选普通新闻：{total_selected} 条（政策 {len(policy)} 条，科研 {len(research)} 条）</p>
   </section>
   <section><h2>核心观点摘要</h2>
     <div class="overview-grid">
@@ -227,19 +247,19 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
       <div><span class="label">后续建议</span><br>{_analysis_text(ai_analysis, "outlook_strategy", "持续跟踪种业政策、技术与灾害风险信号。")}</div>
     </div>
   </section>
-  <section><h2>重点新闻</h2>{highlight_html}</section>
-  <section><h2>入选新闻</h2>{topic_html}</section>
+  <section><h2>重点新闻</h2><h3>政策重点</h3>{policy_highlight_html}<h3>科研重点</h3>{research_highlight_html}</section>
+  <section><h2>入选新闻</h2><h3>政策动态</h3>{policy_topic_html}<h3>科研进展</h3>{research_topic_html}</section>
   {weather_html}
   <section><h2>趋势与指标</h2>
     <div class="overview-grid">
-      <div><span class="label">入选总量</span><br>{len(selected)} 条（上限 20 条）</div>
-      <div><span class="label">重点新闻</span><br>{len(highlights)} 条</div>
-      <div><span class="label">主题覆盖</span><br>{len(topic_groups)} 个主题</div>
+      <div><span class="label">入选总量</span><br>{total_selected} 条（每模块上限 20 条）</div>
+      <div><span class="label">重点新闻</span><br>{total_highlights} 条（每模块最多 5 条）</div>
+      <div><span class="label">主题覆盖</span><br>{total_topics} 个模块内主题</div>
       <div><span class="label">气象专栏</span><br>{"已纳入" if agro_weather else "本期暂无官方报告"}</div>
     </div>
   </section>
   <section><h2>数据与方法说明</h2>
-    <p class="method">普通新闻仅使用自然周筛选后的同一批最多 20 条结果；TOP5 仅为其中的重点展示，不重复计入。农业气象为独立官方专栏，不占新闻名额。按规范去重、按主题组织，无法验证的链接与缺失字段不展示；文本与链接均经过安全处理。</p>
+    <p class="method">普通新闻仅使用自然周筛选后的政策、科研双模块结果，每模块最多 20 条、各自 TOP5；重点展示不重复计入。农业气象为独立官方专栏，不占新闻名额。按规范去重、按主题组织，无法验证的链接与缺失字段不展示；文本与链接均经过安全处理。</p>
   </section>
 </main>
 </body>
