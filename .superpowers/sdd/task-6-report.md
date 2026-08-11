@@ -1,71 +1,32 @@
-# 任务 6：企业微信严格 PDF-only 投递
+# 任务 6 实施报告
 
-## 实现内容
+## 结果
 
-- 将企业微信 PDF 模块收敛为 PDF 上传和 `file` 消息发送；删除 Markdown
-  预览、重点新闻收集、HTML 转 PDF 和文字回退逻辑。
-- 新增 `NotificationDispatcher.dispatch_weekly_pdf()`：仅解析企业微信
-  Webhook；每个账号只上传一次并发送一次 `file` 消息；任何账号失败即失败。
-- 周报通知主链改为 `_deliver_weekly_pdf()`，不再调用 `dispatch_all()` 或
-  普通企业微信 sender，因此不会向飞书、钉钉、邮件、Telegram、普通 Webhook
-  或企业微信文字通道投递周报。
-- PDF 缺失、无效、超过 20 MB、缺少 Webhook、上传失败或文件发送失败均返回失败，
-  不写 push checkpoint；所有账号发送成功后才以自然周 `window.end` 写入。
-- 专用交付助手也重新检查同周 push checkpoint，避免直接调用场景重复发送。
-- 删除 `WEWORK_PDF_ENABLED`、`WEWORK_PDF_TOP_N`、`pdf_enabled`、`pdf_top_n`
-  的 loader、YAML、Compose、示例环境变量和部署测试残留；保留普通非周报
-  `WEWORK_MSG_TYPE` 行为。
+- weekly 主流程不再调用 `ctx.generate_html()`；即使 HTML storage 开启，也只生成三模块专用 PDF，不写 `output/html/latest/weekly.html`、通用 `output/index.html` 或根 `index.html`。`AppContext.generate_html(mode="weekly")` 同时 fail-closed，普通模式的 HTML 能力保持不变。
+- 严格 AI 分类只产生一个 `WeeklyNewsSelection`；叙事输入的条目与 PDF renderer 的政策/科研条目保持对象身份一致，没有第二次选择或旧单列表回退。
+- 政策或科研任一模块为空仍可生成；双新闻模块为空且气象有效仍可生成；政策、科研、气象三类内容均空时严格失败。
+- weekly 的 `analyze` checkpoint 从 AI 叙事成功时延后到专用 PDF 成功落盘后。分类、叙事、PDF 任一失败不写 `analyze`/`push`；`analyze` checkpoint 存储失败时在投递前终止。
+- 企业微信继续只收到一个 `file` 消息。首轮零账号成功会重新分类、重新建立 selection 并重建 PDF；部分账号成功后只续投失败账号；全部账号已发送而 global checkpoint 失败时零外呼补写 checkpoint。
+- 同周锁覆盖 checkpoint 检查、气象获取、采集、分析、PDF 生成和投递完整事务，并在失败路径释放。
 
-## 测试
+## TDD 与验证
 
-RED：新增测试在实现前因 `send_wework_pdf_file` 不存在而导入失败；原有 sender
-测试同时展示了 Markdown 预览失败后回退分片文字的旧行为。
+- RED：主链新增测试精确出现 4 个失败：weekly 仍调用通用 HTML 并返回 HTML 路径；三空失败前仍调用通用 HTML；`AppContext` 仍允许 weekly HTML；PDF 失败前已写入 `analyze`。顺序测试观察到 `analyze -> PDF`，期望为 `PDF -> analyze`。
+- GREEN：无网络验证镜像中 brief 指定的 `test_weekly_schedule`、`test_weekly_pdf_delivery`、`test_weekly_three_module` 共 51 项全部通过（3.569 秒）。
+- 扩展验证：`test_weekly_pdf_report` 25 项全部通过（21.201 秒），覆盖真实 Chromium PDF、多页 A4、中文提取、原子生成与回滚。
+- 验证镜像原入口会先检查配置并退出，因此保持同一镜像、`--network none` 和 `/app/.venv/bin/python`，显式覆盖 entrypoint 执行测试。
+- `git diff --check` 通过；未修改 `output`、`.env`、服务配置或依赖。
 
-GREEN：执行以下命令通过 54 项测试：
+## 删除重复测试的理由
 
-```bash
-docker run --rm --network none --entrypoint /app/.venv/bin/python \
-  -e PYTHONPATH=/workspace \
-  -v /mnt/d/project/trendradar/.worktrees/previous-day-window:/workspace:ro \
-  -w /tmp docker-trendradar \
-  -m unittest tests.test_wework_pdf tests.test_weekly_pdf_delivery \
-  tests.test_weekly_schedule -v
-```
+- 删除整个 `tests/test_weekly_report_output.py`。其中 weekly 通用 HTML、飞书/钉钉文本渲染断言与“weekly 唯一 WeCom PDF 主线”冲突，不再代表可达生产行为。
+- 该文件唯一仍有效的显式 `report_type="上周周报"` 断言迁移到 `test_weekly_pdf_delivery.py`；普通模式 HTML 仍可生成的回归也在 delivery 测试中保留。
+- `test_weekly_schedule.py` 从重复的逐账号/全局账本 mock 状态机收敛为 run 返回值、跨平台周锁、气象先验、成功 checkpoint 前置跳过和完整事务边界。partial/global/rebuild 状态机集中在 `test_weekly_pdf_delivery.py`。
+- 严格分类、叙事、storage checkpoint、PDF 失败测试均通过真实 `run -> strategy -> pipeline` 编排执行；没有用同一个 mock 仅替换错误字符串来冒充四个阶段。
 
-另执行 `git diff --check`，并搜索确认代码、测试、配置与 Docker 文件均无旧的
-预览函数和 PDF 开关标识残留。
+## 自审
 
-## 变更范围
-
-未改动 `docker/.env`、`uv.lock`、本地 `.venv` 或 `output`。
-
-## 审查修复：weekly 失败传播
-
-正式审查发现 `_execute_mode_strategy()` 曾仅在有普通新闻、通知总开关开启且
-存在任意普通通知渠道时，才将 weekly 交付失败返回给 `run()`。这会让气象-only
-周报在无企业微信 Webhook、PDF 上传或文件发送失败、PDF 缺失/无效，以及通知总
-开关关闭时错误返回成功。
-
-现已将 weekly 主线收敛为：当 `schedule.push` 为真且专用 PDF 交付返回失败时，
-无条件返回 `False`。成功交付仍返回 `True` 并仅以 `window.end` 写入 checkpoint；
-daily/current 分支未改变。
-
-新增生产链 RED 测试覆盖：
-
-- 气象-only 周报无企业微信 Webhook；
-- 气象-only 周报企业微信文件投递失败；
-- `ENABLE_NOTIFICATION=false` 的计划周报；
-- 气象-only 周报文件投递成功并写入 `window.end` checkpoint。
-
-修复前前三项均稳定失败（`run` 链末端错误返回 `True`）；修复后执行以下扩展
-回归全部通过，共 77 项：
-
-```bash
-docker run --rm --network none --entrypoint /app/.venv/bin/python \
-  -e PYTHONPATH=/workspace \
-  -v /mnt/d/project/trendradar/.worktrees/previous-day-window:/workspace:ro \
-  -w /tmp docker-trendradar \
-  -m unittest tests.test_wework_pdf tests.test_weekly_pdf_delivery \
-  tests.test_weekly_schedule tests.test_weekly_pdf_report \
-  tests.test_weekly_report_output -v
-```
+- 主链测试通过真实 `run -> _execute_mode_strategy -> _run_analysis_pipeline -> PDF -> delivery`，只替换 AI/PDF 引擎/网络边界，并在临时目录检查三个禁止 HTML/index 路径均不存在。
+- selection 复用测试使用对象身份断言；零账号成功重试测试观察到两次不同 selection、两次 renderer 和两个不同 PDF 路径，不只统计 pipeline mock。
+- partial retry 断言发送顺序为 A、B、B；resume 测试断言复用原 PDF 字节/digest 且 weather/crawl/renderer/builder 均不调用；global checkpoint retry 断言外呼总数不增加。
+- 独立审查最初提出三个 Important 测试证据问题（主链拆段、伪阶段 mock、重建未观察 build），均已按上述真实 run 测试修正；生产代码未发现 Critical 或明确功能回归。

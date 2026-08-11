@@ -324,6 +324,10 @@ class AppContext:
         operation_at: Optional[datetime] = None,
     ) -> str:
         """生成HTML报告"""
+        if mode == "weekly":
+            raise RuntimeError(
+                "weekly 模式只能生成专用 PDF，禁止生成通用 HTML"
+            )
         render_clock = (
             (lambda: operation_at) if operation_at is not None else self.get_time
         )

@@ -4,6 +4,7 @@
 import tempfile
 import unittest
 import hashlib
+import os
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytz
 
 from trendradar.__main__ import NewsAnalyzer
+from trendradar.ai.analyzer import AIAnalysisResult
+from trendradar.context import AppContext
 from trendradar.core.weekly import previous_natural_week
 from trendradar.notification.dispatcher import NotificationDispatcher
 from trendradar.notification.wework_pdf import (
@@ -33,12 +36,471 @@ def schedule(**overrides):
     values = {
         "period_key": "monday_weekly",
         "period_name": "自然周周报",
+        "collect": True,
+        "analyze": True,
         "push": True,
         "report_mode": "weekly",
+        "once_analyze": True,
         "once_push": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+class WeeklyPdfMainlineTests(unittest.TestCase):
+    def setUp(self):
+        self.run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        self.window = previous_natural_week(
+            self.run_at, "Asia/Shanghai"
+        )
+        self.weather = SimpleNamespace(
+            title="全国农业气象周报",
+            impact="影响",
+            outlook="展望",
+            recommendations="建议",
+            source_url=(
+                "https://www.nmc.cn/publish/agro/ten-week/index.html"
+            ),
+        )
+
+    @staticmethod
+    def _item(module_type):
+        return {
+            "title": f"{module_type} news",
+            "url": f"https://example.org/{module_type}",
+            "source_name": "Source",
+            "published_at": "2026-08-06T08:00:00+08:00",
+            "module_type": module_type,
+            "relevance_score": 0.8,
+            "importance_score": 0.8,
+            "content_level": "summary",
+        }
+
+    def _analyzer(self, selected_items, *, weather=True, html=True):
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = False
+        scheduler.record_execution.return_value = True
+        dispatcher = MagicMock()
+        dispatcher.dispatch_weekly_pdf.return_value = True
+        ai_filter = SimpleNamespace(
+            success=True, total_matched=len(selected_items), tags=[]
+        )
+        rss_groups = [
+            {
+                "word": "weekly",
+                "count": len(selected_items),
+                "titles": list(selected_items),
+            }
+        ] if selected_items else []
+        ctx = SimpleNamespace(
+            config={
+                "ENABLE_NOTIFICATION": True,
+                "SHOW_VERSION_UPDATE": False,
+                "DEBUG": False,
+                "AI_FILTER": {"MIN_SCORE": 0.5},
+                "AI_ANALYSIS": {"ENABLED": True, "MODE": "weekly"},
+                "AI_TRANSLATION": {"ENABLED": False},
+                "STORAGE": {"FORMATS": {"HTML": html}},
+                "DISPLAY": {"REGIONS": {}},
+            },
+            display_mode="keyword",
+            platform_ids=[],
+            run_ai_filter=MagicMock(return_value=ai_filter),
+            convert_ai_filter_to_report_data=MagicMock(
+                return_value=([], rss_groups, [])
+            ),
+            generate_html=MagicMock(return_value="output/html/weekly.html"),
+            create_scheduler=MagicMock(return_value=scheduler),
+            create_notification_dispatcher=MagicMock(
+                return_value=dispatcher
+            ),
+            cleanup=MagicMock(),
+            timezone="Asia/Shanghai",
+            get_time=MagicMock(return_value=self.run_at),
+            detect_new_titles=MagicMock(return_value={}),
+            load_frequency_words=MagicMock(return_value=([], [], [])),
+        )
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = ctx
+        analyzer.report_mode = "weekly"
+        analyzer.filter_method = "ai"
+        analyzer.interests_file = None
+        analyzer._rss_window = self.window
+        analyzer._allowed_rss_ids = set()
+        analyzer._rss_ids_authoritative = True
+        analyzer._agro_weather_report = self.weather if weather else None
+        analyzer._rss_total_count = len(selected_items)
+        analyzer._rss_source_total = 1
+        analyzer._rss_source_failed = 0
+        analyzer._report_period_label = self.window.label
+        analyzer._run_at = self.run_at
+        analyzer.proxy_url = ""
+        analyzer._weekly_pdf_digest = MagicMock(return_value="a" * 64)
+        analyzer.update_info = None
+        analyzer.frequency_file = None
+        analyzer._run_ai_analysis = MagicMock(return_value=AIAnalysisResult(
+            success=True,
+            policy_trends="政策暂无" if not any(
+                item["module_type"] == "policy" for item in selected_items
+            ) else "政策趋势 [policy:1]",
+            research_trends="科研暂无" if not any(
+                item["module_type"] == "research" for item in selected_items
+            ) else "科研趋势 [research:1]",
+            weather_risks="气象风险 [weather:official]",
+        ))
+        analyzer._has_notification_configured = MagicMock(return_value=True)
+        return analyzer, scheduler, dispatcher
+
+    def _prepare_run(self, analyzer):
+        analyzer._resolve_and_apply_schedule = MagicMock(
+            return_value=schedule()
+        )
+        lock = MagicMock()
+        lock.acquire.return_value = True
+        analyzer._create_weekly_attempt_lock = MagicMock(return_value=lock)
+        analyzer._resume_weekly_pdf_delivery = MagicMock(return_value=None)
+        analyzer._fetch_agro_weather = MagicMock(
+            return_value=analyzer._agro_weather_report
+        )
+        analyzer._initialize_and_check_config = MagicMock(return_value=True)
+        analyzer._crawl_data = MagicMock(return_value=({}, {}, []))
+        analyzer._crawl_rss_data = MagicMock(
+            return_value=(None, None, [], set())
+        )
+        analyzer._prepare_current_title_info = MagicMock(return_value={})
+        analyzer._prepare_standalone_data = MagicMock(return_value={})
+        analyzer._has_valid_content = MagicMock(return_value=False)
+        analyzer._should_open_browser = MagicMock(return_value=False)
+        analyzer.is_docker_container = False
+        return lock
+
+    def _run_pipeline(self, analyzer, *, once_analyze=False):
+        return analyzer._run_analysis_pipeline(
+            {}, "weekly", {}, {}, [], [], {},
+            schedule=schedule(once_analyze=once_analyze),
+        )
+
+    def test_weekly_mainline_uses_only_one_dedicated_pdf_and_file_delivery(self):
+        analyzer, _, dispatcher = self._analyzer([
+            self._item("policy"), self._item("research")
+        ])
+        with patch(
+            "trendradar.__main__.render_weekly_pdf_html",
+            return_value="<html />",
+        ) as render, patch(
+            "trendradar.__main__.build_weekly_pdf",
+            return_value="output/weekly.pdf",
+        ) as build:
+            _, html_file, _, _, _, _ = self._run_pipeline(analyzer)
+            delivered = analyzer._send_notification_if_needed(
+                [], "自然周周报", "weekly", schedule=schedule()
+            )
+
+        self.assertIsNone(html_file)
+        analyzer.ctx.generate_html.assert_not_called()
+        render.assert_called_once()
+        self.assertEqual(len(render.call_args.kwargs["policy_items"]), 1)
+        self.assertEqual(len(render.call_args.kwargs["research_items"]), 1)
+        narrative_groups = analyzer._run_ai_analysis.call_args.args[1]
+        narrative_items = [
+            item for group in narrative_groups for item in group["titles"]
+        ]
+        self.assertIs(
+            render.call_args.kwargs["policy_items"][0], narrative_items[0]
+        )
+        self.assertIs(
+            render.call_args.kwargs["research_items"][0], narrative_items[1]
+        )
+        build.assert_called_once()
+        self.assertTrue(delivered)
+        dispatcher.dispatch_weekly_pdf.assert_called_once()
+        dispatcher.dispatch_all.assert_not_called()
+
+    def test_run_has_one_pdf_only_mainline_and_writes_no_generic_html(self):
+        analyzer, _, dispatcher = self._analyzer([
+            self._item("policy"), self._item("research")
+        ])
+        self._prepare_run(analyzer)
+        with tempfile.TemporaryDirectory() as workdir:
+            workdir_path = Path(workdir)
+
+            def forbidden_html(*_args, **_kwargs):
+                latest = workdir_path / "output/html/latest/weekly.html"
+                latest.parent.mkdir(parents=True, exist_ok=True)
+                latest.write_text("forbidden", encoding="utf-8")
+                (workdir_path / "output/index.html").write_text(
+                    "forbidden", encoding="utf-8"
+                )
+                (workdir_path / "index.html").write_text(
+                    "forbidden", encoding="utf-8"
+                )
+                return str(latest)
+
+            analyzer.ctx.generate_html.side_effect = forbidden_html
+
+            def build_pdf(*_args):
+                pdf_path = workdir_path / "output/weekly.pdf"
+                pdf_path.parent.mkdir(parents=True, exist_ok=True)
+                pdf_path.write_bytes(b"%PDF-1.4\nweekly")
+                return str(pdf_path)
+
+            previous_cwd = os.getcwd()
+            os.chdir(workdir)
+            try:
+                with patch(
+                    "trendradar.__main__.render_weekly_pdf_html",
+                    return_value="<html />",
+                ) as render, patch(
+                    "trendradar.__main__.build_weekly_pdf",
+                    side_effect=build_pdf,
+                ) as build:
+                    result = analyzer.run()
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertTrue(result)
+            self.assertFalse(
+                (workdir_path / "output/html/latest/weekly.html").exists()
+            )
+            self.assertFalse((workdir_path / "output/index.html").exists())
+            self.assertFalse((workdir_path / "index.html").exists())
+
+        analyzer.ctx.generate_html.assert_not_called()
+        render.assert_called_once()
+        build.assert_called_once()
+        dispatcher.dispatch_weekly_pdf.assert_called_once()
+        dispatcher.dispatch_all.assert_not_called()
+
+    def test_run_rebuilds_selection_and_pdf_when_no_account_succeeded(self):
+        analyzer, scheduler, dispatcher = self._analyzer([
+            self._item("policy")
+        ])
+        lock = self._prepare_run(analyzer)
+        dispatcher.dispatch_weekly_pdf.side_effect = [False, True]
+        built_paths = []
+
+        def build_pdf(*_args):
+            path = f"output/rebuilt-{len(built_paths) + 1}.pdf"
+            built_paths.append(path)
+            return path
+
+        with patch(
+            "trendradar.__main__.render_weekly_pdf_html",
+            return_value="<html />",
+        ) as render, patch(
+            "trendradar.__main__.build_weekly_pdf",
+            side_effect=build_pdf,
+        ) as build:
+            self.assertFalse(analyzer.run())
+            first_selection = analyzer._weekly_news_modules
+            self.assertTrue(analyzer.run())
+            second_selection = analyzer._weekly_news_modules
+
+        self.assertIsNot(first_selection, second_selection)
+        self.assertEqual(build.call_count, 2)
+        self.assertEqual(render.call_count, 2)
+        self.assertEqual(built_paths, [
+            "output/rebuilt-1.pdf", "output/rebuilt-2.pdf"
+        ])
+        self.assertEqual(dispatcher.dispatch_weekly_pdf.call_count, 2)
+        self.assertEqual(lock.release.call_count, 2)
+        push_calls = [
+            item for item in scheduler.record_execution.call_args_list
+            if item.args[1] == "push"
+        ]
+        self.assertEqual(len(push_calls), 1)
+
+    def test_weekly_mainline_allows_either_news_module_to_be_empty(self):
+        for module_type in ("policy", "research"):
+            with self.subTest(module_type=module_type):
+                analyzer, _, _ = self._analyzer([
+                    self._item(module_type)
+                ])
+                self._prepare_run(analyzer)
+                with patch(
+                    "trendradar.__main__.render_weekly_pdf_html",
+                    return_value="<html />",
+                ) as render, patch(
+                    "trendradar.__main__.build_weekly_pdf",
+                    return_value="output/weekly.pdf",
+                ):
+                    self.assertTrue(analyzer.run())
+
+                expected = render.call_args.kwargs[f"{module_type}_items"]
+                other = "research" if module_type == "policy" else "policy"
+                self.assertEqual(len(expected), 1)
+                self.assertEqual(render.call_args.kwargs[f"{other}_items"], [])
+
+    def test_weekly_mainline_allows_weather_only_content(self):
+        analyzer, _, _ = self._analyzer([])
+        self._prepare_run(analyzer)
+        with patch(
+            "trendradar.__main__.render_weekly_pdf_html",
+            return_value="<html />",
+        ) as render, patch(
+            "trendradar.__main__.build_weekly_pdf",
+            return_value="output/weekly.pdf",
+        ):
+            self.assertTrue(analyzer.run())
+
+        self.assertEqual(render.call_args.kwargs["policy_items"], [])
+        self.assertEqual(render.call_args.kwargs["research_items"], [])
+        self.assertIs(render.call_args.kwargs["agro_weather"], self.weather)
+
+    def test_weekly_mainline_rejects_three_empty_modules(self):
+        analyzer, scheduler, dispatcher = self._analyzer([], weather=False)
+        lock = self._prepare_run(analyzer)
+        with patch("trendradar.__main__.build_weekly_pdf") as build:
+            self.assertFalse(analyzer.run())
+
+        analyzer.ctx.generate_html.assert_not_called()
+        analyzer.ctx.run_ai_filter.assert_not_called()
+        build.assert_not_called()
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+        lock.release.assert_called_once_with()
+
+    def test_weekly_pdf_failure_does_not_write_analyze_or_push_checkpoint(self):
+        analyzer, scheduler, dispatcher = self._analyzer([])
+        self._prepare_run(analyzer)
+        analyzer._run_ai_analysis = NewsAnalyzer._run_ai_analysis.__get__(
+            analyzer, NewsAnalyzer
+        )
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class, patch(
+            "trendradar.__main__.render_weekly_pdf_html",
+            return_value="<html />",
+        ), patch(
+            "trendradar.__main__.build_weekly_pdf",
+            side_effect=RuntimeError("PDF build failed"),
+        ):
+            analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+                success=True,
+                policy_trends="政策暂无 [policy:none]",
+                research_trends="科研暂无 [research:none]",
+                weather_risks="气象风险 [weather:official]",
+            )
+            self.assertFalse(analyzer.run())
+
+        scheduler.record_execution.assert_not_called()
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+
+    def test_weekly_writes_analyze_checkpoint_only_after_pdf_is_durable(self):
+        analyzer, scheduler, _ = self._analyzer([])
+        analyzer._run_ai_analysis = NewsAnalyzer._run_ai_analysis.__get__(
+            analyzer, NewsAnalyzer
+        )
+        events = []
+        scheduler.record_execution.side_effect = (
+            lambda *_args: events.append("analyze") or True
+        )
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class, patch(
+            "trendradar.__main__.render_weekly_pdf_html",
+            return_value="<html />",
+        ), patch(
+            "trendradar.__main__.build_weekly_pdf",
+            side_effect=lambda *_args: events.append("pdf")
+            or "output/weekly.pdf",
+        ):
+            analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+                success=True,
+                policy_trends="政策暂无 [policy:none]",
+                research_trends="科研暂无 [research:none]",
+                weather_risks="气象风险 [weather:official]",
+            )
+            self._run_pipeline(analyzer, once_analyze=True)
+
+        self.assertEqual(events, ["pdf", "analyze"])
+        scheduler.record_execution.assert_called_once_with(
+            "monday_weekly", "analyze", "2026-08-10"
+        )
+
+    def test_weekly_classification_failure_writes_no_checkpoint(self):
+        analyzer, scheduler, dispatcher = self._analyzer([])
+        self._prepare_run(analyzer)
+        analyzer.ctx.run_ai_filter.return_value = SimpleNamespace(
+            success=False, error="classification failed"
+        )
+        with patch("trendradar.__main__.build_weekly_pdf") as build:
+            self.assertFalse(analyzer.run())
+
+        build.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+
+    def test_weekly_narrative_failure_writes_no_checkpoint(self):
+        analyzer, scheduler, dispatcher = self._analyzer([])
+        self._prepare_run(analyzer)
+        analyzer._run_ai_analysis = NewsAnalyzer._run_ai_analysis.__get__(
+            analyzer, NewsAnalyzer
+        )
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class, patch(
+            "trendradar.__main__.build_weekly_pdf"
+        ) as build:
+            analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+                success=False, error="narrative failed"
+            )
+            self.assertFalse(analyzer.run())
+
+        build.assert_not_called()
+        scheduler.record_execution.assert_not_called()
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+
+    def test_weekly_analyze_storage_failure_stops_before_delivery(self):
+        analyzer, scheduler, dispatcher = self._analyzer([])
+        self._prepare_run(analyzer)
+        analyzer._run_ai_analysis = NewsAnalyzer._run_ai_analysis.__get__(
+            analyzer, NewsAnalyzer
+        )
+        scheduler.record_execution.return_value = False
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class, patch(
+            "trendradar.__main__.render_weekly_pdf_html",
+            return_value="<html />",
+        ), patch(
+            "trendradar.__main__.build_weekly_pdf",
+            return_value="output/weekly.pdf",
+        ) as build:
+            analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
+                success=True,
+                policy_trends="政策暂无 [policy:none]",
+                research_trends="科研暂无 [research:none]",
+                weather_risks="气象风险 [weather:official]",
+            )
+            self.assertFalse(analyzer.run())
+
+        build.assert_called_once()
+        scheduler.record_execution.assert_called_once_with(
+            "monday_weekly", "analyze", "2026-08-10"
+        )
+        dispatcher.dispatch_weekly_pdf.assert_not_called()
+
+    def test_weekly_strategy_keeps_explicit_report_type(self):
+        self.assertEqual(
+            NewsAnalyzer.MODE_STRATEGIES["weekly"]["report_type"],
+            "上周周报",
+        )
+
+    def test_context_refuses_generic_weekly_html_generation(self):
+        ctx = AppContext.__new__(AppContext)
+        ctx.config = {}
+        with patch("trendradar.context.generate_html_report") as generate:
+            with self.assertRaisesRegex(RuntimeError, "weekly"):
+                ctx.generate_html([], 0, mode="weekly")
+
+        generate.assert_not_called()
+
+    def test_context_still_generates_generic_html_for_ordinary_modes(self):
+        ctx = AppContext.__new__(AppContext)
+        ctx.config = {}
+        with patch(
+            "trendradar.context.generate_html_report",
+            return_value="output/html/daily.html",
+        ) as generate:
+            result = ctx.generate_html([], 0, mode="daily")
+
+        self.assertEqual(result, "output/html/daily.html")
+        generate.assert_called_once()
 
 
 class WeeklyPdfDeliveryTests(unittest.TestCase):

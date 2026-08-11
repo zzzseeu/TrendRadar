@@ -800,7 +800,11 @@ class NewsAnalyzer:
                     print("[AI] 分析完成")
 
                 # 记录 AI 分析
-                if schedule.once_analyze and schedule.period_key:
+                if (
+                    mode != "weekly"
+                    and schedule.once_analyze
+                    and schedule.period_key
+                ):
                     scheduler = self.ctx.create_scheduler()
                     date_str = self._delivery_checkpoint_date(mode)
                     if not scheduler.record_execution(
@@ -1227,7 +1231,10 @@ class NewsAnalyzer:
 
         # HTML生成（如果启用）— 使用翻译后的数据
         html_file = None
-        if self.ctx.config["STORAGE"]["FORMATS"]["HTML"]:
+        if (
+            mode != "weekly"
+            and self.ctx.config["STORAGE"]["FORMATS"]["HTML"]
+        ):
             display_regions = self.ctx.config.get("DISPLAY", {}).get("REGIONS", {})
             html_standalone = standalone_data if display_regions.get("STANDALONE", False) else None
             html_ai = ai_result if display_regions.get("AI_ANALYSIS", True) else None
@@ -1256,15 +1263,28 @@ class NewsAnalyzer:
                 translate_report_func=translate_report_func,
                 operation_at=getattr(self, "_run_at", None),
             )
-            if not html_file and self._is_strict_delivery_mode(mode):
-                if mode == "daily_delivery":
-                    raise RuntimeError("每日交付 HTML 报告生成失败")
-                raise RuntimeError("周报 HTML 报告生成失败")
+            if not html_file and mode == "daily_delivery":
+                raise RuntimeError("每日交付 HTML 报告生成失败")
 
         # 专用 PDF 不使用现有 dashboard HTML。运行实例均设置此属性；hasattr
         # 使直接构造的旧分析单测保持其原有职责。
         if mode == "weekly" and hasattr(self, "_agro_weather_report"):
             self._generate_weekly_pdf_report(rss_items or [], ai_result)
+            if (
+                ai_result is not None
+                and ai_result.success
+                and schedule is not None
+                and schedule.once_analyze
+                and schedule.period_key
+            ):
+                scheduler = self.ctx.create_scheduler()
+                date_str = self._delivery_checkpoint_date(mode)
+                if not scheduler.record_execution(
+                    schedule.period_key, "analyze", date_str
+                ):
+                    raise RuntimeError(
+                        "周报 PDF 已生成，但 once_analyze 持久化失败"
+                    )
 
         return stats, html_file, ai_result, rss_items, standalone_data, rss_new_items
 
@@ -2133,9 +2153,8 @@ class NewsAnalyzer:
     ) -> bool:
         """执行模式特定逻辑，支持热榜+RSS合并推送
 
-        简化后的逻辑：
-        - 每次运行都生成 HTML 报告（时间戳快照 + latest/{mode}.html + index.html）
-        - 根据模式发送通知
+        普通模式生成 HTML 报告并按模式发送通知；weekly 只生成和投递
+        专用 PDF，不写通用 latest/index。
         """
         # 调度已在采集前解析并应用，避免 RSS 处理和运行策略得到不同结果。
         mode_strategy = self._get_mode_strategy()
