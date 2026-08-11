@@ -758,6 +758,7 @@ class AIFilter:
         skipped_news_ids = 0
         skipped_tag_ids = 0
         skipped_empty = 0
+        skipped_module_types = 0
 
         for item in data:
             if not isinstance(item, dict):
@@ -765,6 +766,15 @@ class AIFilter:
             news_id = item.get("id")
             if news_id not in title_ids:
                 skipped_news_ids += 1
+                continue
+            module_type = item.get("module_type")
+            if (
+                not isinstance(module_type, str)
+                or module_type not in CLASSIFICATION_MODULE_TYPES
+            ):
+                skipped_module_types += 1
+                continue
+            if module_type == EXCLUDE:
                 continue
 
             # 收集此条新闻的所有候选 tag
@@ -831,6 +841,7 @@ class AIFilter:
                 if existing is None or best_score > selected_raw_scores[news_id]:
                     best_per_news[news_id] = {
                         "news_item_id": news_id,
+                        "module_type": module_type,
                         "tag_id": best_tag_id,
                         "relevance_score": best_score,
                         "importance_score": importance_score,
@@ -853,6 +864,11 @@ class AIFilter:
                 print(f"[AI筛选][DEBUG] !! 跳过无效 news_id: {skipped_news_ids} 条")
             if skipped_tag_ids > 0:
                 print(f"[AI筛选][DEBUG] !! 跳过无效 tag_id: {skipped_tag_ids} 条")
+            if skipped_module_types > 0:
+                print(
+                    "[AI筛选][DEBUG] !! 跳过缺失/无效 module_type: "
+                    f"{skipped_module_types} 条"
+                )
 
             # 按标签汇总
             tag_summary: Dict[int, List[str]] = {}

@@ -2352,6 +2352,7 @@ class SQLiteStorageMixin:
         self, date: Optional[str], results: List[Dict]
     ) -> int:
         """批量保存分类结果"""
+        conn = None
         try:
             for result in results:
                 if result.get("module_type") not in PERSISTED_MODULE_TYPES:
@@ -2399,6 +2400,8 @@ class SQLiteStorageMixin:
             conn.commit()
             return count
         except Exception as e:
+            if conn is not None:
+                conn.rollback()
             print(f"[AI筛选] 保存分类结果失败: {e}")
             return 0
 

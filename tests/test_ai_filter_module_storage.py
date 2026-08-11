@@ -1,8 +1,13 @@
+import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from trendradar.ai.filter import AIFilter
+from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.storage.local import LocalStorageBackend
 
 from tests.test_daily_delivery_review4 import (
@@ -221,6 +226,145 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
     def tearDown(self):
         self.backend.cleanup()
         self.tmp.cleanup()
+
+    def _run_ordinary_pipeline(self, response=None, classify_results=None):
+        if classify_results is None:
+            ai_filter = AIFilter.__new__(AIFilter)
+            ai_filter.debug = False
+            ai_filter.classify_system = "只返回 JSON"
+            ai_filter.classify_user = (
+                "{interests_content}\n{tags_list}\n{news_count}\n{news_list}"
+            )
+            ai_filter.summary_grounding_review_enabled = False
+            ai_filter.client = MagicMock()
+            ai_filter.client.chat.return_value = json.dumps(response)
+            ai_filter.load_interests_content = MagicMock(return_value="rice")
+            ai_filter.compute_interests_hash = MagicMock(
+                return_value=PROMPT_HASH
+            )
+        else:
+            ai_filter = MagicMock()
+            ai_filter.load_interests_content.return_value = "rice"
+            ai_filter.compute_interests_hash.return_value = PROMPT_HASH
+            ai_filter.classify_batch.return_value = classify_results
+        pipeline = AIFilterPipeline(
+            {
+                "TIMEZONE": "Asia/Shanghai",
+                "RSS": {"ENABLED": False},
+                "AI": {},
+                "AI_FILTER": {
+                    "INTERESTS_FILE": INTERESTS_FILE,
+                    "BATCH_SIZE": 10,
+                    "BATCH_INTERVAL": 0,
+                },
+                "FILTER": {},
+            },
+            self.backend,
+            lambda: datetime(2026, 8, 9, 10, 0),
+        )
+        pipeline._enrich_pending_items = lambda items, _label: items
+        with patch.object(
+            self.backend,
+            "_get_configured_time",
+            return_value=datetime(2026, 8, 9, 10, 0),
+        ), patch(
+            "trendradar.ai.filter_pipeline.AIFilter",
+            return_value=ai_filter,
+        ):
+            return pipeline.run()
+
+    def test_ordinary_real_parser_pipeline_persists_only_policy_and_research(self):
+        seed_hotlist_rows(self.conn, ids=(1, 2, 3, 4, 5))
+        pipeline_result = self._run_ordinary_pipeline(response=[
+            {
+                "id": 1,
+                "module_type": "policy",
+                "tag_id": self.tag_id,
+                "score": 0.9,
+                "importance_score": 0.8,
+                "summary": "policy summary",
+            },
+            {
+                "id": 2,
+                "module_type": "research",
+                "tag_id": self.tag_id,
+                "score": 0.8,
+                "importance_score": 0.9,
+                "summary": "research summary",
+            },
+            {
+                "id": 3,
+                "module_type": "exclude",
+                "tag_id": self.tag_id,
+                "score": 0.1,
+                "importance_score": 0.1,
+                "summary": "exclude summary",
+            },
+            {
+                "id": 4,
+                "module_type": "weather",
+                "tag_id": self.tag_id,
+                "score": 0.7,
+                "importance_score": 0.7,
+                "summary": "invalid summary",
+            },
+            {
+                "id": 5,
+                "tag_id": self.tag_id,
+                "score": 0.6,
+                "importance_score": 0.6,
+                "summary": "missing module summary",
+            },
+        ])
+
+        self.assertTrue(pipeline_result.success)
+        rows = self.conn.execute(
+            """SELECT news_item_id, module_type
+               FROM ai_filter_results ORDER BY news_item_id"""
+        ).fetchall()
+        self.assertEqual(
+            [(row[0], row[1]) for row in rows],
+            [(1, "policy"), (2, "research")],
+        )
+        analyzed = self.conn.execute(
+            """SELECT news_item_id, matched
+               FROM ai_filter_analyzed_news ORDER BY news_item_id"""
+        ).fetchall()
+        self.assertEqual(
+            [(row[0], row[1]) for row in analyzed],
+            [(1, 1), (2, 1), (3, 0), (4, 0), (5, 0)],
+        )
+
+    def test_ordinary_second_result_insert_failure_leaves_no_state(self):
+        self.conn.execute("""
+            CREATE TRIGGER fail_second_ordinary_result
+            BEFORE INSERT ON ai_filter_results
+            WHEN NEW.news_item_id = 2
+            BEGIN
+                SELECT RAISE(ABORT, 'second ordinary result failed');
+            END
+        """)
+        self.conn.commit()
+
+        pipeline_result = self._run_ordinary_pipeline(classify_results=[
+            result(1, self.tag_id, "policy"),
+            result(2, self.tag_id, "research"),
+        ])
+
+        self.assertFalse(pipeline_result.success)
+        self.assertIn("保存数量不一致", pipeline_result.error)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM ai_filter_results"
+            ).fetchone()[0],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM ai_filter_analyzed_news"
+            ).fetchone()[0],
+            0,
+        )
 
     def test_ordinary_write_and_read_round_trip_policy_and_research(self):
         self.assertEqual(

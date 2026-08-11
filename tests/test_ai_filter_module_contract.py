@@ -199,9 +199,9 @@ class AIFilterModuleContractTests(unittest.TestCase):
             {"id": 3, "title": "正文", "content_level": "full_text"},
         ]
         response = json.dumps([
-            {"id": 1, "tag_id": 1, "score": 0.1},
-            {"id": 2, "tag_id": 1, "score": 0.5},
-            {"id": 3, "tag_id": 1, "score": 0.9},
+            {"id": 1, "module_type": "policy", "tag_id": 1, "score": 0.1},
+            {"id": 2, "module_type": "research", "tag_id": 1, "score": 0.5},
+            {"id": 3, "module_type": "research", "tag_id": 1, "score": 0.9},
         ])
 
         results = ai_filter._parse_classify_response(response, titles, tags)

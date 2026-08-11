@@ -822,8 +822,11 @@ class AIFilterPipeline:
         if total_results:
             saved = self.storage.save_ai_filter_results(total_results)
             print(f"[AI筛选] 保存 {saved} 条分类结果")
-            if self._debug and saved != len(total_results):
-                print(f"[AI筛选][DEBUG] !! 保存数量不一致: 期望 {len(total_results)}, 实际 {saved}（可能有重复记录被跳过）")
+            if saved != len(total_results):
+                raise RuntimeError(
+                    "普通 AI 分类结果保存数量不一致: "
+                    f"expected={len(total_results)}, actual={saved}"
+                )
 
         matched_hotlist_ids = {r["news_item_id"] for r in total_results if r.get("source_type") == "hotlist"}
         matched_rss_ids = {r["news_item_id"] for r in total_results if r.get("source_type") == "rss"}
