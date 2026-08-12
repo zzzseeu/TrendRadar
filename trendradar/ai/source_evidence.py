@@ -4,9 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Mapping
 
-
-CURRENT_EVENTS = "current_events"
-RESEARCH = "research"
+from trendradar.ai.module_contract import CURRENT_EVENTS, RESEARCH
 
 
 @dataclass(frozen=True)

@@ -127,7 +127,7 @@ rss:
       name: "Yahoo Finance"
       url: "https://finance.yahoo.com/news/rssindex"
 
-    # Rice policy and industry official sources. Sources that are currently
+    # Official rice current-events sources. Sources that are currently
     # blocked by SSL/403 or lack a stable list endpoint remain configured but disabled.
     - id: "cgiar-news"
       name: "CGIAR News & Events"

@@ -1,6 +1,7 @@
 import json
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import yaml
 
@@ -240,6 +241,40 @@ class DeterministicModuleContractTests(unittest.TestCase):
                 self.tags,
                 strict=True,
             )
+
+    def test_strict_batch_retries_one_transient_classification_failure(self):
+        pipeline = AIFilterPipeline.__new__(AIFilterPipeline)
+        pipeline._strict = True
+        pipeline._rss_feeds = []
+        pipeline._enrich_pending_items = lambda items, _label: items
+        ai_filter = MagicMock()
+        ai_filter.classify_batch.side_effect = [None, []]
+        pending = [{
+            "id": 1,
+            "title": "水稻产业动态",
+            "source_name": "Official",
+            "source_id": "irri-news",
+            "url": "https://example.org/rice",
+            "content": "水稻产业动态正文",
+            "content_level": "full_text",
+            "risk_warning": "",
+            "module_type": "current_events",
+            "module_reason": "no_publication_evidence",
+        }]
+
+        results, news_ids, rss_ids = pipeline._classify_batches(
+            ai_filter,
+            [],
+            pending,
+            [{"id": 1, "tag": "水稻产业"}],
+            "水稻兴趣",
+            {"BATCH_SIZE": 10, "BATCH_INTERVAL": 0},
+        )
+
+        self.assertEqual(results, [])
+        self.assertEqual(news_ids, [])
+        self.assertEqual(rss_ids, [1])
+        self.assertEqual(ai_filter.classify_batch.call_count, 2)
 
 
 class SourceEvidencePipelineTests(unittest.TestCase):

@@ -312,7 +312,7 @@ rss:
       fetch_url: "https://www-cgiar-org.translate.goog/news-events?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
 
-    # ── 水稻官方政策与产业动态（沿用 web_news） ────────────────
+    # ── 水稻官方时事来源（沿用 web_news） ────────────────────
     - id: "vietnam-ppd"
       name: "越南种植与植物保护局"
       url: "https://ppd.gov.vn/"

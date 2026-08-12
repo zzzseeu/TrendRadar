@@ -137,8 +137,7 @@ def _deduplicate_module_items(items: list[dict]) -> list[dict]:
 
 @dataclass
 class WeeklyNewsSelection:
-    policy: list[dict] = field(default_factory=list)
-    industry: list[dict] = field(default_factory=list)
+    current_events: list[dict] = field(default_factory=list)
     research: list[dict] = field(default_factory=list)
 
 
@@ -146,38 +145,25 @@ def select_weekly_modules(
     items: list[dict], *, min_score: float,
     limit_per_module: int = 20, highlight_count: int = 5,
 ) -> WeeklyNewsSelection:
-    """Select independent policy/research rankings with policy precedence."""
+    """Select two independent rankings with publication evidence precedence."""
     threshold = _weekly_score(min_score)
-    eligible_policy = [
-        item for item in items
-        if item.get("module_type") == "policy"
-        and item.get("species_scope") == "rice"
-        and _weekly_score(item.get("relevance_score")) >= threshold
-    ]
-    policy_identities = {
-        report_item_identity(item)
-        for item in eligible_policy
-        if report_item_identity(item)[1]
-    }
-    eligible_industry = [
-        item for item in items
-        if item.get("module_type") == "industry"
-        and item.get("species_scope") == "rice"
-        and _weekly_score(item.get("relevance_score")) >= threshold
-        and report_item_identity(item) not in policy_identities
-    ]
-    industry_identities = {
-        report_item_identity(item)
-        for item in eligible_industry
-        if report_item_identity(item)[1]
-    }
     eligible_research = [
         item for item in items
         if item.get("module_type") == "research"
         and item.get("species_scope") in {"rice", "other_crop"}
         and _weekly_score(item.get("relevance_score")) >= threshold
-        and report_item_identity(item) not in policy_identities
-        and report_item_identity(item) not in industry_identities
+    ]
+    research_identities = {
+        report_item_identity(item)
+        for item in eligible_research
+        if report_item_identity(item)[1]
+    }
+    eligible_current_events = [
+        item for item in items
+        if item.get("module_type") == "current_events"
+        and item.get("species_scope") == "rice"
+        and _weekly_score(item.get("relevance_score")) >= threshold
+        and report_item_identity(item) not in research_identities
     ]
 
     limit = max(0, int(limit_per_module))
@@ -204,8 +190,7 @@ def select_weekly_modules(
         return selected
 
     return WeeklyNewsSelection(
-        policy=select(eligible_policy),
-        industry=select(eligible_industry),
+        current_events=select(eligible_current_events),
         research=select(eligible_research, rice_first=True),
     )
 

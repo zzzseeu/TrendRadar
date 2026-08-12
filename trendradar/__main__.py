@@ -1353,7 +1353,7 @@ class NewsAnalyzer:
             or not has_required_narrative(ai_result, report_mode="weekly")
         ):
             error = ai_result.error if ai_result is not None else "未执行 AI 分析"
-            raise RuntimeError(f"周报 AI 四段叙事失败: {error}")
+            raise RuntimeError(f"周报 AI 三段叙事失败: {error}")
 
         # 翻译 RSS 和独立展示区内容（如果启用）— 在 HTML 生成前执行，确保网页版也能展示翻译内容
         # standalone_data 在此翻译一次后贯穿到推送阶段复用，避免重复翻译并保证网页与推送译文一致
@@ -1474,8 +1474,7 @@ class NewsAnalyzer:
         )
         grouped: dict[str, list[dict]] = {}
         for item in (
-            self._weekly_news_modules.policy
-            + self._weekly_news_modules.industry
+            self._weekly_news_modules.current_events
             + self._weekly_news_modules.research
         ):
             topic = primary_weekly_topic(item)
@@ -1498,7 +1497,7 @@ class NewsAnalyzer:
                 "周报缺少显式 WeeklyNewsSelection，已拒绝生成 PDF"
             )
         selected_news = [
-            *modules.policy, *modules.industry, *modules.research
+            *modules.current_events, *modules.research
         ]
         weather = self._agro_weather_report
         if not selected_news and weather is None:
@@ -1512,7 +1511,7 @@ class NewsAnalyzer:
             or not ai_result.success
             or not has_required_narrative(ai_result, report_mode="weekly")
         ):
-            raise RuntimeError("周报缺少成功且完整的 AI 四段叙事，无法生成 PDF")
+            raise RuntimeError("周报缺少成功且完整的 AI 三段叙事，无法生成 PDF")
 
         window = self._rss_window
         if window is None:
@@ -1520,8 +1519,7 @@ class NewsAnalyzer:
                 self._operation_run_at(), self.ctx.timezone
             )
         html = render_weekly_pdf_html(
-            policy_items=modules.policy,
-            industry_items=modules.industry,
+            current_events_items=modules.current_events,
             research_items=modules.research,
             ai_analysis=ai_result,
             agro_weather=weather,

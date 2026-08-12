@@ -123,7 +123,7 @@ def create_legacy_news_db(data_dir):
     return db_path
 
 
-def create_four_module_news_db(data_dir):
+def create_legacy_module_news_db(data_dir):
     """创建仍使用 policy/industry/research 的旧模块数据库。"""
     db_path = create_legacy_news_db(data_dir)
     conn = sqlite3.connect(db_path)
@@ -155,7 +155,7 @@ def remote_news_db_bytes(tmp, name):
 class AIFilterModuleMigrationTests(unittest.TestCase):
     def test_migration_rebuilds_old_module_constraint_without_guessing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            create_four_module_news_db(tmp)
+            create_legacy_module_news_db(tmp)
             backend = local_backend(tmp)
             try:
                 conn = backend._get_connection(DATE)

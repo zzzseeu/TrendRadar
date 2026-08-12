@@ -749,8 +749,7 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         )
         analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
             success=True,
-            policy_trends="政策趋势",
-            industry_trends="产业动态",
+            current_events_trends="时事动态",
             research_trends="科研趋势",
             weather_risks="气象风险",
         )
@@ -758,7 +757,8 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         result = analyzer._run_ai_analysis(
             [],
             [{"word": "周报", "titles": [{
-                "title": "政策原文", "module_type": "policy", "module_rank": 1,
+                "title": "时事原文", "module_type": "current_events",
+                "module_rank": 1,
             }]}],
             "weekly",
             "自然周周报",
@@ -778,8 +778,7 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         scheduler.reset_mock()
         analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
             success=False,
-            policy_trends="政策趋势",
-            industry_trends="产业动态",
+            current_events_trends="时事动态",
             research_trends="科研趋势",
             weather_risks="",
             error="严格分析缺少必要摘要内容",
@@ -787,7 +786,8 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         malformed = analyzer._run_ai_analysis(
             [],
             [{"word": "周报", "titles": [{
-                "title": "政策原文", "module_type": "policy", "module_rank": 1,
+                "title": "时事原文", "module_type": "current_events",
+                "module_rank": 1,
             }]}],
             "weekly",
             "自然周周报",

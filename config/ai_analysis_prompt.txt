@@ -145,23 +145,19 @@ JSON 字段固定为：
    - 每个来源 150 字以内，按“最高价值进展；证据阶段；待核实项”的顺序概括。
    - 若该来源全部为低信息量内容，应明确写“本期未发现具备明确育种信息增量的内容”。
 
-7. policy_trends：政策趋势。
-   - 仅使用 module_type=policy 的模块新闻，按模块内排名与证据层级叙述。
-   - 写明支持判断的标题、来源或证据原文；本期无模块新闻时如实说明，不得用 core_trends 补齐。
-
-8. industry_trends：水稻产业时事动态。
-   - 仅使用 module_type=industry 的水稻产业模块新闻，概括市场、生产、供需、企业和行业组织的实质性动态。
+7. current_events_trends：时事动态。
+   - 仅使用 module_type=current_events 的水稻时事模块新闻，概括政策、市场、生产、供需、企业和权威机构的实质性动态。
    - 企业宣传、会议和调研只要包含可核验的水稻产业信息即可纳入，不得补写输入中没有的规模、效果或结论。
 
-9. research_trends：科研进展。
+8. research_trends：科研进展。
    - 仅使用 module_type=research 的模块新闻，按模块内排名与证据层级叙述。
    - 区分摘要、正文和仅标题证据，不得将潜力改写为已验证成果。
 
-10. weather_risks：农业气象风险。
+9. weather_risks：农业气象风险。
    - 只能使用“官方农业气象报告”证据区，分别概括影响、展望和官方建议。
    - 不得用新闻、常识或历史天气补充官方报告未提供的地区、作物或风险。
 
-当 report_mode=weekly 时，policy_trends、industry_trends、research_trends 和 weather_risks 四字段必须全部输出，且每段只能引用对应证据区中存在的事实。其他 report_mode 保持原有字段契约，可省略这四个周报字段。
+当 report_mode=weekly 时，current_events_trends、research_trends 和 weather_risks 三字段必须全部输出，且每段只能引用对应证据区中存在的事实。其他 report_mode 保持原有字段契约，可省略这三个周报字段。
 
 字符串内部需要换行时使用 JSON 标准换行符 \n。提及具体标题或成果时使用中文角引号「」。禁止输出 emoji、Markdown 标题、Markdown 列表或对 JSON 的解释文字。
 
@@ -199,8 +195,7 @@ RSS 订阅：
   "signals": "高价值弱信号",
   "rss_insights": "专业来源洞察",
   "outlook_strategy": "科研行动建议",
-  "policy_trends": "周报政策趋势",
-  "industry_trends": "周报水稻产业时事动态",
+  "current_events_trends": "周报时事动态",
   "research_trends": "周报科研进展",
   "weather_risks": "周报气象风险",
   "standalone_summaries": {

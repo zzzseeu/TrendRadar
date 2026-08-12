@@ -94,7 +94,7 @@ git commit -m "feat(ai): 按来源证据确定周报模块"
 
 ### 任务 2：双榜、三段叙事和三模块 PDF
 
-- [ ] **步骤 1：编写 RED 测试**
+- [x] **步骤 1：编写 RED 测试**
 
 覆盖以下行为：
 
@@ -115,7 +115,7 @@ def test_pdf_has_exactly_three_primary_modules():
 
 补充同一 canonical URL 只出现一次、科研证据优先、两个 Top5、每张卡片显示正文总结/证据层级/排名/主题/链接、两个新闻模块都为空时仍可生成气象-only PDF。
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
 ```bash
 /mnt/d/project/trendradar/.venv/bin/python -m unittest \
@@ -125,7 +125,7 @@ def test_pdf_has_exactly_three_primary_modules():
 
 预期：旧 `policy/industry/research` 三榜与四段叙事、四模块 HTML 断言失败。
 
-- [ ] **步骤 3：实现双榜和唯一三模块主线**
+- [x] **步骤 3：实现双榜和唯一三模块主线**
 
 - `WeeklyNewsSelection` 只保留 `current_events`、`research`。
 - 时事动态只接受 `rice`；科研按 `rice` 后 `other_crop` 排序；统一阈值 0.5，各最多 20、各 Top5。
@@ -134,7 +134,7 @@ def test_pdf_has_exactly_three_primary_modules():
 - PDF 只接收两个新闻列表与天气，文件名为 `农业育种新闻周报_三模块_...pdf`，一级标题恰好三个。
 - 保留来源失败说明、A4/20MB/原子替换、企业微信 file-only、逐账号账本、global checkpoint、周锁和 partial resume。
 
-- [ ] **步骤 4：运行任务 2 GREEN 并提交**
+- [x] **步骤 4：运行任务 2 GREEN 并提交**
 
 运行步骤 2 同一命令，预期 0 failures/errors；然后提交：
 
@@ -149,13 +149,13 @@ git commit -m "feat(weekly): 收敛来源证据三模块周报"
 
 ### 任务 3：来源配置、兼容回归与文档清理
 
-- [ ] **步骤 1：配置学术来源并清理旧四模块测试**
+- [x] **步骤 1：配置学术来源并清理旧四模块测试**
 
 中英文配置仅给明确期刊/预印本来源标记 `content_category: scholarly`；官方、机构、企业、搜索源不标记学术。保留此前已验证的新增来源和解析器，不减少新闻源。
 
 删除 `tests/test_weekly_four_module.py`，将仍有效的来源覆盖、长摘要、部分来源失败、调度/账本断言迁入三模块测试；清除生产配置、Prompt、README 和技术文档中的 `policy/industry`、四段叙事与“四模块”产品语义。
 
-- [ ] **步骤 2：运行聚焦兼容验证**
+- [x] **步骤 2：运行聚焦兼容验证**
 
 ```bash
 /mnt/d/project/trendradar/.venv/bin/python -m unittest \
@@ -169,7 +169,7 @@ git commit -m "feat(weekly): 收敛来源证据三模块周报"
 
 随后运行真实 Chromium/Poppler PDF 验证单项、`bash tests/test_portable_deployment.sh` 与 `git diff --check`。不重复运行全量 discovery，除非聚焦测试揭示跨模块回归。
 
-- [ ] **步骤 3：静态门禁与提交**
+- [x] **步骤 3：静态门禁与提交**
 
 ```bash
 rg -n "四模块|policy_trends|industry_trends|module_type.*policy|module_type.*industry" \

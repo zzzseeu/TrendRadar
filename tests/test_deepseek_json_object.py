@@ -17,7 +17,8 @@ JSON_OBJECT = {"type": "json_object"}
 def classification_items(*, valid=True, tag_id=11):
     first = {
         "id": 1,
-        "module_type": "policy",
+        "include": True,
+        "species_scope": "rice",
         "tag_id": tag_id,
         "score": 0.8,
         "importance_score": 0.7,
@@ -30,13 +31,35 @@ def classification_items(*, valid=True, tag_id=11):
             first,
             {
                 "id": 2,
-                "module_type": "exclude",
+                "include": False,
+                "species_scope": "not_applicable",
                 "score": 0.1,
                 "importance_score": 0.1,
                 "summary": "内容无关",
             },
         ]
     }
+
+
+def classification_titles(first_id=1, second_id=2):
+    return [
+        {
+            "id": first_id,
+            "title": "水稻时事",
+            "content": "水稻时事",
+            "content_level": "summary",
+            "module_type": "current_events",
+            "module_reason": "no_publication_evidence",
+        },
+        {
+            "id": second_id,
+            "title": "无关",
+            "content": "无关",
+            "content_level": "summary",
+            "module_type": "current_events",
+            "module_reason": "no_publication_evidence",
+        },
+    ]
 
 
 class DeepSeekJsonObjectContractTests(unittest.TestCase):
@@ -55,16 +78,13 @@ class DeepSeekJsonObjectContractTests(unittest.TestCase):
         ai_filter = self._filter()
         results = ai_filter._parse_classify_response(
             json.dumps(classification_items()),
-            [
-                {"id": 1, "title": "政策", "content_level": "summary"},
-                {"id": 2, "title": "无关", "content_level": "summary"},
-            ],
+            classification_titles(),
             [{"id": 11, "tag": "政策"}],
             strict=True,
         )
 
         self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["module_type"], "policy")
+        self.assertEqual(results[0]["module_type"], "current_events")
 
     def test_classification_and_repair_both_request_json_object(self):
         ai_filter = self._filter()
@@ -74,10 +94,7 @@ class DeepSeekJsonObjectContractTests(unittest.TestCase):
         ]
 
         results = ai_filter.classify_batch(
-            [
-                {"id": 1, "title": "政策", "content": "政策"},
-                {"id": 2, "title": "无关", "content": "无关"},
-            ],
+            classification_titles(),
             [{"id": 11, "tag": "政策"}],
             "政策优先",
             strict=True,
@@ -94,10 +111,7 @@ class DeepSeekJsonObjectContractTests(unittest.TestCase):
         ai_filter.client.chat.side_effect = [response, response]
 
         results = ai_filter.classify_batch(
-            [
-                {"id": 81, "title": "政策", "content": "政策"},
-                {"id": 97, "title": "无关", "content": "无关"},
-            ],
+            classification_titles(81, 97),
             [{"id": 11, "tag": "政策"}],
             "政策优先",
             strict=True,
@@ -116,7 +130,8 @@ class DeepSeekJsonObjectContractTests(unittest.TestCase):
             "items": [
                 {
                     "id": 1,
-                    "module_type": "policy",
+                    "include": True,
+                    "species_scope": "rice",
                     "tag_id": 1,
                     "score": 0.8,
                     "importance_score": 0.7,
@@ -124,7 +139,8 @@ class DeepSeekJsonObjectContractTests(unittest.TestCase):
                 },
                 {
                     "id": 2,
-                    "module_type": "exclude",
+                    "include": False,
+                    "species_scope": "not_applicable",
                     "score": 0.1,
                     "importance_score": 0.1,
                     "summary": "内容无关",
@@ -133,10 +149,7 @@ class DeepSeekJsonObjectContractTests(unittest.TestCase):
         })
 
         results = ai_filter.classify_batch(
-            [
-                {"id": 81, "title": "政策", "content": "政策"},
-                {"id": 97, "title": "无关", "content": "无关"},
-            ],
+            classification_titles(81, 97),
             [{"id": 41, "tag": "政策"}, {"id": 55, "tag": "科研"}],
             "政策优先",
             strict=True,

@@ -687,7 +687,7 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         self.assertIn("[新闻搜索]", output.getvalue())
         self.assertIn("provider outage", output.getvalue())
 
-    def test_midweek_search_partial_or_exception_fails_next_week_snapshot(self):
+    def test_midweek_search_failure_is_reported_but_available_week_continues(self):
         monday = pytz.timezone("Asia/Shanghai").localize(
             datetime(2026, 8, 10, 10, 0)
         )
@@ -755,12 +755,17 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
                         failed_ids=[],
                     )))
 
-                with self.assertRaisesRegex(
-                    RuntimeError, "RSS 来源失败.*agri-breeding-search"
-                ):
-                    WeeklyRSSAggregator(
-                        backend, "Asia/Shanghai"
-                    ).build(monday)
+                snapshot = WeeklyRSSAggregator(
+                    backend, "Asia/Shanghai"
+                ).build(monday)
+                self.assertEqual(
+                    snapshot.failed_sources,
+                    {"2026-08-04": [SEARCH_FEED_ID]},
+                )
+                # The synthetic fixture is outside the natural-week window;
+                # its persisted item was checked above, while the weekly
+                # snapshot keeps the failure diagnostic and remains usable.
+                self.assertEqual(list(snapshot.iter_items()), [])
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")
@@ -982,6 +987,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             "source_id": SEARCH_FEED_ID,
             "source_name": "农业育种热点搜索",
             "source_type": "rss",
+            "module_type": "current_events",
             "species_scope": "rice",
             "url": f"https://example.org/search/{index}",
             "first_time": "2026-07-31T08:00:00+00:00",
@@ -1030,14 +1036,14 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             round(0.45 * 0.6 + 0.35 * 0.6 + 0.20 * 0.3, 4),
         )
 
-    def test_weekly_keeps_all_search_candidates_for_policy_priority_selector(self):
+    def test_weekly_keeps_all_search_candidates_for_research_precedence(self):
         published_at = "2026-08-06T08:00:00+08:00"
-        shared_url = "https://example.org/shared-policy-research"
-        policy = self._search_result(
+        shared_url = "https://example.org/shared-current-research"
+        current_event = self._search_result(
             6,
-            tag="政策",
-            module_type="policy",
-            title="第六热点政策部署",
+            tag="时事",
+            module_type="current_events",
+            title="第六热点水稻动态",
             url=shared_url,
             published_at=published_at,
             relevance_score=0.51,
@@ -1071,9 +1077,9 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
         result = self._pipeline(
             max_hotspots=5, min_score=0.5, weekly=True
         )._build_filter_result(
-            raw_results=[*other_research, policy, conflicting_research],
+            raw_results=[*other_research, current_event, conflicting_research],
             tags=[
-                {"tag": "政策", "priority": 1},
+                {"tag": "时事", "priority": 1},
                 {"tag": "科研", "priority": 2},
             ],
             total_processed=7,
@@ -1085,10 +1091,10 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
 
         selection = select_weekly_modules(candidates, min_score=0.5)
         self.assertEqual(
-            [item["title"] for item in selection.policy],
-            ["第六热点政策部署"],
+            [item["title"] for item in selection.current_events],
+            [],
         )
-        self.assertNotIn(
+        self.assertIn(
             "同一事项科研解读",
             [item["title"] for item in selection.research],
         )
@@ -1102,6 +1108,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             "source_id": SEARCH_FEED_ID,
             "source_name": "Configured fixed feed",
             "source_type": "rss",
+            "module_type": "current_events",
             "url": "https://example.org/collision",
             "first_time": "2026-07-31T08:00:00+00:00",
             "last_time": "2026-07-31T08:00:00+00:00",
@@ -1161,6 +1168,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             "source_id": "regular-feed",
             "source_name": "Regular feed",
             "source_type": "rss",
+            "module_type": "current_events",
             "url": "https://example.org/duplicate",
             "relevance_score": 0.1,
             "importance_score": 0.1,
@@ -1269,7 +1277,9 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
 
     def test_module_fields_survive_filter_and_report_with_one_half_admission(self):
         raw_results = []
-        for module_type, base_id in (("policy", 100), ("research", 200)):
+        for module_type, base_id in (
+            ("current_events", 100), ("research", 200)
+        ):
             raw_results.extend([
                 {
                     "news_item_id": base_id,
@@ -1313,7 +1323,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
         self.assertEqual(result.total_matched, 2)
         self.assertEqual(
             {item["module_type"] for item in result.tags[0]["items"]},
-            {"policy", "research"},
+            {"current_events", "research"},
         )
         self.assertEqual(len(report_items), 2)
         for item in report_items:
@@ -1384,6 +1394,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             "title": "Regular high importance",
             "source_id": "regular-feed",
             "source_type": "rss",
+            "module_type": "current_events",
             "relevance_score": 0.8,
             "importance_score": 0.9,
         }
@@ -1496,6 +1507,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             "title": "Ordinary item",
             "source_id": "regular-feed",
             "source_type": "rss",
+            "module_type": "current_events",
             "relevance_score": 0.9,
             "importance_score": 0.8,
         }
@@ -1531,6 +1543,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             "title": "Ordinary TOP",
             "source_id": "regular-feed",
             "source_type": "rss",
+            "module_type": "current_events",
             "relevance_score": 0.9,
             "importance_score": 1.0,
             "content_level": "full_text",

@@ -75,11 +75,11 @@ class WeeklyPdfReportTests(unittest.TestCase):
         )
 
     def test_template_renders_each_module_once_by_rank_with_inline_top_five(self):
-        policy = [
+        current_events = [
             {
                 **item,
                 "title": f"政策 {item['module_rank']}",
-                "url": f"https://example.com/policy/{item['module_rank']}",
+                "url": f"https://example.com/current_events/{item['module_rank']}",
             }
             for item in (
                 {**self.items[index - 1], "module_rank": index}
@@ -98,12 +98,11 @@ class WeeklyPdfReportTests(unittest.TestCase):
             )
         ]
         html = render_weekly_pdf_html(
-            policy_items=policy,
+            current_events_items=current_events,
             research_items=research,
             ai_analysis=SimpleNamespace(
                 success=True,
-                policy_trends="政策趋势分析 [policy:1]",
-                industry_trends="产业趋势分析 [industry:none]",
+                current_events_trends="时事趋势分析 [current_events:1]",
                 research_trends="科研趋势分析 [research:1]",
                 weather_risks="气象风险分析 [weather:official]",
             ),
@@ -113,7 +112,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
                 datetime(2026, 8, 10, 10, 0)
             ),
         )
-        for heading in ("政策动态", "科研进展", "农业气象与灾害风险", "趋势与指标"):
+        for heading in ("时事动态", "科研进展", "全国农业气象周报", "趋势与指标"):
             self.assertIn(heading, html)
         self.assertNotIn("核心观点摘要", html)
         self.assertNotIn("重点新闻</h2>", html)
@@ -122,18 +121,18 @@ class WeeklyPdfReportTests(unittest.TestCase):
         parser.feed(html)
         self.assertEqual(
             parser.primary_headings,
-            ["一、政策动态", "二、科研进展", "三、农业气象与灾害风险"],
+            ["一、时事动态", "二、科研进展", "三、全国农业气象周报"],
         )
         self.assertEqual(parser.non_primary_h2, [])
         self.assertIn("<aside", html)
         self.assertIn("<h3>趋势与指标</h3>", html)
         self.assertIn("<h3>数据与方法说明</h3>", html)
-        self.assertEqual(html.count("重点政策"), 5)
+        self.assertEqual(html.count("重点动态"), 5)
         self.assertEqual(html.count("重点文献"), 5)
-        self.assertIn("政策趋势分析 [policy:1]", html)
+        self.assertIn("时事趋势分析 [current_events:1]", html)
         self.assertIn("科研趋势分析 [research:1]", html)
         self.assertIn("气象风险分析 [weather:official]", html)
-        for module, title in (("policy", "政策"), ("research", "文献")):
+        for module, title in (("current_events", "政策"), ("research", "文献")):
             positions = []
             for index in range(1, 8):
                 self.assertEqual(html.count(f">{title} {index}</h3>"), 1)
@@ -148,10 +147,10 @@ class WeeklyPdfReportTests(unittest.TestCase):
         self.assertNotIn("position: fixed", html)
 
     def test_narrative_evidence_maps_to_unique_visible_cards_and_topics(self):
-        policy = [{
+        current_events = [{
             **self.items[index - 1],
             "title": f"政策证据 {index}",
-            "url": f"https://example.com/policy-evidence/{index}",
+            "url": f"https://example.com/current_events-evidence/{index}",
             "module_rank": index,
             "weekly_topics": ["种业监管", "品种审定"],
         } for index in range(1, 3)]
@@ -164,14 +163,13 @@ class WeeklyPdfReportTests(unittest.TestCase):
         } for index in range(1, 3)]
         analysis = SimpleNamespace(
             success=True,
-            policy_trends="政策判断 [policy:1] [policy:2]",
-            industry_trends="产业判断 [industry:none]",
+            current_events_trends="时事判断 [current_events:1] [current_events:2]",
             research_trends="科研判断 [research:1] [research:2]",
             weather_risks="气象判断 [weather:official]",
         )
 
         html = render_weekly_pdf_html(
-            policy_items=policy,
+            current_events_items=current_events,
             research_items=research,
             ai_analysis=analysis,
             agro_weather=self.weather,
@@ -185,7 +183,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
             flags=re.DOTALL,
         )
         for module_type, narrative in (
-            ("policy", analysis.policy_trends),
+            ("current_events", analysis.current_events_trends),
             ("research", analysis.research_trends),
         ):
             for evidence_id in re.findall(
@@ -197,11 +195,11 @@ class WeeklyPdfReportTests(unittest.TestCase):
                     evidence_id,
                 )
         self.assertIn("模块排名：1", html)
-        self.assertIn("证据ID：[policy:1]", html)
+        self.assertIn("证据ID：[current_events:1]", html)
         self.assertIn("主主题：品种审定", html)
         self.assertIn("证据ID：[research:1]", html)
         self.assertIn("主主题：基因编辑", html)
-        self.assertIn("政策主题覆盖", html)
+        self.assertIn("时事主题覆盖", html)
         self.assertIn("品种审定、种业监管", html)
         self.assertIn("科研主题覆盖", html)
         self.assertIn("基因编辑、水稻育种", html)
@@ -213,7 +211,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_rejects_more_than_twenty_unselected_news_items(self):
         with self.assertRaisesRegex(ValueError, "20"):
             render_weekly_pdf_html(
-                policy_items=[],
+                current_events_items=[],
                 research_items=self.items * 3,
                 ai_analysis=None,
                 agro_weather=self.weather,
@@ -225,7 +223,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
         duplicated = {"title": "相同标题", "url": "https://example.com/news"}
         with self.assertRaisesRegex(ValueError, "全局唯一"):
             render_weekly_pdf_html(
-                policy_items=[{**duplicated, "module_rank": 1}],
+                current_events_items=[{**duplicated, "module_rank": 1}],
                 research_items=[{**duplicated, "module_rank": 1}],
                 ai_analysis=None,
                 agro_weather=None,
@@ -237,14 +235,14 @@ class WeeklyPdfReportTests(unittest.TestCase):
         invalid = [
             {
                 "title": f"政策 {index}",
-                "url": f"https://example.com/policy/{index}",
+                "url": f"https://example.com/current_events/{index}",
                 "module_rank": 1,
             }
             for index in range(1, 7)
         ]
         with self.assertRaisesRegex(ValueError, "module_rank"):
             render_weekly_pdf_html(
-                policy_items=invalid,
+                current_events_items=invalid,
                 research_items=[],
                 ai_analysis=None,
                 agro_weather=None,
@@ -260,7 +258,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
         for index, item in enumerate(selected, start=1):
             item["module_rank"] = index
         html = render_weekly_pdf_html(
-            policy_items=[],
+            current_events_items=[],
             research_items=selected,
             ai_analysis=None,
             agro_weather=None,
@@ -271,13 +269,13 @@ class WeeklyPdfReportTests(unittest.TestCase):
         self.assertNotIn('href="javascript:', html)
         self.assertNotIn("<img src=x", html)
 
-    def test_empty_policy_and_research_modules_use_exact_copy(self):
+    def test_empty_news_modules_use_exact_copy(self):
         html = render_weekly_pdf_html(
-            policy_items=[], research_items=[], ai_analysis=None,
+            current_events_items=[], research_items=[], ai_analysis=None,
             agro_weather=self.weather, period_label="period",
             generated_at=datetime(2026, 8, 10),
         )
-        self.assertIn("本周暂无符合条件的政策新闻", html)
+        self.assertIn("本周暂无符合条件的时事动态", html)
         self.assertIn("本周暂无符合条件的科研文献", html)
 
     def test_builds_chinese_range_filename(self):
@@ -293,13 +291,13 @@ class WeeklyPdfReportTests(unittest.TestCase):
                 tmp, date(2026, 8, 3), date(2026, 8, 10), "<html></html>"
             )
         self.assertEqual(
-            Path(path).name, "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
+            Path(path).name, "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
         )
 
     def test_build_replaces_both_artifacts_only_after_temp_validation(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)
@@ -345,7 +343,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
         ):
             with self.subTest(case=case), TemporaryDirectory() as tmp:
                 final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                    "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
+                    "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
                 )
                 final_html = final_pdf.with_suffix(".html")
                 final_pdf.parent.mkdir(parents=True)
@@ -368,7 +366,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_second_replace_failure_rolls_back_both_formal_artifacts(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)
@@ -410,7 +408,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_rollback_failure_preserves_recoverable_backup_and_cleans_others(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)
@@ -469,7 +467,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_backup_cleanup_failure_warns_but_keeps_successful_formal_pair(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)
@@ -567,7 +565,7 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
     def test_long_weather_content_stays_above_repeated_page_furniture(self):
         period = "2026-08-03—2026-08-09"
         html = render_weekly_pdf_html(
-            policy_items=[],
+            current_events_items=[],
             research_items=[],
             ai_analysis=None,
             agro_weather=SimpleNamespace(
@@ -649,11 +647,10 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
             } for index in range(1, 21)]
 
         html = render_weekly_pdf_html(
-            policy_items=module_items("政策"),
+            current_events_items=module_items("政策"),
             research_items=module_items("科研"),
             ai_analysis=SimpleNamespace(
-                success=True, policy_trends="政策趋势 [policy:1]",
-                industry_trends="产业暂无 [industry:none]",
+                success=True, current_events_trends="时事趋势 [current_events:1]",
                 research_trends="科研趋势 [research:1]",
                 weather_risks="暂无气象证据",
             ),
@@ -759,7 +756,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         analyzer._agro_weather_report = SimpleNamespace(title="气象")
         analyzer._weekly_ai_filter_succeeded = False
         analyzer._weekly_news_modules = WeeklyNewsSelection(
-            policy=[], research=[]
+            current_events=[], research=[]
         )
         analyzer._rss_total_count = 0
         analyzer._rss_source_total = 0
@@ -808,8 +805,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
         analyzer._run_ai_analysis = MagicMock(return_value=SimpleNamespace(
             success=True,
             error="",
-            policy_trends="政策暂无 [policy:none]",
-            industry_trends="产业暂无 [industry:none]",
+            current_events_trends="时事暂无 [current_events:none]",
             research_trends="科研趋势 [research:1]",
             weather_risks="气象风险 [weather:official]",
         ))
@@ -838,10 +834,10 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
 
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer._weekly_news_modules = WeeklyNewsSelection(
-            policy=[{
-                "title": f"政策新闻 {index}",
-                "url": f"https://example.org/policy/{index}",
-                "module_type": "policy",
+            current_events=[{
+                "title": f"时事新闻 {index}",
+                "url": f"https://example.org/current_events/{index}",
+                "module_type": "current_events",
                 "module_rank": index,
                 **({"highlight_rank": index} if index <= 5 else {}),
             } for index in range(1, 21)],
@@ -877,8 +873,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
                     [],
                     SimpleNamespace(
                         success=True,
-                        policy_trends="政策趋势 [policy:1]",
-                        industry_trends="产业暂无 [industry:none]",
+                        current_events_trends="时事趋势 [current_events:1]",
                         research_trends="科研趋势 [research:1]",
                         weather_risks="气象风险 [weather:official]",
                     ),
@@ -889,15 +884,15 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
 
         html = build.call_args.args[3]
         for index in range(1, 21):
-            self.assertIn(f"政策新闻 {index}", html)
+            self.assertIn(f"时事新闻 {index}", html)
             self.assertIn(f"科研新闻 {index}", html)
             self.assertEqual(
-                html.count(f'href="https://example.org/policy/{index}"'), 1
+                html.count(f'href="https://example.org/current_events/{index}"'), 1
             )
             self.assertEqual(
                 html.count(f'href="https://example.org/research/{index}"'), 1
             )
-        self.assertEqual(html.count("重点政策"), 5)
+        self.assertEqual(html.count("重点动态"), 5)
         self.assertEqual(html.count("重点文献"), 5)
 
     def test_missing_weekly_selection_state_fails_closed(self):
@@ -927,7 +922,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
 
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer._weekly_news_modules = WeeklyNewsSelection(
-            policy=[], research=[]
+            current_events=[], research=[]
         )
         analyzer._rss_window = SimpleNamespace(
             start=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 3)),
@@ -953,8 +948,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
                 [],
                 SimpleNamespace(
                     success=True,
-                    policy_trends="政策暂无 [policy:none]",
-                    industry_trends="产业暂无 [industry:none]",
+                    current_events_trends="时事暂无 [current_events:none]",
                     research_trends="科研暂无 [research:none]",
                     weather_risks="气象风险 [weather:official]",
                 ),
@@ -971,7 +965,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
 
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer._weekly_news_modules = WeeklyNewsSelection(
-            policy=[], research=[]
+            current_events=[], research=[]
         )
         analyzer._rss_window = SimpleNamespace(
             start=pytz.timezone("Asia/Shanghai").localize(datetime(2026, 8, 3)),
@@ -987,7 +981,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
 
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
         analyzer._weekly_news_modules = WeeklyNewsSelection(
-            policy=[],
+            current_events=[],
             research=[{
                 "title": "普通新闻",
                 "url": "https://example.com/news",
