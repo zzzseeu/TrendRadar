@@ -327,6 +327,11 @@ class AIAnalyzer:
                 else:
                     print("[AI] JSON 修复失败，使用原始文本兜底")
 
+            if strict and report_mode == "weekly" and result.success:
+                self._fill_empty_weekly_module_narratives(
+                    result, weekly_evidence_ids
+                )
+
             if strict and result.error:
                 result.success = False
                 result.error = f"严格分析拒绝降级结果: {result.error}"
@@ -367,6 +372,10 @@ class AIAnalyzer:
                 )
                 if reviewed_result is not None:
                     result = reviewed_result
+                    if strict and report_mode == "weekly":
+                        self._fill_empty_weekly_module_narratives(
+                            result, weekly_evidence_ids
+                        )
                 elif strict:
                     result.success = False
                     result.error = "严格分析的摘要证据校审失败"
@@ -678,6 +687,26 @@ class AIAnalyzer:
             part for part in (prepared.news_content, prepared.rss_content) if part
         )
         return content or f"本期无入选证据 [{module_type}:none]"
+
+    @staticmethod
+    def _fill_empty_weekly_module_narratives(
+        result: AIAnalysisResult,
+        evidence_ids: Dict[str, set[str]],
+    ) -> None:
+        empty_labels = {
+            "policy": ("policy_trends", "农业育种政策新闻"),
+            "industry": ("industry_trends", "水稻产业时事动态"),
+            "research": ("research_trends", "农业育种科研文献"),
+        }
+        for module_type, (field_name, label) in empty_labels.items():
+            none_id = f"[{module_type}:none]"
+            if (
+                evidence_ids.get(module_type) == {none_id}
+                and not _normalize_narrative_text(
+                    getattr(result, field_name, "")
+                ).strip()
+            ):
+                setattr(result, field_name, f"本期无入选{label} {none_id}")
 
     @staticmethod
     def _validate_weekly_citations(

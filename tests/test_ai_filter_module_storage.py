@@ -123,6 +123,23 @@ def create_legacy_news_db(data_dir):
     return db_path
 
 
+def create_pre_industry_news_db(data_dir):
+    """创建已迁移 module 列、但约束仍只有旧双模块的数据库。"""
+    db_path = create_legacy_news_db(data_dir)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "ALTER TABLE ai_filter_results ADD COLUMN module_type TEXT "
+        "CHECK(module_type IN ('policy', 'research'))"
+    )
+    conn.execute(
+        "ALTER TABLE ai_filter_results ADD COLUMN species_scope TEXT "
+        "CHECK(species_scope IN ('rice', 'other_crop', 'not_applicable'))"
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
 def remote_news_db_bytes(tmp, name):
     data_dir = Path(tmp) / name
     backend = local_backend(data_dir)
@@ -136,6 +153,31 @@ def remote_news_db_bytes(tmp, name):
 
 
 class AIFilterModuleMigrationTests(unittest.TestCase):
+    def test_migration_rebuilds_pre_industry_module_constraint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            create_pre_industry_news_db(tmp)
+            backend = local_backend(tmp)
+            try:
+                conn = backend._get_connection(DATE)
+                table_sql = conn.execute(
+                    """SELECT sql FROM sqlite_master
+                       WHERE type = 'table' AND name = 'ai_filter_results'"""
+                ).fetchone()[0]
+                self.assertIn(
+                    "module_type IN ('policy', 'industry', 'research')",
+                    table_sql,
+                )
+                conn.execute(
+                    """INSERT INTO ai_filter_results
+                       (news_item_id, source_type, tag_id, module_type,
+                        species_scope, created_at)
+                       VALUES (2, 'rss', 1, 'industry', 'rice',
+                               '2026-08-09 10:00:00')"""
+                )
+                conn.commit()
+            finally:
+                backend.cleanup()
+
     def test_legacy_migration_adds_nullable_checked_column_and_clears_both_caches(self):
         with tempfile.TemporaryDirectory() as tmp:
             create_legacy_news_db(tmp)

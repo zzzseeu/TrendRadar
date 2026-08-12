@@ -2,9 +2,11 @@ import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from trendradar.ai.analyzer import AIAnalysisResult, has_required_narrative
+from trendradar.ai.analyzer import AIAnalysisResult, AIAnalyzer, has_required_narrative
 from trendradar.ai.filter import AIFilter
+from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.weekly import WeeklyRSSAggregator, select_weekly_modules
 from trendradar.report.weekly_pdf import render_weekly_pdf_html
 from trendradar.storage.base import RSSData, RSSItem
@@ -30,6 +32,36 @@ def _item(module_type, species_scope, index, **overrides):
 
 
 class WeeklyFourModuleContractTests(unittest.TestCase):
+    def test_strict_batch_retries_one_transient_classification_failure(self):
+        pipeline = AIFilterPipeline.__new__(AIFilterPipeline)
+        pipeline._strict = True
+        pipeline._enrich_pending_items = lambda items, _label: items
+        ai_filter = MagicMock()
+        ai_filter.classify_batch.side_effect = [None, []]
+        pending = [{
+            "id": 1,
+            "title": "水稻产业动态",
+            "source_name": "Official",
+            "url": "https://example.org/rice",
+            "content": "水稻产业动态正文",
+            "content_level": "full_text",
+            "risk_warning": "",
+        }]
+
+        results, news_ids, rss_ids = pipeline._classify_batches(
+            ai_filter,
+            [],
+            pending,
+            [{"id": 1, "tag": "水稻产业"}],
+            "水稻兴趣",
+            {"BATCH_SIZE": 10, "BATCH_INTERVAL": 0},
+        )
+
+        self.assertEqual(results, [])
+        self.assertEqual(news_ids, [])
+        self.assertEqual(rss_ids, [1])
+        self.assertEqual(ai_filter.classify_batch.call_count, 2)
+
     def test_strict_classification_preserves_industry_and_species_scope(self):
         ai_filter = AIFilter.__new__(AIFilter)
         ai_filter.debug = False
@@ -110,6 +142,28 @@ class WeeklyFourModuleContractTests(unittest.TestCase):
         self.assertFalse(has_required_narrative(result, report_mode="weekly"))
         result.industry_trends = "产业判断 [industry:1]"
         self.assertTrue(has_required_narrative(result, report_mode="weekly"))
+
+    def test_empty_news_module_gets_deterministic_narrative_only_for_none_evidence(self):
+        result = AIAnalysisResult(
+            success=True,
+            industry_trends="产业判断 [industry:1]",
+            research_trends="科研判断 [research:1]",
+            weather_risks="气象判断 [weather:official]",
+        )
+        AIAnalyzer._fill_empty_weekly_module_narratives(
+            result,
+            {
+                "policy": {"[policy:none]"},
+                "industry": {"[industry:1]"},
+                "research": {"[research:1]"},
+                "weather": {"[weather:official]"},
+            },
+        )
+        self.assertEqual(
+            result.policy_trends,
+            "本期无入选农业育种政策新闻 [policy:none]",
+        )
+        self.assertEqual(result.industry_trends, "产业判断 [industry:1]")
 
     def test_pdf_renders_three_news_modules_and_weather_once(self):
         policy = _item("policy", "rice", 1, module_rank=1,

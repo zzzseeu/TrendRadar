@@ -648,6 +648,23 @@ class AIFilterPipeline:
         pending_news = self._enrich_pending_items(pending_news, "热榜")
         pending_rss = self._enrich_pending_items(pending_rss, "RSS")
 
+        def classify(titles_for_ai):
+            result = ai_filter.classify_batch(
+                titles_for_ai,
+                active_tags,
+                interests_content,
+                strict=getattr(self, "_strict", False),
+            )
+            if result is None and getattr(self, "_strict", False):
+                print("[AI筛选] 严格批次首次失败，立即重试本批次一次")
+                result = ai_filter.classify_batch(
+                    titles_for_ai,
+                    active_tags,
+                    interests_content,
+                    strict=True,
+                )
+            return result
+
         succeeded_news_ids = []
         for i in range(0, len(pending_news), batch_size):
             if batch_count > 0 and batch_interval > 0:
@@ -667,12 +684,7 @@ class AIFilterPipeline:
                 }
                 for n in batch
             ]
-            batch_results = ai_filter.classify_batch(
-                titles_for_ai,
-                active_tags,
-                interests_content,
-                strict=getattr(self, "_strict", False),
-            )
+            batch_results = classify(titles_for_ai)
             batch_count += 1
             if batch_results is None:
                 print(f"[AI筛选] 热榜批次 {i // batch_size + 1}: {len(batch)} 条 → 分类失败，将在下次运行重试")
@@ -702,12 +714,7 @@ class AIFilterPipeline:
                 }
                 for n in batch
             ]
-            batch_results = ai_filter.classify_batch(
-                titles_for_ai,
-                active_tags,
-                interests_content,
-                strict=getattr(self, "_strict", False),
-            )
+            batch_results = classify(titles_for_ai)
             batch_count += 1
             if batch_results is None:
                 print(f"[AI筛选] RSS 批次 {i // batch_size + 1}: {len(batch)} 条 → 分类失败，将在下次运行重试")

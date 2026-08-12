@@ -482,6 +482,47 @@ class SQLiteStorageMixin:
         if owns_transaction:
             conn.execute("BEGIN IMMEDIATE")
         try:
+            table_row = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'ai_filter_results'"
+            ).fetchone()
+            table_sql = (table_row[0] if table_row else "") or ""
+            if (
+                "module_type" in table_sql
+                and "'industry'" not in table_sql
+            ):
+                # SQLite 不能原地扩展 CHECK 约束。早期双模块版本的列虽已
+                # 存在，却会拒绝 industry；旧分类本就必须整体失效，因此
+                # 直接重建缓存表，避免给旧行猜测新模块。
+                conn.execute("DROP TABLE ai_filter_results")
+                conn.execute("""
+                    CREATE TABLE ai_filter_results (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        news_item_id INTEGER NOT NULL,
+                        source_type TEXT NOT NULL DEFAULT 'hotlist',
+                        tag_id INTEGER NOT NULL,
+                        module_type TEXT NOT NULL CHECK(
+                            module_type IN ('policy', 'industry', 'research')
+                        ),
+                        species_scope TEXT NOT NULL CHECK(
+                            species_scope IN (
+                                'rice', 'other_crop', 'not_applicable'
+                            )
+                        ),
+                        relevance_score REAL DEFAULT 0,
+                        content_level TEXT DEFAULT 'title_only',
+                        risk_warning TEXT DEFAULT '',
+                        content_excerpt TEXT DEFAULT '',
+                        importance_score REAL DEFAULT 0,
+                        ai_summary TEXT DEFAULT '',
+                        status TEXT DEFAULT 'active',
+                        deprecated_at TEXT,
+                        created_at TEXT NOT NULL,
+                        UNIQUE(news_item_id, source_type, tag_id)
+                    )
+                """)
+                conn.execute("DELETE FROM ai_filter_analyzed_news")
+
             cursor = conn.execute("PRAGMA table_info(ai_filter_results)")
             columns = {row[1] for row in cursor.fetchall()}
             requires_reclassification = False
