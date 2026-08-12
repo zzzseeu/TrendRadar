@@ -8,6 +8,10 @@ import pytz
 from trendradar.__main__ import NewsAnalyzer
 from trendradar.ai.filter_pipeline import AIFilterPipeline
 from trendradar.core.weekly import select_weekly_modules
+from trendradar.core.paper_identity import (
+    extract_paper_identifiers,
+    normalize_doi,
+)
 from trendradar.crawler.news_search import canonicalize_url, normalize_title
 
 
@@ -193,6 +197,324 @@ class WeeklyModuleSelectionCompatibilityTests(unittest.TestCase):
             ["current_events item 02"],
         )
         self.assertEqual(selection.research, [])
+
+    def test_merges_institution_story_with_journal_original_by_exact_pii(self):
+        institution = _item(
+            "research",
+            1,
+            title="作科所揭示独脚金内酯调控水稻分蘖新机制",
+            source_id="caas-crop-research",
+            source_name="中国农业科学院作物科学研究所",
+            url=(
+                "https://ics.caas.cn/xwdt/kyjz1/"
+                "756a74866d57474286fe4191c65eb5f9.htm"
+            ),
+            content_excerpt=(
+                "研究成果发表于Molecular Plant，原文链接："
+                "https://www.cell.com/molecular-plant/fulltext/"
+                "S1674-2052(26)00261-3"
+            ),
+            importance_score=0.99,
+        )
+        journal = _item(
+            "research",
+            2,
+            title=(
+                "The Tiller Angle Regulator TAC1 is targeted for degradation "
+                "by the SCF-D3 complex to suppress rice tillering"
+            ),
+            source_id="molecular-plant",
+            source_name="Molecular Plant",
+            url=(
+                "https://www.sciencedirect.com/science/article/pii/"
+                "S1674205226002613?dgcid=rss_sd_all"
+            ),
+            guid=(
+                "https://www.sciencedirect.com/science/article/pii/"
+                "S1674205226002613"
+            ),
+            content_excerpt="doi:10.1016/j.molp.2026.08.003",
+            importance_score=0.8,
+        )
+
+        selection = select_weekly_modules(
+            [institution, journal], min_score=0.5
+        )
+
+        self.assertEqual(len(selection.research), 1)
+        selected = selection.research[0]
+        self.assertEqual(selected["source_id"], "molecular-plant")
+        self.assertEqual(selected["paper_doi"], "10.1016/j.molp.2026.08.003")
+        self.assertEqual(
+            selected["related_sources"],
+            [{
+                "source_name": "中国农业科学院作物科学研究所",
+                "url": institution["url"],
+            }],
+        )
+
+    def test_exact_doi_and_explicit_paper_title_merge_without_fuzzy_matching(self):
+        doi_a = _item(
+            "research", 1, title="Journal original",
+            url="https://doi.org/10.1016/J.MOLP.2026.08.003",
+        )
+        doi_b = _item(
+            "research", 2, title="Institution report",
+            content_excerpt=(
+                "DOI: https://doi.org/10.1016/j.molp.2026.08.003."
+            ),
+        )
+        title_a = _item(
+            "research", 3, title="A complete rice breeding paper title",
+            url="https://journal.example.org/article/123",
+            content_excerpt=(
+                'Please cite this article as: "A complete rice breeding paper title"'
+            ),
+        )
+        title_b = _item(
+            "research", 4, title="研究机构解读",
+            content_excerpt="论文题为《A complete rice breeding paper title》",
+        )
+        near_title = _item(
+            "research", 5,
+            title="A complete rice breeding paper titles",
+            url="https://journal.example.org/article/456",
+        )
+        doi_conflict_a = _item(
+            "research", 6, title="First interpretation",
+            content_excerpt=(
+                "DOI:10.1000/first.1；"
+                "论文题为《The exact shared but conflicting paper title》"
+            ),
+        )
+        doi_conflict_b = _item(
+            "research", 7, title="Second interpretation",
+            content_excerpt=(
+                "DOI:10.1000/second.2；"
+                "论文题为《The exact shared but conflicting paper title》"
+            ),
+        )
+
+        selection = select_weekly_modules(
+            [
+                doi_a, doi_b, title_a, title_b, near_title,
+                doi_conflict_a, doi_conflict_b,
+            ],
+            min_score=0.5,
+        )
+
+        self.assertEqual(len(selection.research), 5)
+        self.assertEqual(
+            normalize_doi(" HTTPS://DOI.ORG/10.1016/J.MOLP.2026.08.003. "),
+            "10.1016/j.molp.2026.08.003",
+        )
+        self.assertIn(
+            ("doi", "10.1016/j.molp.2026.08.003"),
+            extract_paper_identifiers(doi_b),
+        )
+
+    def test_configured_scholarly_source_owns_same_doi_card(self):
+        institution = _item(
+            "research", 1,
+            title="机构高分解读",
+            source_id="institute-news",
+            importance_score=1.0,
+            content_excerpt="DOI:10.1000/rice.paper",
+        )
+        journal = _item(
+            "research", 2,
+            title="The complete original rice paper title",
+            source_id="journal-feed",
+            importance_score=0.5,
+            url="https://journal.example.org/articles/rice-paper",
+            content_excerpt="DOI:10.1000/rice.paper",
+        )
+
+        selection = select_weekly_modules(
+            [institution, journal],
+            min_score=0.5,
+            scholarly_source_ids={"journal-feed"},
+        )
+
+        self.assertEqual(len(selection.research), 1)
+        self.assertEqual(selection.research[0]["source_id"], "journal-feed")
+        self.assertEqual(
+            selection.research[0]["related_sources"],
+            [{"source_name": "Source", "url": institution["url"]}],
+        )
+
+    def test_ambiguous_pii_never_bridges_conflicting_dois(self):
+        shared_pii = "S1234567890123456"
+        first = _item(
+            "research", 1,
+            content_excerpt=f"DOI:10.1000/first {shared_pii}",
+        )
+        unknown = _item(
+            "research", 2,
+            content_excerpt=shared_pii,
+        )
+        second = _item(
+            "research", 3,
+            content_excerpt=f"DOI:10.1000/second {shared_pii}",
+        )
+
+        selection = select_weekly_modules(
+            [first, unknown, second], min_score=0.5
+        )
+
+        self.assertEqual(len(selection.research), 3)
+
+    def test_multi_pii_digest_never_bridges_two_primary_papers(self):
+        first_pii = "S1234567890123456"
+        second_pii = "S6543210987654321"
+        first = _item(
+            "research", 1,
+            content_excerpt=f"DOI:10.1000/first /pii/{first_pii}",
+        )
+        digest = _item(
+            "research", 2,
+            content_excerpt=(
+                f"相关论文 /pii/{first_pii} 与 /pii/{second_pii}"
+            ),
+        )
+        second = _item(
+            "research", 3,
+            content_excerpt=f"DOI:10.1000/second /pii/{second_pii}",
+        )
+
+        selection = select_weekly_modules(
+            [first, digest, second], min_score=0.5
+        )
+
+        self.assertEqual(len(selection.research), 3)
+        self.assertNotIn(
+            ("pii", first_pii),
+            extract_paper_identifiers({
+                "content_excerpt": f"/pii/{first_pii}EXTRA"
+            }),
+        )
+
+    def test_union_root_rejects_pii_to_fallback_doi_bridge(self):
+        shared_pii = "S1234567890123456"
+        first = _item(
+            "research", 1, title="First paper",
+            content_excerpt=f"DOI:10.1000/first /pii/{shared_pii}",
+        )
+        bridge = _item(
+            "research", 2, title="Bridge title", url="", guid="",
+            content_excerpt=f"/pii/{shared_pii}",
+            importance_score=1.0,
+        )
+        second = _item(
+            "research", 3, title="Bridge title", url="", guid="",
+            content_excerpt="DOI:10.1000/second",
+        )
+
+        for candidates in (
+            [first, bridge, second],
+            [second, bridge, first],
+        ):
+            selection = select_weekly_modules(candidates, min_score=0.5)
+            self.assertEqual(len(selection.research), 2)
+            bridge_card = next(
+                item for item in selection.research
+                if item["title"] == "Bridge title"
+            )
+            self.assertEqual(bridge_card["paper_doi"], "10.1000/first")
+
+    def test_doi_url_query_and_fragment_are_not_part_of_identity(self):
+        item = {
+            "url": (
+                "https://doi.org/10.1000/query.paper"
+                "?utm_source=feed#fragment"
+            )
+        }
+        self.assertNotIn(
+            (
+                "doi",
+                "10.1000/query.paper?utm_source=feed#fragment",
+            ),
+            extract_paper_identifiers(item),
+        )
+        self.assertIn(
+            ("doi", "10.1000/query.paper"),
+            extract_paper_identifiers(item),
+        )
+
+    def test_shared_reference_doi_does_not_merge_distinct_primary_papers(self):
+        first = _item(
+            "research", 1,
+            title="First paper",
+            url="https://doi.org/10.1000/first.paper",
+            content_excerpt="参考文献 https://doi.org/10.1000/shared.reference",
+        )
+        second = _item(
+            "research", 2,
+            title="Second paper",
+            url="https://doi.org/10.1000/second.paper",
+            content_excerpt="Reference https://doi.org/10.1000/shared.reference",
+        )
+
+        selection = select_weekly_modules([first, second], min_score=0.5)
+
+        self.assertEqual(len(selection.research), 2)
+
+    def test_same_fallback_title_with_conflicting_dois_remains_two_papers(self):
+        first = _item(
+            "research", 1, title="Same displayed title", url="", guid="",
+            content_excerpt="DOI:10.1000/first.paper",
+        )
+        second = _item(
+            "research", 2, title="Same displayed title", url="", guid="",
+            content_excerpt="DOI:10.1000/second.paper",
+        )
+
+        selection = select_weekly_modules([first, second], min_score=0.5)
+
+        self.assertEqual(len(selection.research), 2)
+
+    def test_scholarly_title_merges_exact_institution_paper_title(self):
+        paper_title = "A precise complete title for a rice breeding paper"
+        journal = _item(
+            "research", 1,
+            title=paper_title,
+            source_id="nature-plants",
+            source_name="Nature Plants",
+            url="https://www.nature.com/articles/example",
+        )
+        institution = _item(
+            "research", 2,
+            title="机构科研进展",
+            source_id="institute",
+            content_excerpt=f"论文题为《{paper_title}》",
+            importance_score=1.0,
+        )
+
+        selection = select_weekly_modules(
+            [institution, journal],
+            min_score=0.5,
+            scholarly_source_ids={"nature-plants"},
+        )
+
+        self.assertEqual(len(selection.research), 1)
+        self.assertEqual(selection.research[0]["source_id"], "nature-plants")
+
+    def test_paper_identifiers_do_not_remove_current_events(self):
+        research = _item(
+            "research", 1,
+            content_excerpt="DOI:10.1000/shared.paper",
+        )
+        current = _item(
+            "current_events", 2,
+            content_excerpt="DOI:10.1000/shared.paper",
+        )
+
+        selection = select_weekly_modules(
+            [research, current], min_score=0.5
+        )
+
+        self.assertEqual(len(selection.research), 1)
+        self.assertEqual(len(selection.current_events), 1)
 
     def test_analyzer_selects_once_saves_modules_and_groups_for_summary(self):
         analyzer = NewsAnalyzer.__new__(NewsAnalyzer)

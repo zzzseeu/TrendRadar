@@ -82,10 +82,28 @@ def _render_news_card(
         _link(item.get("reader_url"), "备用链接"),
     ]
     links = [link for link in links if link]
+    related_links = []
+    for related in item.get("related_sources") or []:
+        if not isinstance(related, dict):
+            continue
+        related_link = _link(
+            related.get("url"),
+            related.get("source_name") or "相关来源",
+        )
+        if related_link:
+            related_links.append(related_link)
     summary_html = (
         f'<p class="summary">{summary}</p>' if summary else ""
     )
     links_html = f'<p class="links">{"　".join(links)}</p>' if links else ""
+    paper_doi = _text(item.get("paper_doi"))
+    paper_doi_html = (
+        f'<p class="paper-identity">DOI：{paper_doi}</p>' if paper_doi else ""
+    )
+    related_html = (
+        f'<p class="links">相关来源：{"　".join(related_links)}</p>'
+        if related_links else ""
+    )
     module_rank = _module_rank(item.get("module_rank"))
     evidence_id = f"[{module_type}:{module_rank}]"
     primary_topic = primary_weekly_topic(item)
@@ -101,7 +119,7 @@ def _render_news_card(
         f'证据ID：{_text(evidence_id)}　主主题：{_text(primary_topic)}　'
         f'摘要依据：{_text(evidence_label)}</p>'
         f'<p class="meta">来源：{source}　发布时间：{published_at}</p>'
-        f'{summary_html}{links_html}'
+        f'{summary_html}{paper_doi_html}{links_html}{related_html}'
         '</article>'
     )
 
@@ -201,6 +219,7 @@ h2 {{ color: #0f766e; font-size: 15pt; border-bottom: 1px solid #99f6e4; padding
 h3 {{ font-size: 11.5pt; margin: 0 0 2mm; color: #164e63; }}
 .meta {{ color: #475569; margin: 0 0 2mm; font-size: 9pt; }}
 .evidence-meta {{ color: #0f766e; margin: 0 0 1mm; font-size: 9pt; font-weight: 600; }}
+.paper-identity {{ margin: 1mm 0; font-size: 9pt; word-break: break-all; }}
 .summary {{ margin: 2mm 0; }}
 .news-card {{ break-inside: avoid-page; border: 1px solid #dbeafe; border-radius: 2mm; padding: 3mm 4mm; margin: 3mm 0; background: #fff; }}
 .highlight-marker {{ display: inline-block; color: #fff; background: #0f766e; padding: 0 1.6mm; border-radius: 1mm; font-size: 8pt; margin-right: 2mm; vertical-align: 1px; }}

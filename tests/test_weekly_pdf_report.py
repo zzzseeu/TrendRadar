@@ -208,6 +208,49 @@ class WeeklyPdfReportTests(unittest.TestCase):
             1,
         )
 
+    def test_research_card_lists_safe_related_sources_without_duplicate_card(self):
+        research = [{
+            **self.items[0],
+            "title": "Journal paper title",
+            "url": "https://www.sciencedirect.com/science/article/pii/S1234567890123456",
+            "source_name": "Molecular Plant",
+            "module_rank": 1,
+            "paper_doi": "10.1016/j.example.2026.01.001",
+            "related_sources": [
+                {
+                    "source_name": "中国农业科学院作物科学研究所",
+                    "url": "https://ics.caas.cn/research/123.htm",
+                },
+                {
+                    "source_name": "不安全来源",
+                    "url": "javascript:alert(1)",
+                },
+            ],
+        }]
+
+        html = render_weekly_pdf_html(
+            current_events_items=[],
+            research_items=research,
+            ai_analysis=SimpleNamespace(
+                success=True,
+                current_events_trends="本周无时事动态。",
+                research_trends="科研判断 [research:1]",
+                weather_risks="气象判断 [weather:official]",
+            ),
+            agro_weather=self.weather,
+            period_label="period",
+            generated_at=datetime(2026, 8, 10),
+        )
+
+        self.assertEqual(html.count(">Journal paper title</h3>"), 1)
+        self.assertIn("DOI：10.1016/j.example.2026.01.001", html)
+        self.assertIn(".paper-identity { margin: 1mm 0;", html)
+        self.assertIn("word-break: break-all", html)
+        self.assertIn("相关来源：", html)
+        self.assertIn("中国农业科学院作物科学研究所", html)
+        self.assertIn('href="https://ics.caas.cn/research/123.htm"', html)
+        self.assertNotIn("javascript:alert(1)", html)
+
     def test_rejects_more_than_twenty_unselected_news_items(self):
         with self.assertRaisesRegex(ValueError, "20"):
             render_weekly_pdf_html(

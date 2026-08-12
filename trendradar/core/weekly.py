@@ -8,6 +8,12 @@ from typing import Iterator
 import pytz
 
 from trendradar.crawler.news_search import canonicalize_url, normalize_title
+from trendradar.core.paper_identity import (
+    extract_dois,
+    extract_explicit_paper_titles,
+    extract_paper_identifiers,
+    has_primary_publication_link,
+)
 from trendradar.core.rss_snapshot import (
     item_identity,
     item_richness,
@@ -135,6 +141,223 @@ def _deduplicate_module_items(items: list[dict]) -> list[dict]:
     return list(merged.values())
 
 
+def _merge_research_items(
+    items: list[dict], *, scholarly_source_ids: set[str]
+) -> list[dict]:
+    """Merge exact cross-source representations of the same paper."""
+    if not items:
+        return []
+
+    rows = [dict(item) for item in items]
+    identifiers = [
+        extract_paper_identifiers(
+            item,
+            include_item_title=(
+                str(item.get("source_id") or "") in scholarly_source_ids
+            ),
+        )
+        for item in rows
+    ]
+    fallback = [report_item_identity(item) for item in rows]
+    parents = list(range(len(rows)))
+    root_dois = [
+        {value for kind, value in row if kind == "doi"}
+        for row in identifiers
+    ]
+    root_piis = [
+        {value for kind, value in row if kind == "pii"}
+        for row in identifiers
+    ]
+
+    def find(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    def union(left: int, right: int) -> bool:
+        left_root = find(left)
+        right_root = find(right)
+        if left_root == right_root:
+            return True
+        left_dois = root_dois[left_root]
+        right_dois = root_dois[right_root]
+        if left_dois and right_dois and not (left_dois & right_dois):
+            return False
+        left_piis = root_piis[left_root]
+        right_piis = root_piis[right_root]
+        if (
+            left_piis
+            and right_piis
+            and not (left_piis & right_piis)
+            and not (left_dois & right_dois)
+        ):
+            return False
+        parents[right_root] = left_root
+        root_dois[left_root] = left_dois | right_dois
+        root_piis[left_root] = left_piis | right_piis
+        return True
+
+    identifier_dois: dict[tuple[str, str], set[str]] = {}
+    fallback_dois: dict[tuple[str, str], set[str]] = {}
+    for index, row_identifiers in enumerate(identifiers):
+        row_dois = {
+            value for kind, value in row_identifiers if kind == "doi"
+        }
+        for identifier in row_identifiers:
+            identifier_dois.setdefault(identifier, set()).update(row_dois)
+        fallback_dois.setdefault(fallback[index], set()).update(row_dois)
+    ambiguous_identifiers = {
+        identifier for identifier, dois in identifier_dois.items()
+        if len(dois) > 1
+    }
+    ambiguous_fallback = {
+        identity for identity, dois in fallback_dois.items()
+        if len(dois) > 1
+    }
+
+    stable_keys = [weekly_module_sort_key(item) for item in rows]
+    candidate_edges: list[tuple[int, tuple, tuple, int, int]] = []
+    for left in range(len(rows)):
+        for right in range(left + 1, len(rows)):
+            left_dois = {value for kind, value in identifiers[left] if kind == "doi"}
+            right_dois = {value for kind, value in identifiers[right] if kind == "doi"}
+            left_piis = {value for kind, value in identifiers[left] if kind == "pii"}
+            right_piis = {value for kind, value in identifiers[right] if kind == "pii"}
+            shared_doi = bool(left_dois & right_dois)
+            conflicting_doi = bool(
+                left_dois and right_dois and not shared_doi
+            )
+            shared_pii = any(
+                ("pii", value) not in ambiguous_identifiers
+                for value in left_piis & right_piis
+            )
+            conflicting_pii = bool(
+                left_piis and right_piis and not shared_pii
+            )
+            left_titles = {
+                value for kind, value in identifiers[left]
+                if kind == "paper_title"
+            }
+            right_titles = {
+                value for kind, value in identifiers[right]
+                if kind == "paper_title"
+            }
+            shared_title = any(
+                ("paper_title", value) not in ambiguous_identifiers
+                for value in left_titles & right_titles
+            )
+            same_publication = (
+                not conflicting_doi
+                and (
+                    shared_doi
+                    or shared_pii
+                    or (
+                        not left_dois
+                        and not right_dois
+                        and not conflicting_pii
+                        and shared_title
+                    )
+                )
+            )
+            same_fallback = bool(
+                not conflicting_doi
+                and fallback[left] not in ambiguous_fallback
+                and fallback[left][1]
+                and fallback[left] == fallback[right]
+            )
+            if same_publication or same_fallback:
+                if shared_doi:
+                    priority = 0
+                elif shared_pii:
+                    priority = 1
+                elif shared_title:
+                    priority = 2
+                else:
+                    priority = 3
+                left_key, right_key = sorted(
+                    (stable_keys[left], stable_keys[right])
+                )
+                candidate_edges.append(
+                    (priority, left_key, right_key, left, right)
+                )
+
+    for _, _, _, left, right in sorted(candidate_edges):
+        union(left, right)
+
+    groups: dict[int, list[dict]] = {}
+    for index, item in enumerate(rows):
+        groups.setdefault(find(index), []).append(item)
+
+    merged: list[dict] = []
+    for group in groups.values():
+        ordered = sorted(
+            group,
+            key=lambda item: (
+                0
+                if str(item.get("source_id") or "") in scholarly_source_ids
+                else 1,
+                0 if has_primary_publication_link(item) else 1,
+                weekly_module_sort_key(item),
+            ),
+        )
+        owner = dict(ordered[0])
+        owner_url = canonicalize_url(str(owner.get("url") or ""))
+
+        all_dois = sorted({doi for item in group for doi in extract_dois(item)})
+        if len(all_dois) == 1:
+            owner["paper_doi"] = all_dois[0]
+        else:
+            owner.pop("paper_doi", None)
+
+        display_titles: dict[str, str] = {}
+        for item in ordered:
+            explicit_titles = extract_explicit_paper_titles(
+                item,
+                include_item_title=(
+                    str(item.get("source_id") or "")
+                    in scholarly_source_ids
+                ),
+            )
+            for normalized, display in explicit_titles.items():
+                display_titles.setdefault(normalized, display)
+        owner_title_key = normalize_title(str(owner.get("title") or ""))
+        if owner_title_key in display_titles:
+            owner["paper_title"] = display_titles[owner_title_key]
+        elif display_titles:
+            owner["paper_title"] = display_titles[sorted(display_titles)[0]]
+
+        related: list[dict[str, str]] = []
+        seen_urls = {owner_url} if owner_url else set()
+
+        def add_related(source_name: object, url: object) -> None:
+            raw_url = str(url or "").strip()
+            canonical = canonicalize_url(raw_url)
+            if not canonical or canonical in seen_urls:
+                return
+            seen_urls.add(canonical)
+            related.append({
+                "source_name": str(source_name or "相关来源").strip() or "相关来源",
+                "url": raw_url,
+            })
+
+        for item in ordered:
+            if item is not ordered[0]:
+                add_related(
+                    item.get("source_name") or item.get("feed_name"),
+                    item.get("url"),
+                )
+            for source in item.get("related_sources") or []:
+                if isinstance(source, dict):
+                    add_related(source.get("source_name"), source.get("url"))
+        if related:
+            owner["related_sources"] = related
+        else:
+            owner.pop("related_sources", None)
+        merged.append(owner)
+    return merged
+
+
 @dataclass
 class WeeklyNewsSelection:
     current_events: list[dict] = field(default_factory=list)
@@ -144,6 +367,7 @@ class WeeklyNewsSelection:
 def select_weekly_modules(
     items: list[dict], *, min_score: float,
     limit_per_module: int = 20, highlight_count: int = 5,
+    scholarly_source_ids: set[str] | None = None,
 ) -> WeeklyNewsSelection:
     """Select two independent rankings with publication evidence precedence."""
     threshold = _weekly_score(min_score)
@@ -153,6 +377,10 @@ def select_weekly_modules(
         and item.get("species_scope") in {"rice", "other_crop"}
         and _weekly_score(item.get("relevance_score")) >= threshold
     ]
+    merged_research = _merge_research_items(
+        eligible_research,
+        scholarly_source_ids=set(scholarly_source_ids or ()),
+    )
     research_identities = {
         report_item_identity(item)
         for item in eligible_research
@@ -169,9 +397,17 @@ def select_weekly_modules(
     limit = max(0, int(limit_per_module))
     highlights = max(0, int(highlight_count))
 
-    def select(module_items: list[dict], *, rice_first: bool = False) -> list[dict]:
+    def select(
+        module_items: list[dict], *, rice_first: bool = False,
+        already_deduplicated: bool = False,
+    ) -> list[dict]:
+        unique_items = (
+            list(module_items)
+            if already_deduplicated
+            else _deduplicate_module_items(module_items)
+        )
         ranked = sorted(
-            _deduplicate_module_items(module_items),
+            unique_items,
             key=(
                 (lambda item: (
                     0 if item.get("species_scope") == "rice" else 1,
@@ -191,7 +427,11 @@ def select_weekly_modules(
 
     return WeeklyNewsSelection(
         current_events=select(eligible_current_events),
-        research=select(eligible_research, rice_first=True),
+        research=select(
+            merged_research,
+            rice_first=True,
+            already_deduplicated=True,
+        ),
     )
 
 

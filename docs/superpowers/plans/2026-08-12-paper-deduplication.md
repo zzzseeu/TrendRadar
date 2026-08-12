@@ -2,9 +2,9 @@
 
 > **面向 AI 代理的工作者：** 必需子技能：使用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现此计划。步骤使用复选框（`- [ ]`）语法来跟踪进度。
 
-**目标：** 使用 DOI 和明确完整论文名合并周报科研进展中的同论文多来源卡片，并优先保留期刊原文。
+**目标：** 使用 DOI、PII 和明确完整论文名合并周报科研进展中的同论文多来源卡片，并优先保留期刊原文。
 
-**架构：** 在新的纯函数模块中提取标准 DOI、完整论文名和论文身份；`select_weekly_modules()` 在科研模块排序和 Top 20 截断前按论文身份合并，并把非主卡片保存为 `related_sources`。PDF 模板只渲染一个主卡片，并展示经过 URL 安全校验的关联来源。
+**架构：** 在新的纯函数模块中提取标准 DOI、标准 PII、完整论文名和论文身份；`select_weekly_modules()` 在科研模块排序和 Top 20 截断前按论文身份合并，并把非主卡片保存为 `related_sources`。PDF 模板只渲染一个主卡片，并展示经过 URL 安全校验的关联来源。
 
 **技术栈：** Python 3.12、`re`、现有 `unittest`、现有周报选择器与 HTML/PDF 模板。
 

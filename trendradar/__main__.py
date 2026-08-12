@@ -1468,9 +1468,17 @@ class NewsAnalyzer:
                 })
                 candidates.append(item)
 
+        scholarly_source_ids = {
+            str(feed.get("id") or "").strip()
+            for feed in self.ctx.config.get("RSS", {}).get("FEEDS", [])
+            if isinstance(feed, dict)
+            and str(feed.get("content_category") or "").strip() == "scholarly"
+            and str(feed.get("id") or "").strip()
+        }
         self._weekly_news_modules = select_weekly_modules(
             candidates,
             min_score=self.ctx.config["AI_FILTER"]["MIN_SCORE"],
+            scholarly_source_ids=scholarly_source_ids,
         )
         grouped: dict[str, list[dict]] = {}
         for item in (
