@@ -23,8 +23,9 @@ class ClassificationResponseResilienceTests(unittest.TestCase):
 
     def test_valid_match_uses_zero_temperature(self):
         self.ai_filter.client.chat.return_value = (
-            '[{"id":1,"module_type":"research","tag_id":18,"score":0.82,'
-            '"importance_score":0.78,"summary":"仅标题显示：木豆基因组完成"}]'
+            '{"items":[{"id":1,"module_type":"research","tag_id":1,'
+            '"score":0.82,"importance_score":0.78,'
+            '"summary":"仅标题显示：木豆基因组完成"}]}'
         )
         result = self.ai_filter.classify_batch(self.titles, self.tags, "育种")
         self.assertEqual(result[0]["news_item_id"], 1)
@@ -45,7 +46,8 @@ class ClassificationResponseResilienceTests(unittest.TestCase):
         self.assertEqual(self.ai_filter.classify_batch(self.titles, self.tags, "育种"), [])
         retry_messages = self.ai_filter.client.chat.call_args_list[1].args[0]
         self.assertEqual(retry_messages[-2], {"role": "assistant", "content": "[{"})
-        self.assertIn("严格 JSON 数组", retry_messages[-1]["content"])
+        self.assertIn("严格 JSON 对象", retry_messages[-1]["content"])
+        self.assertIn('"items"', retry_messages[-1]["content"])
 
     def test_two_invalid_responses_return_failure(self):
         self.ai_filter.client.chat.side_effect = ["", "not-json"]

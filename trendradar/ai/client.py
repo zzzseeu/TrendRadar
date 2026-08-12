@@ -12,6 +12,9 @@ from typing import Any, Dict, List
 from litellm import completion
 
 
+JSON_OBJECT_RESPONSE_FORMAT = {"type": "json_object"}
+
+
 class AIClient:
     """统一的 AI 客户端（基于 LiteLLM）"""
 
@@ -91,14 +94,37 @@ class AIClient:
         # 调用 LiteLLM
         response = completion(**params)
 
-        # 提取响应内容
-        # 某些模型/提供商返回 list（内容块）而非 str，统一转为 str
-        content = response.choices[0].message.content
-        if isinstance(content, list):
-            content = "\n".join(
-                item.get("text", str(item)) if isinstance(item, dict) else str(item)
-                for item in content
-            )
+        def extract_content(raw_response) -> str:
+            # 某些模型/提供商返回 list（内容块）而非 str，统一转为 str
+            value = raw_response.choices[0].message.content
+            if isinstance(value, list):
+                value = "\n".join(
+                    item.get("text", str(item))
+                    if isinstance(item, dict) else str(item)
+                    for item in value
+                )
+            return value or ""
+
+        content = extract_content(response)
+        response_format = params.get("response_format")
+        if (
+            not content.strip()
+            and isinstance(response_format, dict)
+            and response_format.get("type") == "json_object"
+        ):
+            print("[AI] JSON Object 返回空内容，追加明确约束后重试一次")
+            retry_params = dict(params)
+            retry_params["messages"] = [
+                *messages,
+                {
+                    "role": "user",
+                    "content": (
+                        "上一次响应为空。请严格按照前述字段契约返回一个"
+                        "非空 JSON 对象；不要返回空白、Markdown 或解释文字。"
+                    ),
+                },
+            ]
+            content = extract_content(completion(**retry_params))
         return content or ""
 
     def validate_config(self) -> tuple[bool, str]:

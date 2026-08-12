@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
-from trendradar.ai.client import AIClient
+from trendradar.ai.client import AIClient, JSON_OBJECT_RESPONSE_FORMAT
 from trendradar.ai.prompt_loader import load_prompt_template
 
 
@@ -733,7 +733,10 @@ class AIAnalyzer:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": user_prompt})
 
-        return self.client.chat(messages)
+        return self.client.chat(
+            messages,
+            response_format=JSON_OBJECT_RESPONSE_FORMAT,
+        )
 
     def _retry_fix_json(self, original_response: str, error_msg: str) -> Optional[AIAnalysisResult]:
         """
@@ -772,7 +775,10 @@ class AIAnalyzer:
         ]
 
         try:
-            response = self.client.chat(messages)
+            response = self.client.chat(
+                messages,
+                response_format=JSON_OBJECT_RESPONSE_FORMAT,
+            )
             return self._parse_response(response)
         except Exception as e:
             print(f"[AI] 重试修复 JSON 异常: {type(e).__name__}: {e}")
@@ -848,7 +854,11 @@ class AIAnalyzer:
             },
         ]
         try:
-            response = self.client.chat(messages, temperature=0.1)
+            response = self.client.chat(
+                messages,
+                temperature=0.1,
+                response_format=JSON_OBJECT_RESPONSE_FORMAT,
+            )
             reviewed = self._parse_response(response)
             if reviewed.success and not reviewed.error:
                 reviewed.raw_response = draft.raw_response
