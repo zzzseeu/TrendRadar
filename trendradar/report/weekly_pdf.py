@@ -494,7 +494,7 @@ def weekly_pdf_output_path(
         raise ValueError(f"unsupported weekly report suffix: {suffix}")
     folder = Path(output_dir) / "pdf" / period_end.isoformat()
     stem = (
-        f"农业育种新闻周报_三模块_{period_start:%Y-%m-%d}至"
+        f"农业育种新闻周报_四模块_{period_start:%Y-%m-%d}至"
         f"{period_end - timedelta(days=1):%Y-%m-%d}"
     )
     return folder / f"{stem}{suffix}"

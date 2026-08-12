@@ -293,13 +293,13 @@ class WeeklyPdfReportTests(unittest.TestCase):
                 tmp, date(2026, 8, 3), date(2026, 8, 10), "<html></html>"
             )
         self.assertEqual(
-            Path(path).name, "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            Path(path).name, "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
         )
 
     def test_build_replaces_both_artifacts_only_after_temp_validation(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)
@@ -345,7 +345,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
         ):
             with self.subTest(case=case), TemporaryDirectory() as tmp:
                 final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                    "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+                    "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
                 )
                 final_html = final_pdf.with_suffix(".html")
                 final_pdf.parent.mkdir(parents=True)
@@ -368,7 +368,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_second_replace_failure_rolls_back_both_formal_artifacts(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)
@@ -410,7 +410,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_rollback_failure_preserves_recoverable_backup_and_cleans_others(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)
@@ -469,7 +469,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
     def test_backup_cleanup_failure_warns_but_keeps_successful_formal_pair(self):
         with TemporaryDirectory() as tmp:
             final_pdf = Path(tmp) / "pdf" / "2026-08-10" / (
-                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
             )
             final_html = final_pdf.with_suffix(".html")
             final_pdf.parent.mkdir(parents=True)

@@ -73,6 +73,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             "source_name": "Source",
             "published_at": "2026-08-06T08:00:00+08:00",
             "module_type": module_type,
+            "species_scope": "rice",
             "relevance_score": 0.8,
             "importance_score": 0.8,
             "content_level": "summary",
@@ -145,7 +146,9 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             policy_trends="政策暂无" if not any(
                 item["module_type"] == "policy" for item in selected_items
             ) else "政策趋势 [policy:1]",
-            industry_trends="产业暂无 [industry:none]",
+            industry_trends="产业暂无" if not any(
+                item["module_type"] == "industry" for item in selected_items
+            ) else "产业动态 [industry:1]",
             research_trends="科研暂无" if not any(
                 item["module_type"] == "research" for item in selected_items
             ) else "科研趋势 [research:1]",
@@ -351,7 +354,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         ]
         with tempfile.TemporaryDirectory() as tmp:
             old_pdf = Path(tmp) / (
-                "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+                "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
             )
             old_pdf.write_bytes(b"%PDF-1.4\nold-contract")
             old_digest = hashlib.sha256(old_pdf.read_bytes()).hexdigest()
@@ -1042,7 +1045,7 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         dispatcher = self._dispatcher(f"{first_webhook};{second_webhook}")
         account_hashes = dispatcher.weekly_pdf_account_hashes()
         pdf_path = self._pdf(
-            "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
         )
         original_pdf = pdf_path.read_bytes()
         pdf_digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
@@ -1102,7 +1105,7 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
             self.assertTrue(analyzer.run())
 
         output_path.assert_called_once()
-        self.assertIn("三模块", pdf_path.name)
+        self.assertIn("四模块", pdf_path.name)
         self.assertEqual(pdf_path.read_bytes(), original_pdf)
         build.assert_not_called()
         render.assert_not_called()
@@ -1116,7 +1119,7 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
 
     def test_resume_refuses_partial_pdf_when_schedule_disables_analysis(self):
         pdf_path = self._pdf(
-            "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
         )
         dispatcher = MagicMock()
         dispatcher.weekly_pdf_account_hashes.return_value = [
@@ -1160,7 +1163,7 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
 
     def test_resume_refuses_partial_pdf_when_ai_analysis_is_disabled(self):
         pdf_path = self._pdf(
-            "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
         )
         create_dispatcher = MagicMock()
         run_at = pytz.timezone("Asia/Shanghai").localize(
@@ -1191,7 +1194,7 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
         dispatcher = self._dispatcher(f"{WEBHOOK}-a;{WEBHOOK}-b")
         account_hashes = dispatcher.weekly_pdf_account_hashes()
         pdf_path = self._pdf(
-            "农业育种新闻周报_三模块_2026-08-03至2026-08-09.pdf"
+            "农业育种新闻周报_四模块_2026-08-03至2026-08-09.pdf"
         )
         digest = hashlib.sha256(pdf_path.read_bytes()).hexdigest()
         expected_contract = "a" * 64
