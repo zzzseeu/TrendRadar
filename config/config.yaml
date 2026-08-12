@@ -183,46 +183,55 @@ rss:
     - id: "nature-plants"
       name: "Nature Plants"
       url: "https://www.nature.com/nplants.rss"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "nature-genetics"
       name: "Nature Genetics"
       url: "https://www.nature.com/ng.rss"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "nature-biotechnology"
       name: "Nature Biotechnology"
       url: "https://www.nature.com/nbt.rss"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "science"
       name: "Science"
       url: "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "molecular-plant"
       name: "Molecular Plant"
       url: "https://rss.sciencedirect.com/publication/science/16742052"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "plant-communications"
       name: "Plant Communications"
       url: "https://rss.sciencedirect.com/publication/science/25903462"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "rice-science"
       name: "Rice Science"
       url: "https://rss.sciencedirect.com/publication/science/16726308"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "crop-journal"
       name: "The Crop Journal"
       url: "https://rss.sciencedirect.com/publication/science/22145141"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "biorxiv-plant-biology"
       name: "bioRxiv Plant Biology"
       url: "https://connect.biorxiv.org/biorxiv_xml.php?subject=plant_biology"
+      content_category: "scholarly"
       max_items: 30
 
     # ── 育种数据库动态 ────────────────────────────────────────

@@ -23,7 +23,7 @@
 
 ### 任务 1：确定性模块判定与 AI/SQLite 契约
 
-- [ ] **步骤 1：编写 RED 测试**
+- [x] **步骤 1：编写 RED 测试**
 
 在 `tests/test_weekly_source_evidence.py` 覆盖：
 
@@ -48,7 +48,7 @@ def test_ai_response_cannot_choose_or_override_module():
 
 增加旧 schema 含 `policy/industry/research` 时 results 与 analyzed 同时清空、二次迁移幂等、strict 写读仅允许 `current_events/research` 的测试。
 
-- [ ] **步骤 2：运行 RED**
+- [x] **步骤 2：运行 RED**
 
 ```bash
 /mnt/d/project/trendradar/.venv/bin/python -m unittest \
@@ -59,7 +59,7 @@ def test_ai_response_cannot_choose_or_override_module():
 
 预期：缺少判定器、旧 AI 仍要求 `module_type`、旧 schema 仍接受 `policy/industry`。
 
-- [ ] **步骤 3：实现最小生产契约**
+- [x] **步骤 3：实现最小生产契约**
 
 `source_evidence.py` 输出不可变 `ModuleEvidence(module_type, reason)`；只识别：
 
@@ -81,7 +81,7 @@ module_type TEXT NOT NULL
 
 检测旧枚举或缺列时清空 results/analyzed 后重建，不默认映射旧行。模块/存储契约版本递增，并进入 prompt/artifact hash。
 
-- [ ] **步骤 4：运行任务 1 GREEN 并提交**
+- [x] **步骤 4：运行任务 1 GREEN 并提交**
 
 运行步骤 2 同一命令，预期 0 failures/errors；然后提交：
 

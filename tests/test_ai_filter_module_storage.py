@@ -123,13 +123,13 @@ def create_legacy_news_db(data_dir):
     return db_path
 
 
-def create_pre_industry_news_db(data_dir):
-    """创建已迁移 module 列、但约束仍只有旧双模块的数据库。"""
+def create_four_module_news_db(data_dir):
+    """创建仍使用 policy/industry/research 的旧模块数据库。"""
     db_path = create_legacy_news_db(data_dir)
     conn = sqlite3.connect(db_path)
     conn.execute(
         "ALTER TABLE ai_filter_results ADD COLUMN module_type TEXT "
-        "CHECK(module_type IN ('policy', 'research'))"
+        "CHECK(module_type IN ('policy', 'industry', 'research'))"
     )
     conn.execute(
         "ALTER TABLE ai_filter_results ADD COLUMN species_scope TEXT "
@@ -153,9 +153,9 @@ def remote_news_db_bytes(tmp, name):
 
 
 class AIFilterModuleMigrationTests(unittest.TestCase):
-    def test_migration_rebuilds_pre_industry_module_constraint(self):
+    def test_migration_rebuilds_old_module_constraint_without_guessing(self):
         with tempfile.TemporaryDirectory() as tmp:
-            create_pre_industry_news_db(tmp)
+            create_four_module_news_db(tmp)
             backend = local_backend(tmp)
             try:
                 conn = backend._get_connection(DATE)
@@ -164,14 +164,26 @@ class AIFilterModuleMigrationTests(unittest.TestCase):
                        WHERE type = 'table' AND name = 'ai_filter_results'"""
                 ).fetchone()[0]
                 self.assertIn(
-                    "module_type IN ('policy', 'industry', 'research')",
+                    "module_type IN ('current_events', 'research')",
                     table_sql,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM ai_filter_results"
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM ai_filter_analyzed_news"
+                    ).fetchone()[0],
+                    0,
                 )
                 conn.execute(
                     """INSERT INTO ai_filter_results
                        (news_item_id, source_type, tag_id, module_type,
                         species_scope, created_at)
-                       VALUES (2, 'rss', 1, 'industry', 'rice',
+                       VALUES (2, 'rss', 1, 'current_events', 'rice',
                                '2026-08-09 10:00:00')"""
                 )
                 conn.commit()
@@ -197,7 +209,7 @@ class AIFilterModuleMigrationTests(unittest.TestCase):
                        WHERE type = 'table' AND name = 'ai_filter_results'"""
                 ).fetchone()[0]
                 self.assertIn(
-                    "module_type IN ('policy', 'industry', 'research')",
+                    "module_type IN ('current_events', 'research')",
                     table_sql,
                 )
                 self.assertIn("species_scope", columns)
@@ -234,7 +246,7 @@ class AIFilterModuleMigrationTests(unittest.TestCase):
                 tag_id = seed_tag(backend)
                 self.assertEqual(
                     backend.save_ai_filter_results([
-                        result(1, tag_id, "policy")
+                        result(1, tag_id, "current_events")
                     ], DATE),
                     1,
                 )
@@ -254,7 +266,7 @@ class AIFilterModuleMigrationTests(unittest.TestCase):
                         conn.execute("PRAGMA ignore_check_constraints = ON")
                         conn.execute(
                             "UPDATE ai_filter_results "
-                            "SET module_type = 'policy'"
+                            "SET module_type = 'current_events'"
                         )
                         conn.execute("PRAGMA ignore_check_constraints = OFF")
                         conn.commit()
@@ -309,7 +321,14 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             self.backend,
             lambda: datetime(2026, 8, 9, 10, 0),
         )
-        pipeline._enrich_pending_items = lambda items, _label: items
+        pipeline._enrich_pending_items = lambda items, _label: [
+            (
+                dict(item, content="成果发表于 Rice Science。")
+                if item.get("id") == 2
+                else item
+            )
+            for item in items
+        ]
         with patch.object(
             self.backend,
             "_get_configured_time",
@@ -320,12 +339,17 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
         ):
             return pipeline.run()
 
-    def test_ordinary_real_parser_pipeline_persists_only_policy_and_research(self):
+    def test_ordinary_real_parser_uses_source_evidence_modules(self):
         seed_hotlist_rows(self.conn, ids=(1, 2, 3, 4, 5))
+        self.conn.execute(
+            "UPDATE news_items SET title = ? WHERE id = 2",
+            ("成果发表于 Rice Science",),
+        )
+        self.conn.commit()
         pipeline_result = self._run_ordinary_pipeline(response=[
             {
                 "id": 1,
-                "module_type": "policy",
+                "include": True,
                 "species_scope": "rice",
                 "tag_id": self.tag_id,
                 "score": 0.9,
@@ -334,7 +358,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             },
             {
                 "id": 2,
-                "module_type": "research",
+                "include": True,
                 "species_scope": "rice",
                 "tag_id": self.tag_id,
                 "score": 0.8,
@@ -343,7 +367,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             },
             {
                 "id": 3,
-                "module_type": "exclude",
+                "include": False,
                 "species_scope": "not_applicable",
                 "tag_id": self.tag_id,
                 "score": 0.1,
@@ -353,6 +377,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             {
                 "id": 4,
                 "module_type": "weather",
+                "include": True,
                 "species_scope": "rice",
                 "tag_id": self.tag_id,
                 "score": 0.7,
@@ -376,7 +401,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
         ).fetchall()
         self.assertEqual(
             [(row[0], row[1]) for row in rows],
-            [(1, "policy"), (2, "research")],
+            [(1, "current_events"), (2, "research")],
         )
         analyzed = self.conn.execute(
             """SELECT news_item_id, matched
@@ -399,7 +424,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
         self.conn.commit()
 
         pipeline_result = self._run_ordinary_pipeline(classify_results=[
-            result(1, self.tag_id, "policy"),
+            result(1, self.tag_id, "current_events"),
             result(2, self.tag_id, "research"),
         ])
 
@@ -418,14 +443,13 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             0,
         )
 
-    def test_ordinary_write_and_read_round_trip_all_persisted_modules(self):
+    def test_ordinary_write_and_read_round_trip_both_persisted_modules(self):
         self.assertEqual(
             self.backend.save_ai_filter_results([
-                result(1, self.tag_id, "policy"),
-                result(2, self.tag_id, "industry"),
-                result(3, self.tag_id, "research", "other_crop"),
+                result(1, self.tag_id, "current_events"),
+                result(2, self.tag_id, "research", "other_crop"),
             ], DATE),
-            3,
+            2,
         )
 
         stored = self.backend.get_active_ai_filter_results(
@@ -439,9 +463,8 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
                 for row in stored
             },
             {
-                1: ("policy", "rice"),
-                2: ("industry", "rice"),
-                3: ("research", "other_crop"),
+                1: ("current_events", "rice"),
+                2: ("research", "other_crop"),
             },
         )
 
@@ -450,7 +473,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             with self.subTest(module_type=invalid):
                 self.assertEqual(
                     self.backend.save_ai_filter_results([
-                        result(1, self.tag_id, "policy"),
+                        result(1, self.tag_id, "current_events"),
                         result(2, self.tag_id, invalid),
                     ], DATE),
                     0,
@@ -501,7 +524,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.backend.replace_ai_filter_batch_strict(
                 [
-                    result(1, self.tag_id, "policy"),
+                    result(1, self.tag_id, "current_events"),
                     result(2, self.tag_id, "research"),
                 ],
                 [1, 2],
@@ -559,12 +582,12 @@ class RemoteAIFilterModuleStorageTests(unittest.TestCase):
         s3.set(key, remote_news_db_bytes(tmp, "baseline"), "v1")
         return s3, key
 
-    def _write_policy(self, backend):
+    def _write_current_events(self, backend):
         tag_id = backend.get_ai_filter_tag_snapshot_strict(
             DATE, INTERESTS_FILE
         )["tags"][0]["id"]
         return backend.replace_ai_filter_batch_strict(
-            [result(1, tag_id, "policy")],
+            [result(1, tag_id, "current_events")],
             [1],
             [],
             INTERESTS_FILE,
@@ -579,7 +602,7 @@ class RemoteAIFilterModuleStorageTests(unittest.TestCase):
             observer = remote_backend(Path(tmp) / "observer", s3)
             try:
                 self.assertEqual(
-                    self._write_policy(writer),
+                    self._write_current_events(writer),
                     {"results": 1, "analyzed": 1},
                 )
                 rows = observer.get_active_ai_filter_results_strict(
@@ -587,7 +610,7 @@ class RemoteAIFilterModuleStorageTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [(row["news_item_id"], row["module_type"]) for row in rows],
-                    [(1, "policy")],
+                    [(1, "current_events")],
                 )
             finally:
                 writer.cleanup()
@@ -612,7 +635,7 @@ class RemoteAIFilterModuleStorageTests(unittest.TestCase):
                         s3.fail_keys_once.add(key)
 
                     with self.assertRaises(Exception):
-                        self._write_policy(writer)
+                        self._write_current_events(writer)
 
                     self.assertEqual(
                         writer.get_active_ai_filter_results_strict(
@@ -637,7 +660,7 @@ class RemoteAIFilterModuleStorageTests(unittest.TestCase):
             try:
                 writer.begin_batch()
                 self.assertEqual(
-                    self._write_policy(writer),
+                    self._write_current_events(writer),
                     {"results": 1, "analyzed": 1},
                 )
                 s3.fail_keys_once.add(key)

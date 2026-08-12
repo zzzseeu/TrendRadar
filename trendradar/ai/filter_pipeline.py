@@ -11,6 +11,7 @@ from threading import local
 from typing import Any, Callable, Dict, List, Optional
 
 from trendradar.ai.filter import AIFilter, AIFilterResult
+from trendradar.ai.source_evidence import classify_source_evidence
 from trendradar.crawler.article_content import ArticleContentFetcher
 from trendradar.crawler.news_search import NEWS_SEARCH_PROVIDERS, canonicalize_url
 from trendradar.core.weekly import NaturalWeekWindow
@@ -647,6 +648,8 @@ class AIFilterPipeline:
 
         pending_news = self._enrich_pending_items(pending_news, "热榜")
         pending_rss = self._enrich_pending_items(pending_rss, "RSS")
+        pending_news = self._assign_module_evidence(pending_news)
+        pending_rss = self._assign_module_evidence(pending_rss)
 
         def classify(titles_for_ai):
             result = ai_filter.classify_batch(
@@ -681,6 +684,8 @@ class AIFilterPipeline:
                     "content": n.get("content", n["title"]),
                     "content_level": n.get("content_level", "title_only"),
                     "risk_warning": n.get("risk_warning", ""),
+                    "module_type": n["module_type"],
+                    "module_reason": n["module_reason"],
                 }
                 for n in batch
             ]
@@ -711,6 +716,8 @@ class AIFilterPipeline:
                     "content": n.get("content", n.get("summary") or n["title"]),
                     "content_level": n.get("content_level", "title_only"),
                     "risk_warning": n.get("risk_warning", ""),
+                    "module_type": n["module_type"],
+                    "module_reason": n["module_reason"],
                 }
                 for n in batch
             ]
@@ -726,6 +733,24 @@ class AIFilterPipeline:
             print(f"[AI筛选] RSS 批次 {i // batch_size + 1}: {len(batch)} 条 → {len(batch_results)} 条匹配")
 
         return total_results, succeeded_news_ids, succeeded_rss_ids
+
+    def _assign_module_evidence(self, items: List[Dict]) -> List[Dict]:
+        """Freeze report modules before any AI relevance decision."""
+        source_categories = {
+            str(feed.get("id") or "").strip(): str(
+                feed.get("content_category") or ""
+            ).strip()
+            for feed in self._rss_feeds
+            if isinstance(feed, dict) and str(feed.get("id") or "").strip()
+        }
+        assigned = []
+        for item in items:
+            enriched = dict(item)
+            evidence = classify_source_evidence(enriched, source_categories)
+            enriched["module_type"] = evidence.module_type
+            enriched["module_reason"] = evidence.reason
+            assigned.append(enriched)
+        return assigned
 
     def _enrich_pending_items(self, items: List[Dict], label: str) -> List[Dict]:
         """仅为本次尚未分析的记录抓正文，并携带明确的降级风险。"""
@@ -909,7 +934,7 @@ class AIFilterPipeline:
             tag_groups[tag_name]["items"].append({
                 "id": r.get("news_item_id"),
                 "news_item_id": r.get("news_item_id"),
-                "module_type": r.get("module_type", "research"),
+                "module_type": r["module_type"],
                 "species_scope": r.get("species_scope"),
                 "title": title,
                 "source_id": r.get("source_id", ""),
@@ -942,7 +967,7 @@ class AIFilterPipeline:
             })
             tag_groups[tag_name]["count"] += 1
 
-        # The authoritative natural-week snapshot must reach the policy-first
+        # The authoritative natural-week snapshot must reach the module
         # selector intact. Ordinary reports still use the display hotspot cap.
         if not (
             self._rss_window is not None and self._rss_ids_authoritative
@@ -1215,7 +1240,7 @@ class AIFilterPipeline:
 
                 title_entry = {
                     "news_item_id": item.get("news_item_id"),
-                    "module_type": item.get("module_type", "research"),
+                    "module_type": item["module_type"],
                     "species_scope": item.get("species_scope"),
                     "title": item.get("title", ""),
                     "source_id": item.get("source_id", ""),

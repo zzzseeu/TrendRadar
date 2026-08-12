@@ -5,8 +5,9 @@
 
 分类规则：
 1. 每个输入新闻必须恰好返回一条记录，返回对象的 items 数组长度必须等于输入新闻数
-2. 每条记录的 module_type 只能是 policy、industry、research 或 exclude；policy/industry/research 只归入一个最相关标签并必须返回 tag_id，exclude 可以不返回 tag_id
-3. 每条记录必须给出 species_scope：rice 表示水稻，other_crop 表示其他农作物，not_applicable 表示无适用物种；industry 只允许 rice
+2. 模块由程序根据来源与正文证据提前固定；你不得返回、推断或修改 module_type
+3. 每条记录必须返回 include：保留为 true，排除为 false；include=true 时只归入一个最相关标签并必须返回 tag_id，include=false 可以不返回 tag_id
+4. 每条记录必须给出 species_scope：rice 表示水稻，other_crop 表示其他农作物，not_applicable 表示无适用物种；固定模块为 current_events 时只允许保留 rice，固定模块为 research 时可保留 rice 或 other_crop
 4. 给出 0.0-1.0 的相关度分数（1.0=完全相关，0.5=部分相关）
 5. 判断依据优先级为“正文 > 摘要 > 标题”，只能使用每条新闻实际提供的最高证据层级
 5. 严格遵循用户偏好中的额外过滤要求（如有）
@@ -14,14 +15,14 @@
 7. 仅有摘要时，不得补充摘要未说明的方法、结果、样本量、田间验证或产业化阶段
 8. 仅有标题时，若标题明确表明具体育种技术、种质资源、基因或 QTL、分子标记、性状改良、品种、田间验证、品种审定或基因编辑等实质育种进展，可归入 research；summary 必须以“仅标题显示：”开头，不得根据常识扩写标题
 9. 水稻研究优先排序；其他作物只要具有明确的实质育种价值即可保留，不再要求先证明可迁移到水稻。迁移价值只影响排序和重要性评分，不作为准入条件
-11. 政策优先：种业审定登记、PVP、法规、振兴、种质资源、项目、财政补贴及其会议部署、领导调研、行业倡议和企业响应，属于真实政策主题时归入 policy；不得仅因会议、宣传稿或调研这种载体排除真实政策或科研信息
-12. 水稻产业的市场、供需、价格、生产、加工、流通、贸易、项目进展和机构动态归入 industry；非水稻产业动态归入 exclude
-11. 正文与标题冲突时以正文为准，并降低 score；信息不足时归入 exclude
+11. 政策、会议部署、领导调研、企业宣传和机构动态只要与水稻产业或水稻育种实质相关，就可以 include=true；不得仅因载体形式排除
+12. 水稻产业的市场、供需、价格、生产、加工、流通、贸易、项目进展和机构动态可保留；非水稻时事动态应 include=false
+13. 正文与标题冲突时以正文为准，并降低 score；信息不足时 include=false
 12. 每条保留新闻必须给出一条中文 summary：有正文或摘要证据时建议 180-300 字，概括对象、背景、主要进展、影响和证据局限；只有标题时保持简短，不得为凑字数扩写
 13. summary 不得补充输入未出现的具体基因、病害、实验方法、样本量、数据、田间结果或产业化状态
 14. 仅标题时 summary 必须以“仅标题显示：”开头，不得把标题改写成确定性研究结论
 15. importance_score 表示对水稻遗传育种的科研/育种价值，不代表新闻热度；0.0-1.0，需综合证据成熟度、可复用资源、方法增量和育种应用潜力
-16. 医学、肿瘤、人类遗传、企业财报、人事任命、培训招生和纯营销内容归入 exclude；水稻直接相关内容在同等条件下优先获得更高的相关度和重要性
+16. 医学、肿瘤、人类遗传、企业财报、人事任命、培训招生和与水稻无实质关系的纯营销内容应 include=false；水稻直接相关内容在同等条件下优先获得更高的相关度和重要性
 
 [user]
 ## 用户偏好
@@ -42,7 +43,7 @@
   "items": [
     {
       "id": 1,
-      "module_type": "research",
+      "include": true,
       "species_scope": "rice",
       "tag_id": 1,
       "score": 0.9,
@@ -51,7 +52,7 @@
     },
     {
       "id": 5,
-      "module_type": "policy",
+      "include": true,
       "species_scope": "rice",
       "tag_id": 2,
       "score": 0.8,
@@ -60,7 +61,7 @@
     },
     {
       "id": 9,
-      "module_type": "exclude",
+      "include": false,
       "species_scope": "not_applicable",
       "score": 0.1,
       "importance_score": 0.1,
@@ -69,4 +70,4 @@
   ]
 }
 ```
-每条返回记录必须包含 id、module_type、species_scope、score、importance_score 和 summary；policy/industry/research 必须包含 tag_id，exclude 可以没有 tag_id。
+每条返回记录必须包含 id、include、species_scope、score、importance_score 和 summary；include=true 必须包含 tag_id，include=false 可以没有 tag_id。不得返回 module_type。

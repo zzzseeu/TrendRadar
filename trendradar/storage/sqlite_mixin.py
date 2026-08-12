@@ -489,11 +489,15 @@ class SQLiteStorageMixin:
             table_sql = (table_row[0] if table_row else "") or ""
             if (
                 "module_type" in table_sql
-                and "'industry'" not in table_sql
+                and (
+                    "'current_events'" not in table_sql
+                    or "'policy'" in table_sql
+                    or "'industry'" in table_sql
+                )
             ):
-                # SQLite 不能原地扩展 CHECK 约束。早期双模块版本的列虽已
-                # 存在，却会拒绝 industry；旧分类本就必须整体失效，因此
-                # 直接重建缓存表，避免给旧行猜测新模块。
+                # SQLite 不能原地修改 CHECK 约束。旧 policy/industry
+                # 分类不能可靠映射成来源证据模块，因此必须整体失效，
+                # 禁止把历史行默认猜成 current_events。
                 conn.execute("DROP TABLE ai_filter_results")
                 conn.execute("""
                     CREATE TABLE ai_filter_results (
@@ -502,7 +506,7 @@ class SQLiteStorageMixin:
                         source_type TEXT NOT NULL DEFAULT 'hotlist',
                         tag_id INTEGER NOT NULL,
                         module_type TEXT NOT NULL CHECK(
-                            module_type IN ('policy', 'industry', 'research')
+                            module_type IN ('current_events', 'research')
                         ),
                         species_scope TEXT NOT NULL CHECK(
                             species_scope IN (
@@ -521,6 +525,18 @@ class SQLiteStorageMixin:
                         UNIQUE(news_item_id, source_type, tag_id)
                     )
                 """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ai_filter_results_status "
+                    "ON ai_filter_results(status)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ai_filter_results_news "
+                    "ON ai_filter_results(news_item_id, source_type)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ai_filter_results_tag "
+                    "ON ai_filter_results(tag_id)"
+                )
                 conn.execute("DELETE FROM ai_filter_analyzed_news")
 
             cursor = conn.execute("PRAGMA table_info(ai_filter_results)")
@@ -532,7 +548,7 @@ class SQLiteStorageMixin:
                 conn.execute(
                     "ALTER TABLE ai_filter_results ADD COLUMN "
                     "module_type TEXT "
-                    "CHECK(module_type IN ('policy', 'industry', 'research'))"
+                    "CHECK(module_type IN ('current_events', 'research'))"
                 )
                 requires_reclassification = True
             if "species_scope" not in columns:
@@ -2338,7 +2354,7 @@ class SQLiteStorageMixin:
                           WHERE r.news_item_id = a.news_item_id
                             AND r.source_type = a.source_type
                             AND r.status = 'active'
-                            AND r.module_type IN ('policy', 'research')
+                            AND r.module_type IN ('current_events', 'research')
                             AND t.status = 'active'
                             AND t.interests_file = a.interests_file
                             AND t.prompt_hash = a.prompt_hash
@@ -2406,7 +2422,7 @@ class SQLiteStorageMixin:
             for result in results:
                 if result.get("module_type") not in PERSISTED_MODULE_TYPES:
                     raise ValueError(
-                        "分类结果 module_type 必须是 policy、industry 或 research"
+                        "分类结果 module_type 必须是 current_events 或 research"
                     )
                 if result.get("species_scope") not in {
                     "rice", "other_crop", "not_applicable"
@@ -2504,7 +2520,7 @@ class SQLiteStorageMixin:
             module_type = result.get("module_type")
             if module_type not in PERSISTED_MODULE_TYPES:
                 raise ValueError(
-                    "严格分类结果 module_type 必须是 policy、industry 或 research"
+                    "严格分类结果 module_type 必须是 current_events 或 research"
                 )
             if result.get("species_scope") not in {
                 "rice", "other_crop", "not_applicable"
