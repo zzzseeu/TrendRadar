@@ -1,5 +1,15 @@
 # Python bytecode
 *.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime-generated reports, databases, locks and indexes
+/output/
+/index.html
 
 # Local Docker credentials and deployment overrides
 docker/.env
