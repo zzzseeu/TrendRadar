@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS ai_filter_results (
     source_type TEXT NOT NULL DEFAULT 'hotlist',  -- hotlist / rss
     tag_id INTEGER NOT NULL,             -- 引用 ai_filter_tags.id
     module_type TEXT NOT NULL
-        CHECK(module_type IN ('policy', 'research')), -- 周报展示模块
+        CHECK(module_type IN ('policy', 'industry', 'research')), -- 周报展示模块
+    species_scope TEXT NOT NULL
+        CHECK(species_scope IN ('rice', 'other_crop', 'not_applicable')), -- 物种范围
     relevance_score REAL DEFAULT 0,      -- 相关度 0.0 ~ 1.0
     content_level TEXT DEFAULT 'title_only', -- full_text / summary / title_only
     risk_warning TEXT DEFAULT '',        -- 正文降级后的证据风险提示

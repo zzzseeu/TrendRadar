@@ -137,8 +137,9 @@ def _deduplicate_module_items(items: list[dict]) -> list[dict]:
 
 @dataclass
 class WeeklyNewsSelection:
-    policy: list[dict]
-    research: list[dict]
+    policy: list[dict] = field(default_factory=list)
+    industry: list[dict] = field(default_factory=list)
+    research: list[dict] = field(default_factory=list)
 
 
 def select_weekly_modules(
@@ -150,6 +151,7 @@ def select_weekly_modules(
     eligible_policy = [
         item for item in items
         if item.get("module_type") == "policy"
+        and item.get("species_scope") == "rice"
         and _weekly_score(item.get("relevance_score")) >= threshold
     ]
     policy_identities = {
@@ -157,20 +159,39 @@ def select_weekly_modules(
         for item in eligible_policy
         if report_item_identity(item)[1]
     }
+    eligible_industry = [
+        item for item in items
+        if item.get("module_type") == "industry"
+        and item.get("species_scope") == "rice"
+        and _weekly_score(item.get("relevance_score")) >= threshold
+        and report_item_identity(item) not in policy_identities
+    ]
+    industry_identities = {
+        report_item_identity(item)
+        for item in eligible_industry
+        if report_item_identity(item)[1]
+    }
     eligible_research = [
         item for item in items
         if item.get("module_type") == "research"
+        and item.get("species_scope") in {"rice", "other_crop"}
         and _weekly_score(item.get("relevance_score")) >= threshold
         and report_item_identity(item) not in policy_identities
+        and report_item_identity(item) not in industry_identities
     ]
 
     limit = max(0, int(limit_per_module))
     highlights = max(0, int(highlight_count))
 
-    def select(module_items: list[dict]) -> list[dict]:
+    def select(module_items: list[dict], *, rice_first: bool = False) -> list[dict]:
         ranked = sorted(
             _deduplicate_module_items(module_items),
-            key=weekly_module_sort_key,
+            key=(
+                (lambda item: (
+                    0 if item.get("species_scope") == "rice" else 1,
+                    weekly_module_sort_key(item),
+                )) if rice_first else weekly_module_sort_key
+            ),
         )[:limit]
         selected = []
         for module_rank, raw in enumerate(ranked, start=1):
@@ -184,7 +205,8 @@ def select_weekly_modules(
 
     return WeeklyNewsSelection(
         policy=select(eligible_policy),
-        research=select(eligible_research),
+        industry=select(eligible_industry),
+        research=select(eligible_research, rice_first=True),
     )
 
 

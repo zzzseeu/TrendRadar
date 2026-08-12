@@ -5,15 +5,17 @@
 
 分类规则：
 1. 每个输入新闻必须恰好返回一条记录，返回对象的 items 数组长度必须等于输入新闻数
-2. 每条记录的 module_type 只能是 policy、research 或 exclude；policy/research 只归入一个最相关标签并必须返回 tag_id，exclude 可以不返回 tag_id
-3. 给出 0.0-1.0 的相关度分数（1.0=完全相关，0.5=部分相关）
-4. 判断依据优先级为“正文 > 摘要 > 标题”，只能使用每条新闻实际提供的最高证据层级
+2. 每条记录的 module_type 只能是 policy、industry、research 或 exclude；policy/industry/research 只归入一个最相关标签并必须返回 tag_id，exclude 可以不返回 tag_id
+3. 每条记录必须给出 species_scope：rice 表示水稻，other_crop 表示其他农作物，not_applicable 表示无适用物种；industry 只允许 rice
+4. 给出 0.0-1.0 的相关度分数（1.0=完全相关，0.5=部分相关）
+5. 判断依据优先级为“正文 > 摘要 > 标题”，只能使用每条新闻实际提供的最高证据层级
 5. 严格遵循用户偏好中的额外过滤要求（如有）
 6. 如果两类标签相关度接近，优先选择排序更靠前的标签（前面的标签优先级更高）
 7. 仅有摘要时，不得补充摘要未说明的方法、结果、样本量、田间验证或产业化阶段
 8. 仅有标题时，若标题明确表明具体育种技术、种质资源、基因或 QTL、分子标记、性状改良、品种、田间验证、品种审定或基因编辑等实质育种进展，可归入 research；summary 必须以“仅标题显示：”开头，不得根据常识扩写标题
 9. 水稻研究优先排序；其他作物只要具有明确的实质育种价值即可保留，不再要求先证明可迁移到水稻。迁移价值只影响排序和重要性评分，不作为准入条件
-10. 政策优先：种业审定登记、PVP、法规、振兴、种质资源、项目、财政补贴及其会议部署、领导调研、行业倡议和企业响应，属于真实政策主题时归入 policy；不得仅因会议、宣传稿或调研这种载体排除真实政策或科研信息
+11. 政策优先：种业审定登记、PVP、法规、振兴、种质资源、项目、财政补贴及其会议部署、领导调研、行业倡议和企业响应，属于真实政策主题时归入 policy；不得仅因会议、宣传稿或调研这种载体排除真实政策或科研信息
+12. 水稻产业的市场、供需、价格、生产、加工、流通、贸易、项目进展和机构动态归入 industry；非水稻产业动态归入 exclude
 11. 正文与标题冲突时以正文为准，并降低 score；信息不足时归入 exclude
 12. 每条保留新闻必须给出一条中文 summary（建议 50-120 字），只概括当前证据明确支持的研究对象、进展和局限
 13. summary 不得补充输入未出现的具体基因、病害、实验方法、样本量、数据、田间结果或产业化状态
@@ -41,6 +43,7 @@
     {
       "id": 1,
       "module_type": "research",
+      "species_scope": "rice",
       "tag_id": 1,
       "score": 0.9,
       "importance_score": 0.85,
@@ -49,6 +52,7 @@
     {
       "id": 5,
       "module_type": "policy",
+      "species_scope": "rice",
       "tag_id": 2,
       "score": 0.8,
       "importance_score": 0.7,
@@ -57,6 +61,7 @@
     {
       "id": 9,
       "module_type": "exclude",
+      "species_scope": "not_applicable",
       "score": 0.1,
       "importance_score": 0.1,
       "summary": "内容与关注方向无关。"
@@ -64,4 +69,4 @@
   ]
 }
 ```
-每条返回记录必须包含 id、module_type、score、importance_score 和 summary；policy/research 必须包含 tag_id，exclude 可以没有 tag_id。
+每条返回记录必须包含 id、module_type、species_scope、score、importance_score 和 summary；policy/industry/research 必须包含 tag_id，exclude 可以没有 tag_id。

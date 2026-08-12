@@ -70,11 +70,11 @@ class AIFilterModuleContractTests(unittest.TestCase):
         ]
         tags = [{"id": 11, "tag": "政策"}, {"id": 12, "tag": "科研"}]
         response = json.dumps([
-            {"id": 1, "module_type": "policy", "tag_id": 11,
+            {"id": 1, "module_type": "policy", "species_scope": "rice", "tag_id": 11,
              "score": 0.50, "importance_score": 0.80, "summary": "政策部署"},
-            {"id": 2, "module_type": "research", "tag_id": 12,
+            {"id": 2, "module_type": "research", "species_scope": "rice", "tag_id": 12,
              "score": 0.49, "importance_score": 0.90, "summary": "科研成果"},
-            {"id": 3, "module_type": "exclude",
+            {"id": 3, "module_type": "exclude", "species_scope": "not_applicable",
              "score": 0.10, "importance_score": 0.10, "summary": "内容无关"},
         ])
 
@@ -90,7 +90,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         titles = [{"id": 1, "title": "政策"}, {"id": 2, "title": "科研"}]
         tags = [{"id": 11, "tag": "政策"}]
         valid = {
-            "id": 1, "module_type": "policy", "tag_id": 11,
+            "id": 1, "module_type": "policy", "species_scope": "rice", "tag_id": 11,
             "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
         }
         cases = {
@@ -98,23 +98,23 @@ class AIFilterModuleContractTests(unittest.TestCase):
             "duplicate_id": [valid, dict(valid)],
             "unknown_id": [
                 dict(valid, id=999),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, module_type="exclude", species_scope="not_applicable", summary="无关"),
             ],
             "unknown_module": [
                 dict(valid, module_type="unknown"),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, module_type="exclude", species_scope="not_applicable", summary="无关"),
             ],
             "missing_persisted_tag": [
                 {key: value for key, value in valid.items() if key != "tag_id"},
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, module_type="exclude", species_scope="not_applicable", summary="无关"),
             ],
             "nan_score": [
                 dict(valid, score=float("nan")),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, module_type="exclude", species_scope="not_applicable", summary="无关"),
             ],
             "boolean_importance": [
                 dict(valid, importance_score=True),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, module_type="exclude", species_scope="not_applicable", summary="无关"),
             ],
         }
         for name, payload in cases.items():
@@ -130,7 +130,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         titles = [{"id": 1, "title": "政策"}, {"id": 2, "title": "无关"}]
         tags = [{"id": 11, "tag": "政策"}]
         valid = {
-            "id": 1, "module_type": "policy", "tag_id": 11,
+            "id": 1, "module_type": "policy", "species_scope": "rice", "tag_id": 11,
             "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
         }
         for module_type in ([], {}):
@@ -138,7 +138,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
                 payload = [
                     dict(valid, module_type=module_type),
                     {
-                        "id": 2, "module_type": "exclude", "score": 0.1,
+                        "id": 2, "module_type": "exclude", "species_scope": "not_applicable", "score": 0.1,
                         "importance_score": 0.1, "summary": "内容无关",
                     },
                 ]
@@ -156,21 +156,21 @@ class AIFilterModuleContractTests(unittest.TestCase):
         ai_filter.client = MagicMock()
         invalid = json.dumps([
             {
-                "id": 1, "module_type": [], "tag_id": 11,
+                "id": 1, "module_type": [], "species_scope": "rice", "tag_id": 1,
                 "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
             },
             {
-                "id": 2, "module_type": "exclude", "score": 0.1,
+                "id": 2, "module_type": "exclude", "species_scope": "not_applicable", "score": 0.1,
                 "importance_score": 0.1, "summary": "内容无关",
             },
         ])
         repaired = json.dumps([
             {
-                "id": 1, "module_type": "policy", "tag_id": 11,
+                "id": 1, "module_type": "policy", "species_scope": "rice", "tag_id": 1,
                 "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
             },
             {
-                "id": 2, "module_type": "exclude", "score": 0.1,
+                "id": 2, "module_type": "exclude", "species_scope": "not_applicable", "score": 0.1,
                 "importance_score": 0.1, "summary": "内容无关",
             },
         ])
@@ -199,9 +199,9 @@ class AIFilterModuleContractTests(unittest.TestCase):
             {"id": 3, "title": "正文", "content_level": "full_text"},
         ]
         response = json.dumps([
-            {"id": 1, "module_type": "policy", "tag_id": 1, "score": 0.1},
-            {"id": 2, "module_type": "research", "tag_id": 1, "score": 0.5},
-            {"id": 3, "module_type": "research", "tag_id": 1, "score": 0.9},
+            {"id": 1, "module_type": "policy", "species_scope": "rice", "tag_id": 1, "score": 0.1},
+            {"id": 2, "module_type": "research", "species_scope": "rice", "tag_id": 1, "score": 0.5},
+            {"id": 3, "module_type": "research", "species_scope": "rice", "tag_id": 1, "score": 0.9},
         ])
 
         results = ai_filter._parse_classify_response(response, titles, tags)

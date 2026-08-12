@@ -19,6 +19,7 @@ from trendradar.ai.module_contract import (
     CLASSIFICATION_MODULE_TYPES,
     EXCLUDE,
     PERSISTED_MODULE_TYPES,
+    SPECIES_SCOPE_TYPES,
 )
 from trendradar.ai.prompt_loader import load_prompt_template
 
@@ -32,8 +33,8 @@ CLASSIFY_JSON_REPAIR_PROMPT = (
     "上一个响应不是可解析的分类 JSON。请修正语法并仅返回严格 JSON 对象。"
     '对象必须且只能用 "items" 字段承载分类数组；必须为每个输入新闻恰好返回一项，'
     '"items" 数组长度必须等于输入新闻数；数组元素必须包含 '
-    "id、module_type、score、importance_score 和 summary；"
-    "policy/research 必须包含有效 tag_id，exclude 可以没有 tag_id。"
+    "id、module_type、species_scope、score、importance_score 和 summary；"
+    "policy/industry/research 必须包含有效 tag_id，exclude 可以没有 tag_id。"
     "不要添加 Markdown 或解释。"
 )
 
@@ -712,7 +713,8 @@ class AIFilter:
                     )
                 return []
             required_fields = {
-                "id", "module_type", "score", "importance_score", "summary"
+                "id", "module_type", "species_scope", "score",
+                "importance_score", "summary"
             }
             seen_news_ids = set()
             for index, item in enumerate(data):
@@ -750,6 +752,18 @@ class AIFilter:
                 if module_type in PERSISTED_MODULE_TYPES and "tag_id" not in item:
                     raise _InvalidClassificationResponse(
                         f"严格模式分类缺少 tag id: {news_id!r}"
+                    )
+                species_scope = item["species_scope"]
+                if (
+                    not isinstance(species_scope, str)
+                    or species_scope not in SPECIES_SCOPE_TYPES
+                ):
+                    raise _InvalidClassificationResponse(
+                        f"严格模式分类物种范围无效: {species_scope!r}"
+                    )
+                if module_type == "industry" and species_scope != "rice":
+                    raise _InvalidClassificationResponse(
+                        "严格模式产业动态只能使用 rice 物种范围"
                     )
                 if "tag_id" in item:
                     tag_id = item["tag_id"]
@@ -805,6 +819,7 @@ class AIFilter:
                 results.append({
                     "news_item_id": news_id,
                     "module_type": item["module_type"],
+                    "species_scope": item["species_scope"],
                     "tag_id": item["tag_id"],
                     "relevance_score": float(item["score"]),
                     "importance_score": float(item["importance_score"]),
@@ -835,6 +850,13 @@ class AIFilter:
                 not isinstance(module_type, str)
                 or module_type not in CLASSIFICATION_MODULE_TYPES
             ):
+                skipped_module_types += 1
+                continue
+            species_scope = item.get("species_scope")
+            if species_scope not in SPECIES_SCOPE_TYPES:
+                skipped_module_types += 1
+                continue
+            if module_type == "industry" and species_scope != "rice":
                 skipped_module_types += 1
                 continue
             if module_type == EXCLUDE:
@@ -905,6 +927,7 @@ class AIFilter:
                     best_per_news[news_id] = {
                         "news_item_id": news_id,
                         "module_type": module_type,
+                        "species_scope": species_scope,
                         "tag_id": best_tag_id,
                         "relevance_score": best_score,
                         "importance_score": importance_score,

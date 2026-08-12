@@ -323,6 +323,7 @@ class AIFilterPipeline:
                     result.get("source_type", "hotlist"),
                     result["tag_id"],
                     result["module_type"],
+                    result["species_scope"],
                 )
                 for result in total_results
             }
@@ -344,6 +345,7 @@ class AIFilterPipeline:
                     result.get("source_type"),
                     result.get("tag_id"),
                     result.get("module_type"),
+                    result.get("species_scope"),
                 )
                 for result in all_results
             ]
@@ -901,6 +903,7 @@ class AIFilterPipeline:
                 "id": r.get("news_item_id"),
                 "news_item_id": r.get("news_item_id"),
                 "module_type": r.get("module_type", "research"),
+                "species_scope": r.get("species_scope"),
                 "title": title,
                 "source_id": r.get("source_id", ""),
                 "source_name": r.get("source_name", ""),
@@ -1206,6 +1209,7 @@ class AIFilterPipeline:
                 title_entry = {
                     "news_item_id": item.get("news_item_id"),
                     "module_type": item.get("module_type", "research"),
+                    "species_scope": item.get("species_scope"),
                     "title": item.get("title", ""),
                     "source_id": item.get("source_id", ""),
                     "source_name": item.get("source_name", ""),

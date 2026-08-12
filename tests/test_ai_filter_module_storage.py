@@ -67,12 +67,13 @@ def seed_tag(backend, prompt_hash=PROMPT_HASH):
     )["tags"][0]["id"]
 
 
-def result(news_item_id, tag_id, module_type):
+def result(news_item_id, tag_id, module_type, species_scope="rice"):
     return {
         "news_item_id": news_item_id,
         "source_type": "hotlist",
         "tag_id": tag_id,
         "module_type": module_type,
+        "species_scope": species_scope,
         "relevance_score": 0.9,
         "importance_score": 0.8,
         "ai_summary": f"summary {news_item_id}",
@@ -153,7 +154,11 @@ class AIFilterModuleMigrationTests(unittest.TestCase):
                     """SELECT sql FROM sqlite_master
                        WHERE type = 'table' AND name = 'ai_filter_results'"""
                 ).fetchone()[0]
-                self.assertIn("module_type IN ('policy', 'research')", table_sql)
+                self.assertIn(
+                    "module_type IN ('policy', 'industry', 'research')",
+                    table_sql,
+                )
+                self.assertIn("species_scope", columns)
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM ai_filter_results"
@@ -279,6 +284,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             {
                 "id": 1,
                 "module_type": "policy",
+                "species_scope": "rice",
                 "tag_id": self.tag_id,
                 "score": 0.9,
                 "importance_score": 0.8,
@@ -287,6 +293,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             {
                 "id": 2,
                 "module_type": "research",
+                "species_scope": "rice",
                 "tag_id": self.tag_id,
                 "score": 0.8,
                 "importance_score": 0.9,
@@ -295,6 +302,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             {
                 "id": 3,
                 "module_type": "exclude",
+                "species_scope": "not_applicable",
                 "tag_id": self.tag_id,
                 "score": 0.1,
                 "importance_score": 0.1,
@@ -303,6 +311,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             {
                 "id": 4,
                 "module_type": "weather",
+                "species_scope": "rice",
                 "tag_id": self.tag_id,
                 "score": 0.7,
                 "importance_score": 0.7,
@@ -310,6 +319,7 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             },
             {
                 "id": 5,
+                "species_scope": "rice",
                 "tag_id": self.tag_id,
                 "score": 0.6,
                 "importance_score": 0.6,
@@ -366,21 +376,31 @@ class LocalAIFilterModuleStorageTests(unittest.TestCase):
             0,
         )
 
-    def test_ordinary_write_and_read_round_trip_policy_and_research(self):
+    def test_ordinary_write_and_read_round_trip_all_persisted_modules(self):
         self.assertEqual(
             self.backend.save_ai_filter_results([
                 result(1, self.tag_id, "policy"),
-                result(2, self.tag_id, "research"),
+                result(2, self.tag_id, "industry"),
+                result(3, self.tag_id, "research", "other_crop"),
             ], DATE),
-            2,
+            3,
         )
 
         stored = self.backend.get_active_ai_filter_results(
             DATE, INTERESTS_FILE
         )
         self.assertEqual(
-            {row["news_item_id"]: row["module_type"] for row in stored},
-            {1: "policy", 2: "research"},
+            {
+                row["news_item_id"]: (
+                    row["module_type"], row["species_scope"]
+                )
+                for row in stored
+            },
+            {
+                1: ("policy", "rice"),
+                2: ("industry", "rice"),
+                3: ("research", "other_crop"),
+            },
         )
 
     def test_ordinary_write_rejects_invalid_batch_without_partial_rows(self):

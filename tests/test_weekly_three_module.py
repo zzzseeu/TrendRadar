@@ -24,6 +24,7 @@ def _identity(item):
 def _item(module_type, index, **overrides):
     item = {
         "module_type": module_type,
+        "species_scope": "rice",
         "title": f"{module_type} item {index:02d}",
         "url": f"https://example.org/{module_type}/{index}",
         "source_name": "Source",
@@ -232,6 +233,7 @@ class WeeklyThreeModuleSelectionTests(unittest.TestCase):
                 "source_name": "政策来源",
                 "source_type": "rss",
                 "module_type": "policy",
+                "species_scope": "rice",
                 "url": "https://example.org/policy-item",
                 "published_at": "2026-08-08T08:00:00+08:00",
                 "relevance_score": 0.8,
@@ -246,6 +248,7 @@ class WeeklyThreeModuleSelectionTests(unittest.TestCase):
                 "source_name": "科研来源",
                 "source_type": "rss",
                 "module_type": "research",
+                "species_scope": "rice",
                 "url": "https://example.org/research-item",
                 "published_at": "2026-08-08T08:00:00+08:00",
                 "relevance_score": 0.8,
