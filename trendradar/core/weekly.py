@@ -74,6 +74,26 @@ def previous_natural_week(now: datetime, timezone: str) -> NaturalWeekWindow:
     )
 
 
+def previous_week_candidates(
+    data: RSSData,
+    now: datetime,
+    timezone: str,
+) -> RSSData:
+    """Keep only the previous complete natural week's fetched candidates."""
+    window = previous_natural_week(now, timezone)
+    return replace(
+        data,
+        items={
+            feed_id: [
+                item for item in items if window.contains(item.published_at)
+            ]
+            for feed_id, items in data.items.items()
+        },
+        id_to_name=dict(data.id_to_name),
+        failed_ids=list(data.failed_ids),
+    )
+
+
 def current_natural_week(now: datetime, timezone_name: str) -> NaturalWeekWindow:
     """Return the local Monday-to-Monday window containing ``now``."""
     tz = pytz.timezone(timezone_name)
@@ -470,7 +490,12 @@ class WeeklyRSSAggregator:
         self.storage = storage
         self.timezone = timezone
 
-    def build(self, now: datetime) -> WeeklyRSSSnapshot:
+    def build(
+        self,
+        now: datetime,
+        *,
+        current_data: RSSData | None = None,
+    ) -> WeeklyRSSSnapshot:
         window = previous_natural_week(now, self.timezone)
         missing_dates: list[str] = []
         failed_sources: dict[str, list[str]] = {}
@@ -483,8 +508,17 @@ class WeeklyRSSAggregator:
         duplicate_count = 0
         available_source_observations = 0
 
-        for date in window.storage_dates:
-            daily_data = self.storage.get_rss_data_strict(date)
+        source_snapshots: list[tuple[str, RSSData | None]] = [
+            (date, self.storage.get_rss_data_strict(date))
+            for date in window.storage_dates
+        ]
+        if (
+            current_data is not None
+            and current_data.date not in window.storage_dates
+        ):
+            source_snapshots.append((current_data.date, current_data))
+
+        for date, daily_data in source_snapshots:
             if daily_data is None:
                 missing_dates.append(date)
                 continue

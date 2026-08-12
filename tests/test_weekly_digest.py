@@ -7,6 +7,7 @@ import pytz
 
 from trendradar.core.weekly import (
     WeeklyRSSAggregator,
+    previous_week_candidates,
     previous_natural_week,
 )
 from trendradar.core.rss_snapshot import (
@@ -374,6 +375,97 @@ class WeeklyRSSAggregatorTests(unittest.TestCase):
         self.assertEqual(result.allowed_rss_ids, {11, 12})
         self.assertEqual(result.filtered_out, 1)
         self.assertEqual(result.missing_dates, [])
+
+    def test_forced_midweek_run_uses_current_persisted_snapshot_as_extra_source(self):
+        storage = MagicMock()
+        storage.get_rss_data.return_value = None
+        storage.save_rss_data.return_value = True
+        storage.get_all_rss_ids.return_value = [{
+            "id": 14,
+            "source_id": "journal",
+            "title": "Recovered weekly item",
+            "url": "https://example.org/recovered-weekly",
+        }]
+        self._configure_complete_mock_week(storage)
+        current_data = RSSData(
+            date="2026-08-12",
+            crawl_time="2026-08-12 10:00:00",
+            items={
+                "journal": [
+                    RSSItem(
+                        title="Recovered weekly item",
+                        feed_id="journal",
+                        url="https://example.org/recovered-weekly",
+                        published_at="2026-08-05T08:00:00+08:00",
+                    ),
+                    RSSItem(
+                        title="Current-week item",
+                        feed_id="journal",
+                        url="https://example.org/current-week",
+                        published_at="2026-08-11T08:00:00+08:00",
+                    ),
+                ],
+            },
+            id_to_name={
+                "journal": "Journal",
+                "cgiar-news": "CGIAR News",
+            },
+            failed_ids=["cgiar-news"],
+        )
+        run_at = SHANGHAI.localize(datetime(2026, 8, 12, 10, 0))
+
+        try:
+            result = WeeklyRSSAggregator(
+                storage, "Asia/Shanghai"
+            ).build(run_at, current_data=current_data)
+        except TypeError as exc:
+            self.fail(f"forced weekly build rejected current_data: {exc}")
+
+        self.assertEqual(storage.get_rss_data_strict.call_count, 8)
+        self.assertEqual(
+            [item.title for item in result.iter_items()],
+            ["Recovered weekly item"],
+        )
+        self.assertEqual(result.filtered_out, 1)
+        self.assertEqual(result.failed_sources, {
+            "2026-08-12": ["cgiar-news"],
+        })
+        self.assertEqual(result.allowed_rss_ids, {14})
+
+    def test_forced_weekly_candidate_set_discards_current_week_before_storage(self):
+        data = RSSData(
+            date="2026-08-12",
+            crawl_time="2026-08-12 10:00:00",
+            items={
+                "journal": [
+                    RSSItem(
+                        title="Previous week",
+                        feed_id="journal",
+                        published_at="2026-08-09T23:59:59+08:00",
+                    ),
+                    RSSItem(
+                        title="Current week",
+                        feed_id="journal",
+                        published_at="2026-08-10T00:00:00+08:00",
+                    ),
+                ],
+            },
+            id_to_name={"journal": "Journal"},
+            failed_ids=["failed-source"],
+        )
+
+        filtered = previous_week_candidates(
+            data,
+            SHANGHAI.localize(datetime(2026, 8, 12, 10, 0)),
+            "Asia/Shanghai",
+        )
+
+        self.assertEqual(
+            [item.title for item in filtered.items["journal"]],
+            ["Previous week"],
+        )
+        self.assertEqual(filtered.failed_ids, ["failed-source"])
+        self.assertEqual(filtered.id_to_name, {"journal": "Journal"})
 
     def test_canonical_url_dedup_keeps_richer_search_record(self):
         storage = MagicMock()

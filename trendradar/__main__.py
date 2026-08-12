@@ -48,6 +48,7 @@ from trendradar.core.weekly import (
     WeeklyNewsSelection,
     WeeklyRSSAggregator,
     current_natural_week,
+    previous_week_candidates,
     previous_natural_week,
     primary_weekly_topic,
     select_weekly_modules,
@@ -1965,6 +1966,24 @@ class NewsAnalyzer:
                         )
                         search_failure = f"{label}新闻搜索失败: {e}"
 
+            if self.report_mode == "weekly":
+                before_count = sum(
+                    len(items) for items in rss_data.items.values()
+                )
+                rss_data = previous_week_candidates(
+                    rss_data,
+                    self._operation_run_at(),
+                    self.ctx.timezone,
+                )
+                retained_count = sum(
+                    len(items) for items in rss_data.items.values()
+                )
+                print(
+                    "[周报] 上一自然周候选过滤: "
+                    f"保留 {retained_count}/{before_count} 条，"
+                    "本周及窗口外内容不保存、不参与分析"
+                )
+
             # 保存到存储后端
             if self.storage_manager.save_rss_data(rss_data):
                 print(f"[RSS] 数据已保存到存储后端")
@@ -2092,7 +2111,10 @@ class NewsAnalyzer:
         if self.report_mode == "weekly":
             snapshot = WeeklyRSSAggregator(
                 self.storage_manager, self.ctx.timezone,
-            ).build(self._operation_run_at())
+            ).build(
+                self._operation_run_at(),
+                current_data=rss_data,
+            )
             self._weekly_source_status = {
                 "missing_dates": list(snapshot.missing_dates),
                 "failed_sources": dict(snapshot.failed_sources),
@@ -2788,7 +2810,7 @@ def main():
         epilog="""
 调度状态命令:
   --show-schedule        显示当前调度状态（时间段、行为开关）
-  --force-weekly         在调度窗口外人工补跑本周农业周报
+  --force-weekly         只采集上一个完整自然周的候选并生成、推送周报
 诊断命令:
   --doctor               运行环境与配置体检
   --test-notification    发送测试通知到已配置渠道
@@ -2796,7 +2818,7 @@ def main():
 示例:
   python -m trendradar                    # 正常运行
   python -m trendradar --show-schedule    # 查看当前调度状态
-  python -m trendradar --force-weekly     # 人工补跑本周农业周报
+  python -m trendradar --force-weekly     # 只处理上一个完整自然周，不处理本周内容
   python -m trendradar --doctor           # 运行一键体检
   python -m trendradar --test-notification # 测试通知渠道连通性
 """
@@ -2807,7 +2829,7 @@ def main():
     parser.add_argument(
         "--force-weekly",
         action="store_true",
-        help="在调度窗口外人工补跑本周农业周报",
+        help="只采集上一个完整自然周的候选并生成、推送农业周报",
     )
 
     args = parser.parse_args()
