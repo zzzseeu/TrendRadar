@@ -143,6 +143,68 @@ class ElsevierFullTextClientTests(unittest.TestCase):
         self.assertEqual(text.count("First result paragraph"), 1)
         self.assertLess(text.index("First result paragraph"), text.index("Second result paragraph"))
 
+    def test_parse_uses_doc_rawtext_when_supported_body_is_absent(self):
+        xml_content = b"""\
+<full-text-retrieval-response xmlns:xocs="urn:xocs" xmlns:ja="urn:ja">
+  <originalText><xocs:doc>
+    <xocs:meta />
+    <xocs:rawtext>Abstract\n\n  Rice result.\tConclusion.</xocs:rawtext>
+    <xocs:serial-item><ja:simple-article /></xocs:serial-item>
+  </xocs:doc></originalText>
+</full-text-retrieval-response>
+"""
+
+        self.assertEqual(
+            parse_full_text_xml(xml_content),
+            "Abstract Rice result. Conclusion.",
+        )
+
+    def test_parse_accepts_simple_and_converted_article_bodies(self):
+        for article_tag in ("simple-article", "converted-article"):
+            with self.subTest(article_tag=article_tag):
+                xml_content = f"""\
+<full-text-retrieval-response xmlns:ce="urn:ce" xmlns:ja="urn:ja">
+  <originalText><doc><serial-item><ja:{article_tag}><ja:body>
+    <ce:para>{article_tag} paragraph.</ce:para>
+  </ja:body></ja:{article_tag}></serial-item></doc></originalText>
+</full-text-retrieval-response>
+""".encode()
+
+                self.assertEqual(
+                    parse_full_text_xml(xml_content),
+                    f"{article_tag} paragraph.",
+                )
+
+    def test_parse_prefers_structured_body_over_doc_rawtext(self):
+        xml_content = b"""\
+<full-text-retrieval-response>
+  <originalText><doc>
+    <rawtext>Stale raw representation.</rawtext>
+    <serial-item><article><body>
+      <para>Structured article paragraph.</para>
+    </body></article></serial-item>
+  </doc></originalText>
+</full-text-retrieval-response>
+"""
+
+        self.assertEqual(
+            parse_full_text_xml(xml_content),
+            "Structured article paragraph.",
+        )
+
+    def test_parse_rejects_ambiguous_doc_rawtext(self):
+        xml_content = b"""\
+<full-text-retrieval-response>
+  <originalText><doc>
+    <rawtext>First representation.</rawtext>
+    <rawtext>Second representation.</rawtext>
+    <serial-item><simple-article /></serial-item>
+  </doc></originalText>
+</full-text-retrieval-response>
+"""
+
+        self.assertEqual(parse_full_text_xml(xml_content), "")
+
     def test_parse_ignores_body_like_metadata_outside_original_text_article(self):
         xml_content = b"""\
 <full-text-retrieval-response>
