@@ -77,6 +77,7 @@ class _WebNewsProfile:
     author: str
     patterns: tuple[Pattern[str], ...]
     require_date: bool = False
+    required_terms: tuple[str, ...] = ()
 
     def accepts(self, url: str) -> bool:
         return any(pattern.search(url) for pattern in self.patterns)
@@ -141,6 +142,54 @@ _PROFILES: Dict[str, _WebNewsProfile] = {
         "CGIAR",
         _patterns(r"^https://www\.cgiar\.org/news-events/news/"),
     ),
+    "vietnam-ppd": _WebNewsProfile(
+        "越南种植与植物保护局",
+        _patterns(r"^https://(?:www\.)?ppd\.gov\.vn/.+\.html$"),
+        require_date=True,
+    ),
+    "ndrc-rice": _WebNewsProfile(
+        "国家发展改革委价格司",
+        _patterns(
+            r"^https://www\.ndrc\.gov\.cn/fzggw/jgsj/jgs/sjdt/20\d{4}/t20\d+_\d+\.html$"
+        ),
+        require_date=True,
+    ),
+    "stats-grain": _WebNewsProfile(
+        "国家统计局",
+        _patterns(r"^https://www\.stats\.gov\.cn/sj/zxfb/20\d{4}/t20\d+_\d+\.html$"),
+        require_date=True,
+    ),
+    "heilongjiang-rice": _WebNewsProfile(
+        "黑龙江省农业农村厅",
+        _patterns(r"^https://nynct\.hlj\.gov\.cn/nynct/c\d+/20\d{4}/c00_\d+\.shtml$"),
+        require_date=True,
+        required_terms=("水稻", "稻米", "稻谷", "稻作"),
+    ),
+    "hunan-rice": _WebNewsProfile(
+        "湖南省农业农村厅",
+        _patterns(r"^https://agri\.hunan\.gov\.cn/agri/.+/20\d{4}/t20\d+_\d+\.html$"),
+        require_date=True,
+        required_terms=("水稻", "稻米", "稻谷", "稻作"),
+    ),
+    "hubei-rice": _WebNewsProfile(
+        "湖北省农业农村厅",
+        _patterns(r"^https://nyt\.hubei\.gov\.cn/.+/20\d{4}/t20\d+_\d+\.shtml$"),
+        require_date=True,
+        required_terms=("水稻", "稻米", "稻谷", "稻作"),
+    ),
+    "jiangsu-rice": _WebNewsProfile(
+        "江苏省农业农村厅",
+        _patterns(
+            r"^https://nynct\.jiangsu\.gov\.cn/art/20\d{2}/\d{1,2}/\d{1,2}/art_\d+_\d+\.html$"
+        ),
+        require_date=True,
+        required_terms=("水稻", "稻米", "稻谷", "稻作"),
+    ),
+    "philrice-news": _WebNewsProfile(
+        "PhilRice",
+        _patterns(r"^https://www\.philrice\.gov\.ph/(?!news/?$)[^/?#]+/$"),
+        require_date=True,
+    ),
     "winall-news": _WebNewsProfile(
         "安徽荃银高科种业股份有限公司",
         _patterns(r"^https?://www\.winallseed\.com/article/\d+/52\.html$"),
@@ -148,6 +197,21 @@ _PROFILES: Dict[str, _WebNewsProfile] = {
     "syngenta-news": _WebNewsProfile(
         "Syngenta Group",
         _patterns(r"^https://www\.syngentagroup\.com/newsroom/20\d{2}/[^/?#]+$"),
+    ),
+}
+
+_DOCUMENT_PROFILES: Dict[str, _WebNewsProfile] = {
+    "amis-rice": _WebNewsProfile(
+        "AMIS Market Monitor",
+        _patterns(
+            r"^https://(?:legacy\.)?amis-outlook\.org/.+\.pdf$"
+        ),
+        require_date=True,
+    ),
+    "japan-maff-rice": _WebNewsProfile(
+        "日本农林水产省",
+        _patterns(r"^https://www\.maff\.go\.jp/.+\.pdf$"),
+        require_date=True,
     ),
 }
 
@@ -360,13 +424,19 @@ def parse_web_news_html(
         if profile.require_date and not published_at:
             continue
 
+        summary = _best_summary(container, title)
+        if profile.required_terms:
+            evidence = f"{title} {summary or ''}".casefold()
+            if not any(term.casefold() in evidence for term in profile.required_terms):
+                continue
+
         seen_urls.add(url)
         items.append(
             ParsedRSSItem(
                 title=title,
                 url=url,
                 published_at=published_at,
-                summary=_best_summary(container, title),
+                summary=summary,
                 author=profile.author,
                 guid=url,
             )
@@ -374,6 +444,49 @@ def parse_web_news_html(
 
     if not items:
         raise ValueError(f"{profile.author} 页面中未找到新闻条目，页面结构可能已变更")
+    return items
+
+
+def parse_official_document_html(
+    content: str,
+    feed_id: str,
+    page_url: str,
+) -> List[ParsedRSSItem]:
+    """解析官方专题页中的带日期 PDF 文档链接。"""
+    profile = _DOCUMENT_PROFILES.get(feed_id)
+    if not profile:
+        raise ValueError(f"未注册的官方文档源: {feed_id}")
+
+    parser = _DOMParser()
+    parser.feed(content)
+    parser.close()
+
+    items: List[ParsedRSSItem] = []
+    seen_urls = set()
+    for anchor in (node for node in _iter_nodes(parser.root) if node.tag == "a"):
+        href = anchor.attrs.get("href", "").strip()
+        if not href:
+            continue
+        url = _canonical_url(urljoin(page_url, href))
+        if url in seen_urls or not profile.accepts(url):
+            continue
+        container = _nearest_container(anchor)
+        title = _best_title(anchor, container)
+        published_at = _extract_date(container, url)
+        if not title or not published_at:
+            continue
+        seen_urls.add(url)
+        items.append(ParsedRSSItem(
+            title=title,
+            url=url,
+            published_at=published_at,
+            summary=_best_summary(container, title),
+            author=profile.author,
+            guid=url,
+        ))
+
+    if not items:
+        raise ValueError(f"{profile.author} 页面中未找到官方文档")
     return items
 
 

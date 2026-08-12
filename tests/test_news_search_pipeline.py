@@ -986,6 +986,7 @@ class NewsSearchHotspotRankingTests(unittest.TestCase):
             "source_id": SEARCH_FEED_ID,
             "source_name": "农业育种热点搜索",
             "source_type": "rss",
+            "species_scope": "rice",
             "url": f"https://example.org/search/{index}",
             "first_time": "2026-07-31T08:00:00+00:00",
             "last_time": "2026-07-31T08:00:00+00:00",

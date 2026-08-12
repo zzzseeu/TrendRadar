@@ -22,7 +22,14 @@ class WeeklyConfigurationTests(unittest.TestCase):
         self.assertEqual(config["schedule"]["preset"], "custom")
         self.assertNotIn("freshness_filter", config["rss"])
         feeds = {feed["id"]: feed for feed in config["rss"]["feeds"]}
-        disabled_ids = {"hacker-news", "ruanyifeng", "yahoo-finance"}
+        disabled_ids = {
+            "hacker-news", "ruanyifeng", "yahoo-finance",
+            "philippines-da", "philrice-news", "natesc-rice",
+            "lswz-control", "lswz-transactions", "hunan-rice",
+            "jiangsu-rice", "jiangxi-rice", "amis-rice",
+            "japan-maff-rice", "fao-rice", "usda-ers-rice",
+            "india-agri-statistics", "india-food-distribution",
+        }
         self.assertEqual(
             {feed_id for feed_id, feed in feeds.items()
              if not feed.get("enabled", True)},
@@ -130,7 +137,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
                 with self.subTest(filename=filename, token=token):
                     self.assertIn(token, text)
 
-    def test_weekly_public_contract_uses_three_modules_only(self):
+    def test_weekly_public_contract_uses_four_modules(self):
         for relative in ("config/config.yaml", "config/config.en.yaml"):
             text = (ROOT / relative).read_text(encoding="utf-8")
             config = yaml.safe_load(text)
@@ -141,7 +148,8 @@ class WeeklyConfigurationTests(unittest.TestCase):
         prompt = (ROOT / "config/ai_filter/prompt.txt").read_text(
             encoding="utf-8"
         )
-        self.assertIn("policy、research 或 exclude", prompt)
+        self.assertIn("policy、industry、research 或 exclude", prompt)
+        self.assertIn("species_scope", prompt)
         self.assertIn("政策优先", prompt)
         self.assertIn("领导调研", prompt)
         self.assertIn(
