@@ -41,6 +41,15 @@ def extract_sciencedirect_pii(url: str) -> Optional[str]:
 def parse_full_text_xml(xml_content: bytes) -> str:
     """Extract ordered paragraphs from an Elsevier full-text XML article body."""
     root = ET.fromstring(xml_content)
+    original_texts = [
+        element
+        for element in root.iter()
+        if _local_name(element.tag) == "originalText"
+    ]
+    if len(original_texts) != 1:
+        return ""
+
+    original_text = original_texts[0]
     parents = {
         child: parent
         for parent in root.iter()
@@ -48,12 +57,14 @@ def parse_full_text_xml(xml_content: bytes) -> str:
     }
     bodies = [
         element
-        for element in root.iter()
+        for element in original_text.iter()
         if _local_name(element.tag) == "body"
-        and _is_article_body(element, parents)
+        and _is_supported_article_body(element, original_text, parents)
     ]
-    if len(bodies) != 1:
+    if len(bodies) > 1:
         return ""
+    if not bodies:
+        return _extract_doc_rawtext(original_text)
 
     body = bodies[0]
     paragraph_tags = {"para", "simple-para"}
@@ -107,17 +118,34 @@ def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
 
-def _is_article_body(body, parents) -> bool:
+def _is_supported_article_body(body, original_text, parents) -> bool:
+    article_tags = {"article", "simple-article", "converted-article"}
     article_seen = False
     ancestor = parents.get(body)
-    while ancestor is not None:
+    while ancestor is not None and ancestor is not original_text:
         name = _local_name(ancestor.tag)
-        if name == "article":
+        if name in article_tags:
             article_seen = True
-        elif name == "originalText" and article_seen:
-            return True
         ancestor = parents.get(ancestor)
-    return False
+    return ancestor is original_text and article_seen
+
+
+def _extract_doc_rawtext(original_text) -> str:
+    docs = [
+        child
+        for child in original_text
+        if _local_name(child.tag) == "doc"
+    ]
+    if len(docs) != 1:
+        return ""
+    rawtexts = [
+        child
+        for child in docs[0]
+        if _local_name(child.tag) == "rawtext"
+    ]
+    if len(rawtexts) != 1:
+        return ""
+    return _normalise_text(rawtexts[0].itertext())
 
 
 def _has_paragraph_ancestor(element, body, parents, paragraph_tags) -> bool:
