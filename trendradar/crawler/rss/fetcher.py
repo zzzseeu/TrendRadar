@@ -27,7 +27,7 @@ class RSSFeedConfig:
     url: str                    # RSS URL
     max_items: int = 0          # 最大条目数（0=不限制）
     enabled: bool = True        # 是否启用
-    source_type: str = "rss"    # 来源类型：rss | irri_news | web_news | corteva_news
+    source_type: str = "rss"    # rss | irri_news | web_news | official_document | corteva_news
     fetch_url: str = ""         # 可选抓取地址，对外链接仍使用 url
 
 
@@ -108,6 +108,12 @@ class RSSFetcher:
                 # 部分中文政府/科研站未声明正确编码，requests 会误判为 ISO-8859-1。
                 response.encoding = response.apparent_encoding or response.encoding
                 parsed_items = parse_web_news_html(response.text, feed.id, request_url)
+            elif feed.source_type == "official_document":
+                from .web_news import parse_official_document_html
+                response.encoding = response.apparent_encoding or response.encoding
+                parsed_items = parse_official_document_html(
+                    response.text, feed.id, request_url
+                )
             elif feed.source_type == "corteva_news":
                 from .web_news import parse_corteva_news_json
                 parsed_items = parse_corteva_news_json(response.text)

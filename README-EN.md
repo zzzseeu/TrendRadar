@@ -6,21 +6,23 @@ TrendRadar produces a weekly PDF report for agriculture. It collects data silent
 
 ## Weekly report and delivery
 
-On Monday, `published_at` is the strict eligibility filter for content from the previous natural week, with one global score threshold of `0.5`. The report has exactly three independent modules:
+On Monday, `published_at` is the strict eligibility filter for content from the previous natural week, with one global score threshold of `0.5`. The report has three modules:
 
-- Policy: up to 20 items.
-- Research: up to 20 items.
-- Agricultural weather is independent of the news quotas; the current official national agricultural meteorological weekly report is verified on Monday and included in this module.
+- Current events: up to 20 rice-related official, industry, and search items without explicit publication evidence.
+- Research progress: up to 20 journal/preprint items and institutional reports that name a journal or complete paper title; rice is prioritized while other crops may provide transferable evidence.
+- The official national agricultural meteorological weekly report is independent of the news quotas and is verified on Monday.
 
 The PDF is uploaded with WeCom `upload_media`, and WeCom receives one PDF file only.
 
 ```text
 Tuesday through Sunday: silent collection at 10:00 → Monday: aggregate the previous natural week →
-Policy: up to 20 + Research: up to 20 + independent agricultural weather →
+Current events 20 + Research progress 20 + national agricultural weather report →
 one PDF → WeCom file message
 ```
 
 If the current official agricultural weather report is unavailable on Monday, the system retries between 10:30 and 12:00. The weekly success checkpoint confirms that the PDF was generated and delivered as a file.
+
+Fixed sources reuse the existing RSS, web-list, and shared official-document parsers. If some sources are temporarily unavailable, the report is still produced from available sources and the PDF lists missing dates and failed source IDs. Generation stops only when the whole reporting window has no usable source evidence.
 
 ## Configuration and operation
 

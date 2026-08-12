@@ -45,9 +45,9 @@ def has_required_narrative(
         return all(
             _normalize_narrative_text(value).strip()
             for value in (
-                result.policy_trends,
-                result.research_trends,
-                result.weather_risks,
+                getattr(result, "current_events_trends", ""),
+                getattr(result, "research_trends", ""),
+                getattr(result, "weather_risks", ""),
             )
         )
     values = (
@@ -73,7 +73,7 @@ class AIAnalysisResult:
     standalone_summaries: Dict[str, str] = field(default_factory=dict)  # 独立展示区概括 {源ID: 概括}
 
     # 周报三段可追溯叙事；默认空值保持日报/当前模式兼容。
-    policy_trends: str = ""
+    current_events_trends: str = ""
     research_trends: str = ""
     weather_risks: str = ""
 
@@ -223,11 +223,11 @@ class AIAnalyzer:
         )
         weather_content = self._prepare_weather_content(weather_report)
         weekly_evidence_ids = self._weekly_evidence_ids(stats, rss_stats)
-        policy_evidence = ""
+        current_events_evidence = ""
         research_evidence = ""
         if report_mode == "weekly":
-            policy_evidence = self._prepare_weekly_module_content(
-                stats, rss_stats, "policy"
+            current_events_evidence = self._prepare_weekly_module_content(
+                stats, rss_stats, "current_events"
             )
             research_evidence = self._prepare_weekly_module_content(
                 stats, rss_stats, "research"
@@ -273,7 +273,7 @@ class AIAnalyzer:
         if report_mode == "weekly":
             citation_lines = []
             for module_type, field_name in (
-                ("policy", "policy_trends"),
+                ("current_events", "current_events_trends"),
                 ("research", "research_trends"),
                 ("weather", "weather_risks"),
             ):
@@ -320,6 +320,11 @@ class AIAnalyzer:
                 else:
                     print("[AI] JSON 修复失败，使用原始文本兜底")
 
+            if strict and report_mode == "weekly" and result.success:
+                self._fill_empty_weekly_module_narratives(
+                    result, weekly_evidence_ids
+                )
+
             if strict and result.error:
                 result.success = False
                 result.error = f"严格分析拒绝降级结果: {result.error}"
@@ -354,11 +359,15 @@ class AIAnalyzer:
                     prepared.rss_content,
                     standalone_content,
                     weather_content,
-                    policy_evidence,
+                    current_events_evidence,
                     research_evidence,
                 )
                 if reviewed_result is not None:
                     result = reviewed_result
+                    if strict and report_mode == "weekly":
+                        self._fill_empty_weekly_module_narratives(
+                            result, weekly_evidence_ids
+                        )
                 elif strict:
                     result.success = False
                     result.error = "严格分析的摘要证据校审失败"
@@ -562,14 +571,14 @@ class AIAnalyzer:
     def _validate_weekly_news_input(
         stats: Optional[List[Dict]], rss_stats: Optional[List[Dict]]
     ) -> str:
-        """周报只接受已由双榜选择器标记和排名的新闻。"""
+        """周报只接受已由模块选择器标记和排名的新闻。"""
         for groups in (stats or [], rss_stats or []):
             for collection in groups:
                 for item in collection.get("titles") or []:
                     if not isinstance(item, dict):
                         return "严格周报新闻必须是结构化对象"
                     module_type = item.get("module_type")
-                    if module_type not in {"policy", "research"}:
+                    if module_type not in {"current_events", "research"}:
                         return "严格周报新闻缺少合法 module_type"
                     rank = item.get("module_rank")
                     if (
@@ -625,7 +634,7 @@ class AIAnalyzer:
         stats: Optional[List[Dict]], rss_stats: Optional[List[Dict]]
     ) -> Dict[str, set[str]]:
         evidence_ids: Dict[str, set[str]] = {
-            "policy": set(),
+            "current_events": set(),
             "research": set(),
             "weather": {"[weather:official]"},
         }
@@ -635,11 +644,11 @@ class AIAnalyzer:
                     if not isinstance(item, dict):
                         continue
                     module_type = item.get("module_type")
-                    if module_type in {"policy", "research"}:
+                    if module_type in {"current_events", "research"}:
                         evidence_ids[module_type].add(
                             f"[{module_type}:{item.get('module_rank')}]"
                         )
-        for module_type in ("policy", "research"):
+        for module_type in ("current_events", "research"):
             if not evidence_ids[module_type]:
                 evidence_ids[module_type].add(f"[{module_type}:none]")
         return evidence_ids
@@ -671,6 +680,25 @@ class AIAnalyzer:
         return content or f"本期无入选证据 [{module_type}:none]"
 
     @staticmethod
+    def _fill_empty_weekly_module_narratives(
+        result: AIAnalysisResult,
+        evidence_ids: Dict[str, set[str]],
+    ) -> None:
+        empty_labels = {
+            "current_events": ("current_events_trends", "时事动态"),
+            "research": ("research_trends", "农业育种科研文献"),
+        }
+        for module_type, (field_name, label) in empty_labels.items():
+            none_id = f"[{module_type}:none]"
+            if (
+                evidence_ids.get(module_type) == {none_id}
+                and not _normalize_narrative_text(
+                    getattr(result, field_name, "")
+                ).strip()
+            ):
+                setattr(result, field_name, f"本期无入选{label} {none_id}")
+
+    @staticmethod
     def _validate_weekly_citations(
         result: AIAnalysisResult,
         evidence_ids: Dict[str, set[str]],
@@ -679,7 +707,7 @@ class AIAnalyzer:
             r"\[[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9_-]+\]"
         )
         for field_name, module_type in (
-            ("policy_trends", "policy"),
+            ("current_events_trends", "current_events"),
             ("research_trends", "research"),
             ("weather_risks", "weather"),
         ):
@@ -791,7 +819,7 @@ class AIAnalyzer:
         rss_content: str,
         standalone_content: str,
         weather_content: str = "",
-        policy_content: str = "",
+        current_events_content: str = "",
         research_content: str = "",
     ) -> Optional[AIAnalysisResult]:
         """用独立模型调用对照原始证据校审摘要，失败时保留首轮结果。"""
@@ -803,7 +831,7 @@ class AIAnalyzer:
                 "rss_insights": draft.rss_insights,
                 "outlook_strategy": draft.outlook_strategy,
                 "standalone_summaries": draft.standalone_summaries,
-                "policy_trends": draft.policy_trends,
+                "current_events_trends": draft.current_events_trends,
                 "research_trends": draft.research_trends,
                 "weather_risks": draft.weather_risks,
             },
@@ -812,14 +840,15 @@ class AIAnalyzer:
         evidence = "\n".join(
             part for part in (
                 (
-                    "policy_trends 唯一证据：\n" + policy_content
-                    if policy_content else ""
+                    "current_events_trends 唯一证据：\n"
+                    + current_events_content
+                    if current_events_content else ""
                 ),
                 (
                     "research_trends 唯一证据：\n" + research_content
                     if research_content else ""
                 ),
-                "热榜证据：\n" + news_content if news_content and not policy_content else "",
+                "热榜证据：\n" + news_content if news_content and not current_events_content else "",
                 "RSS证据：\n" + rss_content if rss_content and not research_content else "",
                 "独立展示区证据：\n" + standalone_content if standalone_content else "",
                 "官方气象证据：\n" + weather_content if weather_content else "",
@@ -835,7 +864,8 @@ class AIAnalyzer:
                     "删除证据未直接出现的具体实体、病害、基因、实验方法、数据、资源状态和验证结论；"
                     "上位概念不得擅自细化；“输入未提供”不得改写成“来源未发布或未开源”；"
                     "应用潜力不得改写成已经应用。可以把无依据细节泛化为证据中的原词。"
-                    "policy_trends 只能使用 policy_trends 证据区且必须保留 policy 证据ID；"
+                    "current_events_trends 只能使用 current_events_trends 证据区"
+                    "且必须保留 current_events 证据ID；"
                     "research_trends 只能使用 research_trends 证据区且必须保留 research 证据ID；"
                     "weather_risks 只能使用官方气象证据且必须保留 [weather:official]。"
                     "不要解释修改过程，不要在输出中列举被删除的词。"
@@ -1087,7 +1117,7 @@ class AIAnalyzer:
             )
 
             for field_name in (
-                "policy_trends", "research_trends", "weather_risks"
+                "current_events_trends", "research_trends", "weather_risks"
             ):
                 value = data.get(field_name, "")
                 if not isinstance(value, (str, list, tuple)):

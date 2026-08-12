@@ -39,12 +39,12 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         analyzer = AIAnalyzer.__new__(AIAnalyzer)
 
         result = analyzer._parse_response(json.dumps({
-            "policy_trends": "政策事实与来源标题",
+            "current_events_trends": "时事动态与来源标题",
             "research_trends": ["科研进展", "证据为摘要"],
             "weather_risks": "官方气象风险与建议",
         }, ensure_ascii=False))
 
-        self.assertEqual(result.policy_trends, "政策事实与来源标题")
+        self.assertEqual(result.current_events_trends, "时事动态与来源标题")
         self.assertEqual(result.research_trends, "科研进展\n证据为摘要")
         self.assertEqual(result.weather_risks, "官方气象风险与建议")
 
@@ -52,7 +52,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         analyzer = AIAnalyzer.__new__(AIAnalyzer)
 
         for field, invalid in (
-            ("policy_trends", {"summary": "不接受对象"}),
+            ("current_events_trends", {"summary": "不接受对象"}),
             ("research_trends", 42),
             ("weather_risks", True),
         ):
@@ -67,7 +67,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
         complete = AIAnalysisResult(
             success=True,
-            policy_trends="政策事实可追溯",
+            current_events_trends="时事事实可追溯",
             research_trends="科研事实可追溯",
             weather_risks="气象事实可追溯",
         )
@@ -90,7 +90,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         analyzer.include_standalone = False
         analyzer.grounding_review_enabled = True
         analyzer.language = "Chinese"
-        analyzer.system_prompt = "分别输出政策、科研与气象叙事"
+        analyzer.system_prompt = "分别输出时事、科研与气象叙事"
         analyzer.user_prompt_template = (
             "{report_mode}\n{rss_content}\n官方气象证据：\n{weather_content}\n"
             "{report_type}{current_time}{news_count}{rss_count}{platforms}"
@@ -100,7 +100,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
     def test_weekly_prompt_serializes_modules_ranks_evidence_and_weather(self):
         response = json.dumps({
-            "policy_trends": "政策趋势仅据「政策原文」 [policy:1]",
+            "current_events_trends": "时事趋势仅据「时事原文」 [current_events:1]",
             "research_trends": "科研趋势仅据「科研摘要」 [research:1]",
             "weather_risks": "气象风险仅据中央气象台周报 [weather:official]",
         }, ensure_ascii=False)
@@ -122,7 +122,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         result = analyzer.analyze(
             stats=[{"word": "政策热榜", "titles": [{
                 "title": "热榜政策原文",
-                "module_type": "policy",
+                "module_type": "current_events",
                 "module_rank": 2,
                 "content_level": "summary",
                 "content_excerpt": "热榜政策证据",
@@ -131,12 +131,12 @@ class AIAnalyzerResponseTests(unittest.TestCase):
                 "word": "周报",
                 "titles": [
                     {
-                        "title": "政策原文",
+                        "title": "时事原文",
                         "source_name": "部委",
-                        "module_type": "policy",
+                        "module_type": "current_events",
                         "module_rank": 1,
                         "content_level": "full_text",
-                        "content_excerpt": "支持育种创新平台建设",
+                        "content_excerpt": "水稻产业项目与支持政策",
                     },
                     {
                         "title": "科研摘要",
@@ -156,12 +156,12 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
         self.assertTrue(result.success, result.error)
         first_prompt = analyzer.client.chat.call_args_list[0].args[0][-1]["content"]
-        self.assertIn("模块：policy", first_prompt)
+        self.assertIn("模块：current_events", first_prompt)
         self.assertIn("模块内排名：1", first_prompt)
-        self.assertIn("证据内容：支持育种创新平台建设", first_prompt)
+        self.assertIn("证据内容：水稻产业项目与支持政策", first_prompt)
         self.assertIn("模块：research", first_prompt)
         self.assertIn("热榜政策证据", first_prompt)
-        self.assertIn("证据ID：[policy:1]", first_prompt)
+        self.assertIn("证据ID：[current_events:1]", first_prompt)
         self.assertIn("证据ID：[research:1]", first_prompt)
         self.assertIn("全国农业气象周报", first_prompt)
         self.assertIn("高温影响水稻扬花", first_prompt)
@@ -186,12 +186,12 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
     def test_weekly_grounding_that_drops_a_required_section_fails(self):
         draft = json.dumps({
-            "policy_trends": "有证据的政策事实 [policy:1]",
+            "current_events_trends": "有证据的时事事实 [current_events:1]",
             "research_trends": "有证据的科研事实 [research:1]",
             "weather_risks": "有证据的气象事实 [weather:official]",
         }, ensure_ascii=False)
         reviewed = json.dumps({
-            "policy_trends": "",
+            "current_events_trends": "",
             "research_trends": "有证据的科研事实 [research:1]",
             "weather_risks": "有证据的气象事实 [weather:official]",
         }, ensure_ascii=False)
@@ -201,9 +201,9 @@ class AIAnalyzerResponseTests(unittest.TestCase):
             stats=[],
             rss_stats=[{"word": "周报", "titles": [
                 {
-                    "title": "政策事实", "module_type": "policy",
+                    "title": "时事事实", "module_type": "current_events",
                     "module_rank": 1, "content_level": "summary",
-                    "content_excerpt": "有证据的政策事实",
+                    "content_excerpt": "有证据的时事事实",
                 },
                 {
                     "title": "科研事实", "module_type": "research",
@@ -225,23 +225,23 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
     def test_weekly_rejects_unknown_or_cross_module_grounding_citations(self):
         draft = json.dumps({
-            "policy_trends": "政策事实 [policy:1]",
+            "current_events_trends": "时事事实 [current_events:1]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)
         invalid_reviews = (
-            {"policy_trends": "虚构政策 [policy:99]"},
-            {"policy_trends": "跨模块事实 [research:1]"},
+            {"current_events_trends": "虚构政策 [current_events:99]"},
+            {"current_events_trends": "跨模块事实 [research:1]"},
             {
-                "policy_trends": (
-                    "政策事实 [policy:1] 夹带未知引用 [unknown:9]"
+                "current_events_trends": (
+                    "政策事实 [current_events:1] 夹带未知引用 [unknown:9]"
                 )
             },
         )
         for override in invalid_reviews:
             with self.subTest(override=override):
                 reviewed = {
-                    "policy_trends": "政策事实 [policy:1]",
+                    "current_events_trends": "时事事实 [current_events:1]",
                     "research_trends": "科研事实 [research:1]",
                     "weather_risks": "气象事实 [weather:official]",
                     **override,
@@ -252,7 +252,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
                 result = analyzer.analyze(
                     stats=[],
                     rss_stats=[{"word": "周报", "titles": [
-                        {"title": "政策事实", "module_type": "policy", "module_rank": 1},
+                        {"title": "时事事实", "module_type": "current_events", "module_rank": 1},
                         {"title": "科研事实", "module_type": "research", "module_rank": 1},
                     ]}],
                     report_mode="weekly",
@@ -268,12 +268,12 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
     def test_weekly_rejects_invalid_draft_citation_without_grounding_call(self):
         invalid_draft = json.dumps({
-            "policy_trends": "虚构政策 [policy:99]",
+            "current_events_trends": "虚构政策 [current_events:99]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)
         legal_review_that_must_not_be_used = json.dumps({
-            "policy_trends": "政策事实 [policy:1]",
+            "current_events_trends": "时事事实 [current_events:1]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)
@@ -284,7 +284,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         result = analyzer.analyze(
             stats=[],
             rss_stats=[{"word": "周报", "titles": [
-                {"title": "政策事实", "module_type": "policy", "module_rank": 1},
+                {"title": "时事事实", "module_type": "current_events", "module_rank": 1},
                 {"title": "科研事实", "module_type": "research", "module_rank": 1},
             ]}],
             report_mode="weekly",
@@ -302,7 +302,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
     def test_weekly_forces_selected_rss_evidence_when_include_rss_is_false(self):
         response = json.dumps({
-            "policy_trends": "政策事实 [policy:1]",
+            "current_events_trends": "时事事实 [current_events:1]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)
@@ -313,8 +313,8 @@ class AIAnalyzerResponseTests(unittest.TestCase):
             stats=[],
             rss_stats=[{"word": "周报", "titles": [
                 {
-                    "title": "政策证据", "module_type": "policy",
-                    "module_rank": 1, "content_excerpt": "政策原文内容",
+                    "title": "时事证据", "module_type": "current_events",
+                    "module_rank": 1, "content_excerpt": "时事原文内容",
                 },
                 {
                     "title": "科研证据", "module_type": "research",
@@ -332,7 +332,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
         self.assertTrue(result.success, result.error)
         first_prompt = analyzer.client.chat.call_args_list[0].args[0][-1]["content"]
-        self.assertIn("政策原文内容", first_prompt)
+        self.assertIn("时事原文内容", first_prompt)
         self.assertIn("科研摘要内容", first_prompt)
 
     def test_weekly_rejects_incomplete_weather_before_model_call(self):

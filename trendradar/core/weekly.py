@@ -137,40 +137,47 @@ def _deduplicate_module_items(items: list[dict]) -> list[dict]:
 
 @dataclass
 class WeeklyNewsSelection:
-    policy: list[dict]
-    research: list[dict]
+    current_events: list[dict] = field(default_factory=list)
+    research: list[dict] = field(default_factory=list)
 
 
 def select_weekly_modules(
     items: list[dict], *, min_score: float,
     limit_per_module: int = 20, highlight_count: int = 5,
 ) -> WeeklyNewsSelection:
-    """Select independent policy/research rankings with policy precedence."""
+    """Select two independent rankings with publication evidence precedence."""
     threshold = _weekly_score(min_score)
-    eligible_policy = [
-        item for item in items
-        if item.get("module_type") == "policy"
-        and _weekly_score(item.get("relevance_score")) >= threshold
-    ]
-    policy_identities = {
-        report_item_identity(item)
-        for item in eligible_policy
-        if report_item_identity(item)[1]
-    }
     eligible_research = [
         item for item in items
         if item.get("module_type") == "research"
+        and item.get("species_scope") in {"rice", "other_crop"}
         and _weekly_score(item.get("relevance_score")) >= threshold
-        and report_item_identity(item) not in policy_identities
+    ]
+    research_identities = {
+        report_item_identity(item)
+        for item in eligible_research
+        if report_item_identity(item)[1]
+    }
+    eligible_current_events = [
+        item for item in items
+        if item.get("module_type") == "current_events"
+        and item.get("species_scope") == "rice"
+        and _weekly_score(item.get("relevance_score")) >= threshold
+        and report_item_identity(item) not in research_identities
     ]
 
     limit = max(0, int(limit_per_module))
     highlights = max(0, int(highlight_count))
 
-    def select(module_items: list[dict]) -> list[dict]:
+    def select(module_items: list[dict], *, rice_first: bool = False) -> list[dict]:
         ranked = sorted(
             _deduplicate_module_items(module_items),
-            key=weekly_module_sort_key,
+            key=(
+                (lambda item: (
+                    0 if item.get("species_scope") == "rice" else 1,
+                    weekly_module_sort_key(item),
+                )) if rice_first else weekly_module_sort_key
+            ),
         )[:limit]
         selected = []
         for module_rank, raw in enumerate(ranked, start=1):
@@ -183,8 +190,8 @@ def select_weekly_modules(
         return selected
 
     return WeeklyNewsSelection(
-        policy=select(eligible_policy),
-        research=select(eligible_research),
+        current_events=select(eligible_current_events),
+        research=select(eligible_research, rice_first=True),
     )
 
 
@@ -234,19 +241,20 @@ class WeeklyRSSAggregator:
         total_read = 0
         filtered_out = 0
         duplicate_count = 0
+        available_source_observations = 0
 
         for date in window.storage_dates:
             daily_data = self.storage.get_rss_data_strict(date)
             if daily_data is None:
-                raise RuntimeError(
-                    f"周快照构建失败：RSS 日库缺失或没有抓取记录: {date}"
-                )
+                missing_dates.append(date)
+                continue
 
             if daily_data.failed_ids:
-                failed = ", ".join(sorted(daily_data.failed_ids))
-                raise RuntimeError(
-                    f"周快照构建失败：{date} RSS 来源失败: {failed}"
-                )
+                failed_sources[date] = sorted(set(daily_data.failed_ids))
+
+            available_source_observations += len(
+                set(daily_data.id_to_name) - set(daily_data.failed_ids)
+            )
 
             for feed_id, name in daily_data.id_to_name.items():
                 if name:
@@ -313,6 +321,11 @@ class WeeklyRSSAggregator:
                         candidate.pre_hot_score or 0.0,
                     )
                     merged.search_providers = ",".join(sorted(providers))
+
+        if available_source_observations == 0:
+            raise RuntimeError(
+                "周快照构建失败：统计窗口内没有任何可用来源"
+            )
 
         snapshot = WeeklyRSSSnapshot(
             window=window,

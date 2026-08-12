@@ -89,11 +89,17 @@ def _render_news_card(
     module_rank = _module_rank(item.get("module_rank"))
     evidence_id = f"[{module_type}:{module_rank}]"
     primary_topic = primary_weekly_topic(item)
+    evidence_label = {
+        "full_text": "基于正文",
+        "summary": "基于摘要",
+        "title_only": "仅基于标题",
+    }.get(str(item.get("content_level") or "title_only"), "仅基于标题")
     return (
         '<article class="news-card">'
         f'<h3>{marker}{title}</h3>'
         f'<p class="evidence-meta">模块排名：{module_rank}　'
-        f'证据ID：{_text(evidence_id)}　主主题：{_text(primary_topic)}</p>'
+        f'证据ID：{_text(evidence_id)}　主主题：{_text(primary_topic)}　'
+        f'摘要依据：{_text(evidence_label)}</p>'
         f'<p class="meta">来源：{source}　发布时间：{published_at}</p>'
         f'{summary_html}{links_html}'
         '</article>'
@@ -116,50 +122,57 @@ def _format_collection(value: Any) -> str:
 
 def render_weekly_pdf_html(
     *,
-    policy_items: list[dict],
+    current_events_items: list[dict],
     research_items: list[dict],
     ai_analysis: Any,
     agro_weather: Any,
     period_label: str,
     generated_at: datetime,
+    missing_dates: list[str] | None = None,
+    failed_sources: dict[str, list[str]] | None = None,
 ) -> str:
     """Render only the selected weekly news into an offline A4 HTML document."""
-    policy = list(policy_items or [])
+    current_events = list(current_events_items or [])
     research = list(research_items or [])
-    if len(policy) > 20 or len(research) > 20:
+    if len(current_events) > 20 or len(research) > 20:
         raise ValueError("周报 PDF 每个模块只接受最多 20 条已入选新闻")
-    _validate_module_ranks(policy, "policy")
+    _validate_module_ranks(current_events, "current_events")
     _validate_module_ranks(research, "research")
-    identities = [report_item_identity(item) for item in policy + research]
+    identities = [
+        report_item_identity(item) for item in current_events + research
+    ]
     if (
         any(not identity[1] for identity in identities)
         or len(set(identities)) != len(identities)
     ):
         raise ValueError("周报 PDF 入选新闻身份必须全局唯一")
-    policy.sort(key=lambda item: _module_rank(item.get("module_rank")))
+    current_events.sort(key=lambda item: _module_rank(item.get("module_rank")))
     research.sort(key=lambda item: _module_rank(item.get("module_rank")))
 
     generated = generated_at.strftime("%Y-%m-%d %H:%M")
     page_header = _css_string(
         f"农业育种新闻周报　周期：{period_label}"
     )
-    policy_html = "".join(
+    current_events_html = "".join(
         _render_news_card(
-            item, module_type="policy", marker_label="重点政策"
-        ) for item in policy
-    ) or '<p class="empty">本周暂无符合条件的政策新闻</p>'
+            item, module_type="current_events", marker_label="重点动态"
+        ) for item in current_events
+    ) or '<p class="empty">本周暂无符合条件的时事动态</p>'
     research_html = "".join(
         _render_news_card(
             item, module_type="research", marker_label="重点文献"
         ) for item in research
     ) or '<p class="empty">本周暂无符合条件的科研文献</p>'
-    total_selected = len(policy) + len(research)
+    total_selected = len(current_events) + len(research)
     total_highlights = sum(
         _module_rank(item.get("module_rank")) <= 5
-        for item in policy + research
+        for item in current_events + research
     )
-    policy_topics = _module_topic_coverage(policy)
+    current_events_topics = _module_topic_coverage(current_events)
     research_topics = _module_topic_coverage(research)
+    source_status_html = _render_source_status(
+        missing_dates or [], failed_sources or {}
+    )
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -206,33 +219,52 @@ a {{ color: #155e75; text-decoration: none; word-break: break-all; }}
 <main>
   <section class="cover">
     <h1>农业育种新闻周报</h1>
-    <p>统计周期：{_text(period_label)}<br>生成时间：{_text(generated)}<br>入选普通新闻：{total_selected} 条（政策 {len(policy)} 条，科研 {len(research)} 条）</p>
+    <p>统计周期：{_text(period_label)}<br>生成时间：{_text(generated)}<br>入选普通新闻：{total_selected} 条（时事动态 {len(current_events)} 条，科研进展 {len(research)} 条）</p>
   </section>
-  <section class="primary-module"><h2>一、政策动态</h2>
-    <div class="module-analysis"><span class="label">政策趋势研判</span><br>{_analysis_text(ai_analysis, "policy_trends", "本期暂无政策趋势分析。")}</div>
-    {policy_html}
+  <section class="primary-module"><h2>一、时事动态</h2>
+    <div class="module-analysis"><span class="label">时事动态研判</span><br>{_analysis_text(ai_analysis, "current_events_trends", "本期暂无水稻时事动态分析。")}</div>
+    {current_events_html}
   </section>
   <section class="primary-module"><h2>二、科研进展</h2>
     <div class="module-analysis"><span class="label">科研趋势研判</span><br>{_analysis_text(ai_analysis, "research_trends", "本期暂无科研趋势分析。")}</div>
     {research_html}
   </section>
   {_render_weather(agro_weather, ai_analysis)}
+  {source_status_html}
   <aside class="report-metrics"><h3>趋势与指标</h3>
     <div class="overview-grid">
-      <div><span class="label">政策新闻</span><br>{len(policy)} 条（上限 20 条）</div>
+      <div><span class="label">时事动态</span><br>{len(current_events)} 条（上限 20 条）</div>
       <div><span class="label">科研文献</span><br>{len(research)} 条（上限 20 条）</div>
-      <div><span class="label">政策主题覆盖</span><br>{_format_collection(policy_topics)}</div>
+      <div><span class="label">时事主题覆盖</span><br>{_format_collection(current_events_topics)}</div>
       <div><span class="label">科研主题覆盖</span><br>{_format_collection(research_topics)}</div>
       <div><span class="label">TOP5 标记</span><br>{total_highlights} 条（每模块最多 5 条）</div>
       <div><span class="label">气象专栏</span><br>{"已纳入" if agro_weather else "本期暂无官方报告"}</div>
     </div>
   </aside>
   <aside class="report-method"><h3>数据与方法说明</h3>
-    <p class="method">普通新闻仅使用自然周筛选后的政策、科研双模块结果，每模块最多 20 条、各自 TOP5 内联标记，每条仅展示一次。农业气象为第三个独立模块，不占新闻名额。无法验证的链接与缺失字段不展示；文本与链接均经过安全处理。</p>
+    <p class="method">普通新闻仅使用自然周筛选后的时事动态和科研进展结果，每模块最多 20 条、各自 TOP5 内联标记，每条仅展示一次。全国农业气象周报为第三个独立模块，不占新闻名额。无法验证的链接与缺失字段不展示；文本与链接均经过安全处理。</p>
   </aside>
 </main>
 </body>
 </html>"""
+
+
+def _render_source_status(
+    missing_dates: list[str], failed_sources: dict[str, list[str]]
+) -> str:
+    if not missing_dates and not failed_sources:
+        return ""
+    missing = _format_collection(sorted(set(missing_dates)))
+    failures = "；".join(
+        f"{_text(day)}：{_format_collection(source_ids)}"
+        for day, source_ids in sorted(failed_sources.items())
+    ) or "无"
+    return (
+        '<aside class="source-status"><h3>来源采集状态</h3>'
+        f'<p class="method">缺失抓取日期：{missing}<br>'
+        f'不可访问或失败来源：{failures}。其余可用来源正常参与本期筛选。</p>'
+        '</aside>'
+    )
 
 
 def _validate_module_ranks(items: list[dict], module_name: str) -> None:
@@ -265,7 +297,7 @@ def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
         ai_analysis, "weather_risks", "本期暂无农业气象风险分析。"
     )
     if agro_weather is None:
-        return f"""<section class="primary-module"><h2>三、农业气象与灾害风险</h2>
+        return f"""<section class="primary-module"><h2>三、全国农业气象周报</h2>
 <div class="module-analysis"><span class="label">气象风险研判</span><br>{analysis}</div>
 <p class="empty">本期未取得可验证的中央气象台农业气象周报。</p></section>"""
     title = _text(getattr(agro_weather, "title", "全国农业气象周报"))
@@ -273,7 +305,7 @@ def _render_weather(agro_weather: Any, ai_analysis: Any) -> str:
     outlook = _text(getattr(agro_weather, "outlook", "")) or "暂未提供"
     recommendations = _text(getattr(agro_weather, "recommendations", "")) or "暂未提供"
     source = _link(getattr(agro_weather, "source_url", ""), "中央气象台原页")
-    return f"""<section class="primary-module"><h2>三、农业气象与灾害风险</h2>
+    return f"""<section class="primary-module"><h2>三、全国农业气象周报</h2>
 <div class="module-analysis"><span class="label">气象风险研判</span><br>{analysis}</div>
 <p class="evidence-meta">证据ID：<span class="evidence-id">[weather:official]</span></p>
 <p><strong>{title}</strong>{("　" + source) if source else ""}</p>

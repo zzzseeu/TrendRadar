@@ -127,6 +127,110 @@ rss:
       name: "Yahoo Finance"
       url: "https://finance.yahoo.com/news/rssindex"
 
+    # Official rice current-events sources. Sources that are currently
+    # blocked by SSL/403 or lack a stable list endpoint remain configured but disabled.
+    - id: "cgiar-news"
+      name: "CGIAR News & Events"
+      url: "https://www.cgiar.org/news-events"
+      source_type: "web_news"
+      fetch_url: "https://www-cgiar-org.translate.goog/news-events?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
+      max_items: 30
+    - id: "vietnam-ppd"
+      name: "Vietnam Plant Production and Protection Department"
+      url: "https://ppd.gov.vn/"
+      source_type: "web_news"
+      max_items: 30
+    - id: "ndrc-rice"
+      name: "China NDRC Price Department"
+      url: "https://www.ndrc.gov.cn/fzggw/jgsj/jgs/sjdt/"
+      source_type: "web_news"
+      max_items: 30
+    - id: "stats-grain"
+      name: "National Bureau of Statistics of China"
+      url: "https://www.stats.gov.cn/sj/zxfb/"
+      source_type: "web_news"
+      max_items: 30
+    - id: "heilongjiang-rice"
+      name: "Heilongjiang Department of Agriculture"
+      url: "https://nynct.hlj.gov.cn/nynct/c115385/public_list.shtml"
+      source_type: "web_news"
+      max_items: 30
+    - id: "hubei-rice"
+      name: "Hubei Department of Agriculture"
+      url: "https://nyt.hubei.gov.cn/bmdt/yw/gfxx/index.shtml"
+      source_type: "web_news"
+      max_items: 30
+    - id: "philippines-da"
+      name: "Philippines Department of Agriculture"
+      url: "https://www.da.gov.ph/category/news/"
+      source_type: "web_news"
+      enabled: false
+    - id: "philrice-news"
+      name: "PhilRice News"
+      url: "https://www.philrice.gov.ph/news/"
+      source_type: "web_news"
+      enabled: false
+    - id: "natesc-rice"
+      name: "National Agricultural Technology Extension Center"
+      url: "https://www.natesc.org.cn/Home/"
+      source_type: "web_news"
+      enabled: false
+    - id: "lswz-control"
+      name: "National Food and Strategic Reserves Administration"
+      url: "https://lswz.gov.cn/html/ywpd/lstk/index.shtml"
+      source_type: "web_news"
+      enabled: false
+    - id: "lswz-transactions"
+      name: "National Policy Grain Transactions"
+      url: "https://lswz.gov.cn/html/zmhd/lysj/lsjy-zc.shtml"
+      source_type: "web_news"
+      enabled: false
+    - id: "hunan-rice"
+      name: "Hunan Department of Agriculture"
+      url: "https://agri.hunan.gov.cn/agri/xxgk/tzgg/"
+      source_type: "web_news"
+      enabled: false
+    - id: "jiangsu-rice"
+      name: "Jiangsu Department of Agriculture"
+      url: "https://nynct.jiangsu.gov.cn/col/col12433/index.html"
+      source_type: "web_news"
+      enabled: false
+    - id: "jiangxi-rice"
+      name: "Jiangxi Department of Agriculture"
+      url: "https://nync.jiangxi.gov.cn/"
+      source_type: "web_news"
+      enabled: false
+    - id: "amis-rice"
+      name: "AMIS Market Monitor"
+      url: "https://www.amis-outlook.org/market-monitor"
+      source_type: "official_document"
+      enabled: false
+    - id: "japan-maff-rice"
+      name: "Japan MAFF Rice"
+      url: "https://www.maff.go.jp/j/seisan/keikaku/beikoku_sisin/"
+      source_type: "official_document"
+      enabled: false
+    - id: "fao-rice"
+      name: "FAO Rice Markets and Trade"
+      url: "https://www.fao.org/markets-and-trade/commodities/rice/"
+      source_type: "official_document"
+      enabled: false
+    - id: "usda-ers-rice"
+      name: "USDA ERS Rice Market Outlook"
+      url: "https://www.ers.usda.gov/topics/crops/rice/market-outlook"
+      source_type: "official_document"
+      enabled: false
+    - id: "india-agri-statistics"
+      name: "India Agricultural Statistics"
+      url: "https://desagri.gov.in/"
+      source_type: "official_document"
+      enabled: false
+    - id: "india-food-distribution"
+      name: "India Food and Public Distribution"
+      url: "https://dfpd.gov.in/whats-new/en"
+      source_type: "official_document"
+      enabled: false
+
     # Custom feed example
     # - id: "custom-feed"
     #   name: "Custom Feed"

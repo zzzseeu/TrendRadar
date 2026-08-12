@@ -73,6 +73,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             "source_name": "Source",
             "published_at": "2026-08-06T08:00:00+08:00",
             "module_type": module_type,
+            "species_scope": "rice",
             "relevance_score": 0.8,
             "importance_score": 0.8,
             "content_level": "summary",
@@ -142,9 +143,10 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         analyzer.frequency_file = None
         analyzer._run_ai_analysis = MagicMock(return_value=AIAnalysisResult(
             success=True,
-            policy_trends="政策暂无" if not any(
-                item["module_type"] == "policy" for item in selected_items
-            ) else "政策趋势 [policy:1]",
+            current_events_trends="时事暂无" if not any(
+                item["module_type"] == "current_events"
+                for item in selected_items
+            ) else "时事动态 [current_events:1]",
             research_trends="科研暂无" if not any(
                 item["module_type"] == "research" for item in selected_items
             ) else "科研趋势 [research:1]",
@@ -184,7 +186,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
 
     def test_weekly_mainline_uses_only_one_dedicated_pdf_and_file_delivery(self):
         analyzer, _, dispatcher = self._analyzer([
-            self._item("policy"), self._item("research")
+            self._item("current_events"), self._item("research")
         ])
         with patch(
             "trendradar.__main__.render_weekly_pdf_html",
@@ -201,14 +203,14 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         self.assertIsNone(html_file)
         analyzer.ctx.generate_html.assert_not_called()
         render.assert_called_once()
-        self.assertEqual(len(render.call_args.kwargs["policy_items"]), 1)
+        self.assertEqual(len(render.call_args.kwargs["current_events_items"]), 1)
         self.assertEqual(len(render.call_args.kwargs["research_items"]), 1)
         narrative_groups = analyzer._run_ai_analysis.call_args.args[1]
         narrative_items = [
             item for group in narrative_groups for item in group["titles"]
         ]
         self.assertIs(
-            render.call_args.kwargs["policy_items"][0], narrative_items[0]
+            render.call_args.kwargs["current_events_items"][0], narrative_items[0]
         )
         self.assertIs(
             render.call_args.kwargs["research_items"][0], narrative_items[1]
@@ -220,7 +222,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
 
     def test_run_has_one_pdf_only_mainline_and_writes_no_generic_html(self):
         analyzer, _, dispatcher = self._analyzer([
-            self._item("policy"), self._item("research")
+            self._item("current_events"), self._item("research")
         ])
         self._prepare_run(analyzer)
         with tempfile.TemporaryDirectory() as workdir:
@@ -275,7 +277,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
 
     def test_run_rebuilds_selection_and_pdf_when_no_account_succeeded(self):
         analyzer, scheduler, dispatcher = self._analyzer([
-            self._item("policy")
+            self._item("current_events")
         ])
         pending_schedule = schedule(once_push=False)
         lock = self._prepare_run(
@@ -308,7 +310,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         ) as build:
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
-                policy_trends="政策趋势 [policy:1]",
+                current_events_trends="时事动态 [current_events:1]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )
@@ -336,7 +338,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
 
     def test_contract_change_rejects_partial_artifact_before_rebuilding(self):
         analyzer, scheduler, dispatcher = self._analyzer([
-            self._item("policy")
+            self._item("current_events")
         ])
         self._prepare_run(analyzer)
         analyzer._resume_weekly_pdf_delivery = (
@@ -399,7 +401,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
 
     def test_fresh_pdf_contract_change_after_build_writes_no_ledger(self):
         analyzer, scheduler, dispatcher = self._analyzer([
-            self._item("policy")
+            self._item("current_events")
         ])
         self._prepare_run(analyzer)
         analyzer._weekly_artifact_contract_hash = MagicMock(
@@ -423,7 +425,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         scheduler.record_execution.assert_not_called()
 
     def test_weekly_mainline_allows_either_news_module_to_be_empty(self):
-        for module_type in ("policy", "research"):
+        for module_type in ("current_events", "research"):
             with self.subTest(module_type=module_type):
                 analyzer, _, _ = self._analyzer([
                     self._item(module_type)
@@ -439,7 +441,11 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
                     self.assertTrue(analyzer.run())
 
                 expected = render.call_args.kwargs[f"{module_type}_items"]
-                other = "research" if module_type == "policy" else "policy"
+                other = (
+                    "research"
+                    if module_type == "current_events"
+                    else "current_events"
+                )
                 self.assertEqual(len(expected), 1)
                 self.assertEqual(render.call_args.kwargs[f"{other}_items"], [])
 
@@ -455,13 +461,13 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         ):
             self.assertTrue(analyzer.run())
 
-        self.assertEqual(render.call_args.kwargs["policy_items"], [])
+        self.assertEqual(render.call_args.kwargs["current_events_items"], [])
         self.assertEqual(render.call_args.kwargs["research_items"], [])
         self.assertIs(render.call_args.kwargs["agro_weather"], self.weather)
         analyzer.ctx.run_ai_filter.assert_not_called()
         analyzer.ctx.convert_ai_filter_to_report_data.assert_not_called()
         analyzer._run_ai_analysis.assert_called_once()
-        self.assertEqual(analyzer._weekly_news_modules.policy, [])
+        self.assertEqual(analyzer._weekly_news_modules.current_events, [])
         self.assertEqual(analyzer._weekly_news_modules.research, [])
         self.assertFalse(analyzer._weekly_ai_filter_succeeded)
         dispatcher.dispatch_weekly_pdf.assert_called_once()
@@ -506,7 +512,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         analyzer, scheduler, dispatcher = self._analyzer([])
         analyzer._run_ai_analysis.return_value = AIAnalysisResult(
             success=True,
-            policy_trends="政策暂无 [policy:none]",
+            current_events_trends="时事暂无 [current_events:none]",
             research_trends="科研暂无 [research:none]",
             weather_risks="",
         )
@@ -549,7 +555,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         ):
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
-                policy_trends="政策暂无 [policy:none]",
+                current_events_trends="时事暂无 [current_events:none]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )
@@ -577,7 +583,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         ):
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
-                policy_trends="政策暂无 [policy:none]",
+                current_events_trends="时事暂无 [current_events:none]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )
@@ -590,7 +596,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
 
     def test_weekly_classification_failure_writes_no_checkpoint(self):
         analyzer, scheduler, dispatcher = self._analyzer([
-            self._item("policy")
+            self._item("current_events")
         ])
         self._prepare_run(analyzer)
         analyzer.ctx.run_ai_filter.return_value = SimpleNamespace(
@@ -637,7 +643,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         ) as build:
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
-                policy_trends="政策暂无 [policy:none]",
+                current_events_trends="时事暂无 [current_events:none]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )

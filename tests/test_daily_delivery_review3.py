@@ -636,56 +636,68 @@ class DailyDeliveryStrictClassificationProtocolTests(unittest.TestCase):
                 "title": "第一条水稻新闻",
                 "content": "第一条水稻新闻正文",
                 "content_level": "full_text",
+                "module_type": "current_events",
+                "module_reason": "no_publication_evidence",
             },
             {
                 "id": 2,
                 "title": "第二条水稻新闻",
                 "content": "第二条水稻新闻正文",
                 "content_level": "full_text",
+                "module_type": "current_events",
+                "module_reason": "no_publication_evidence",
             },
         ]
         self.tags = [
             {"id": 18, "tag": "水稻育种", "description": "育种进展"}
         ]
-        self.valid = json.dumps([
+        self.valid = json.dumps({"items": [
             {
-                "id": 1, "module_type": "policy", "tag_id": 18,
+                "id": 1, "include": True, "species_scope": "rice",
+                "tag_id": 1,
                 "score": 0.82, "importance_score": 0.78,
                 "summary": "第一条新闻的证据摘要",
             },
             {
-                "id": 2, "module_type": "exclude", "score": 0.1,
+                "id": 2, "include": False,
+                "species_scope": "not_applicable", "score": 0.1,
                 "importance_score": 0.1, "summary": "第二条新闻无关",
             },
-        ])
+        ]})
 
     def test_each_strict_protocol_violation_triggers_one_successful_repair(self):
         invalid_responses = {
             "unknown_news_id": [{
-                "id": 999, "tag_id": 18, "score": 0.8,
+                "id": 999, "include": True, "species_scope": "rice",
+                "tag_id": 18, "score": 0.8,
                 "importance_score": 0.7, "summary": "未知新闻",
             }],
             "unknown_tag_id": [{
-                "id": 1, "tag_id": 999, "score": 0.8,
+                "id": 1, "include": True, "species_scope": "rice",
+                "tag_id": 999, "score": 0.8,
                 "importance_score": 0.7, "summary": "未知标签",
             }],
             "missing_required_field": [{
-                "id": 1, "tag_id": 18, "score": 0.8,
+                "id": 1, "include": True, "species_scope": "rice",
+                "tag_id": 18, "score": 0.8,
                 "summary": "缺少重要性",
             }],
             "illegal_element": ["not-an-object"],
             "duplicate_news_id": [
                 {
-                    "id": 1, "tag_id": 18, "score": 0.8,
+                    "id": 1, "include": True, "species_scope": "rice",
+                    "tag_id": 18, "score": 0.8,
                     "importance_score": 0.7, "summary": "第一份",
                 },
                 {
-                    "id": 1, "tag_id": 18, "score": 0.7,
+                    "id": 1, "include": True, "species_scope": "rice",
+                    "tag_id": 18, "score": 0.7,
                     "importance_score": 0.6, "summary": "重复项",
                 },
             ],
             "empty_summary": [{
-                "id": 1, "tag_id": 18, "score": 0.8,
+                "id": 1, "include": True, "species_scope": "rice",
+                "tag_id": 18, "score": 0.8,
                 "importance_score": 0.7, "summary": "",
             }],
         }
@@ -693,7 +705,8 @@ class DailyDeliveryStrictClassificationProtocolTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.ai_filter.client.chat.reset_mock()
                 self.ai_filter.client.chat.side_effect = [
-                    json.dumps(invalid, ensure_ascii=False), self.valid
+                    json.dumps({"items": invalid}, ensure_ascii=False),
+                    self.valid,
                 ]
                 result = self.ai_filter.classify_batch(
                     self.titles, self.tags, "育种", strict=True
@@ -702,10 +715,11 @@ class DailyDeliveryStrictClassificationProtocolTests(unittest.TestCase):
                 self.assertEqual(self.ai_filter.client.chat.call_count, 2)
 
     def test_strict_protocol_violation_after_repair_fails_whole_batch(self):
-        invalid = json.dumps([{
-            "id": 999, "tag_id": 18, "score": 0.8,
+        invalid = json.dumps({"items": [{
+            "id": 999, "include": True, "species_scope": "rice",
+            "tag_id": 18, "score": 0.8,
             "importance_score": 0.7, "summary": "未知新闻",
-        }])
+        }]})
         self.ai_filter.client.chat.side_effect = [invalid, invalid]
 
         result = self.ai_filter.classify_batch(

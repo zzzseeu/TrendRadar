@@ -183,46 +183,55 @@ rss:
     - id: "nature-plants"
       name: "Nature Plants"
       url: "https://www.nature.com/nplants.rss"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "nature-genetics"
       name: "Nature Genetics"
       url: "https://www.nature.com/ng.rss"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "nature-biotechnology"
       name: "Nature Biotechnology"
       url: "https://www.nature.com/nbt.rss"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "science"
       name: "Science"
       url: "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "molecular-plant"
       name: "Molecular Plant"
       url: "https://rss.sciencedirect.com/publication/science/16742052"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "plant-communications"
       name: "Plant Communications"
       url: "https://rss.sciencedirect.com/publication/science/25903462"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "rice-science"
       name: "Rice Science"
       url: "https://rss.sciencedirect.com/publication/science/16726308"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "crop-journal"
       name: "The Crop Journal"
       url: "https://rss.sciencedirect.com/publication/science/22145141"
+      content_category: "scholarly"
       max_items: 30
 
     - id: "biorxiv-plant-biology"
       name: "bioRxiv Plant Biology"
       url: "https://connect.biorxiv.org/biorxiv_xml.php?subject=plant_biology"
+      content_category: "scholarly"
       max_items: 30
 
     # ── 育种数据库动态 ────────────────────────────────────────
@@ -297,10 +306,143 @@ rss:
 
     - id: "cgiar-news"
       name: "CGIAR News"
-      url: "https://www.cgiar.org/news"
+      url: "https://www.cgiar.org/news-events"
       source_type: "web_news"
       # CGIAR 的直接请求返回 403，代理只用于读取，文章链接会还原为官方域名。
-      fetch_url: "https://www-cgiar-org.translate.goog/news?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
+      fetch_url: "https://www-cgiar-org.translate.goog/news-events?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
+      max_items: 30
+
+    # ── 水稻官方时事来源（沿用 web_news） ────────────────────
+    - id: "vietnam-ppd"
+      name: "越南种植与植物保护局"
+      url: "https://ppd.gov.vn/"
+      source_type: "web_news"
+      max_items: 30
+
+    - id: "ndrc-rice"
+      name: "国家发展改革委价格司"
+      url: "https://www.ndrc.gov.cn/fzggw/jgsj/jgs/sjdt/"
+      source_type: "web_news"
+      max_items: 30
+
+    - id: "stats-grain"
+      name: "国家统计局最新发布"
+      url: "https://www.stats.gov.cn/sj/zxfb/"
+      source_type: "web_news"
+      max_items: 30
+
+    - id: "heilongjiang-rice"
+      name: "黑龙江省农业农村厅"
+      url: "https://nynct.hlj.gov.cn/nynct/c115385/public_list.shtml"
+      source_type: "web_news"
+      max_items: 30
+
+    - id: "hubei-rice"
+      name: "湖北省农业农村厅"
+      url: "https://nyt.hubei.gov.cn/bmdt/yw/gfxx/index.shtml"
+      source_type: "web_news"
+      max_items: 30
+
+    # 以下来源文章结构可复用，但当前出口存在 SSL、403 或入口稳定性问题；
+    # 保留配置，待可重复在线访问验证后启用。
+    - id: "philippines-da"
+      name: "菲律宾农业部"
+      url: "https://www.da.gov.ph/category/news/"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    - id: "philrice-news"
+      name: "PhilRice News"
+      url: "https://www.philrice.gov.ph/news/"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    - id: "natesc-rice"
+      name: "全国农业技术推广服务中心"
+      url: "https://www.natesc.org.cn/Home/"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    - id: "lswz-control"
+      name: "国家粮食和物资储备局调控动态"
+      url: "https://lswz.gov.cn/html/ywpd/lstk/index.shtml"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    - id: "lswz-transactions"
+      name: "国家粮食和物资储备局交易结果"
+      url: "https://lswz.gov.cn/html/zmhd/lysj/lsjy-zc.shtml"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    - id: "hunan-rice"
+      name: "湖南省农业农村厅"
+      url: "https://agri.hunan.gov.cn/agri/xxgk/tzgg/"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    - id: "jiangsu-rice"
+      name: "江苏省农业农村厅"
+      url: "https://nynct.jiangsu.gov.cn/col/col12433/index.html"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    - id: "jiangxi-rice"
+      name: "江西省农业农村厅"
+      url: "https://nync.jiangxi.gov.cn/"
+      source_type: "web_news"
+      enabled: false
+      max_items: 30
+
+    # ── 官方专题/PDF 文档源 ───────────────────────────────────
+    # 统一走 official_document；只有真实页面能稳定给出标题、日期和文档链接后才启用。
+    - id: "amis-rice"
+      name: "AMIS Market Monitor"
+      url: "https://www.amis-outlook.org/market-monitor"
+      source_type: "official_document"
+      enabled: false
+      max_items: 30
+
+    - id: "japan-maff-rice"
+      name: "日本农林水产省稻米专题"
+      url: "https://www.maff.go.jp/j/seisan/keikaku/beikoku_sisin/"
+      source_type: "official_document"
+      enabled: false
+      max_items: 30
+
+    - id: "fao-rice"
+      name: "FAO Rice Markets and Trade"
+      url: "https://www.fao.org/markets-and-trade/commodities/rice/"
+      source_type: "official_document"
+      enabled: false
+      max_items: 30
+
+    - id: "usda-ers-rice"
+      name: "USDA ERS Rice Market Outlook"
+      url: "https://www.ers.usda.gov/topics/crops/rice/market-outlook"
+      source_type: "official_document"
+      enabled: false
+      max_items: 30
+
+    - id: "india-agri-statistics"
+      name: "印度农业统计局"
+      url: "https://desagri.gov.in/"
+      source_type: "official_document"
+      enabled: false
+      max_items: 30
+
+    - id: "india-food-distribution"
+      name: "印度食品与公共分配部"
+      url: "https://dfpd.gov.in/whats-new/en"
+      source_type: "official_document"
+      enabled: false
       max_items: 30
 
     # ── 种业企业（仍需同时命中育种技术词，避免财报和人事消息） ──

@@ -64,33 +64,36 @@ class AIFilterModuleContractTests(unittest.TestCase):
         ai_filter = AIFilter.__new__(AIFilter)
         ai_filter.debug = False
         titles = [
-            {"id": 1, "title": "政策", "content_level": "title_only"},
-            {"id": 2, "title": "科研", "content_level": "summary"},
-            {"id": 3, "title": "无关", "content_level": "full_text"},
+            {"id": 1, "title": "动态", "module_type": "current_events", "content_level": "title_only"},
+            {"id": 2, "title": "科研", "module_type": "research", "content_level": "summary"},
+            {"id": 3, "title": "无关", "module_type": "current_events", "content_level": "full_text"},
         ]
         tags = [{"id": 11, "tag": "政策"}, {"id": 12, "tag": "科研"}]
         response = json.dumps([
-            {"id": 1, "module_type": "policy", "tag_id": 11,
+            {"id": 1, "include": True, "species_scope": "rice", "tag_id": 11,
              "score": 0.50, "importance_score": 0.80, "summary": "政策部署"},
-            {"id": 2, "module_type": "research", "tag_id": 12,
+            {"id": 2, "include": True, "species_scope": "rice", "tag_id": 12,
              "score": 0.49, "importance_score": 0.90, "summary": "科研成果"},
-            {"id": 3, "module_type": "exclude",
+            {"id": 3, "include": False, "species_scope": "not_applicable",
              "score": 0.10, "importance_score": 0.10, "summary": "内容无关"},
         ])
 
         results = ai_filter._parse_classify_response(response, titles, tags, strict=True)
 
-        self.assertEqual([row["module_type"] for row in results], ["policy", "research"])
+        self.assertEqual([row["module_type"] for row in results], ["current_events", "research"])
         self.assertEqual([row["relevance_score"] for row in results], [0.50, 0.49])
         self.assertEqual([row["news_item_id"] for row in results], [1, 2])
 
     def test_strict_classification_rejects_missing_ids_invalid_modules_and_tags(self):
         ai_filter = AIFilter.__new__(AIFilter)
         ai_filter.debug = False
-        titles = [{"id": 1, "title": "政策"}, {"id": 2, "title": "科研"}]
+        titles = [
+            {"id": 1, "title": "动态", "module_type": "current_events"},
+            {"id": 2, "title": "科研", "module_type": "research"},
+        ]
         tags = [{"id": 11, "tag": "政策"}]
         valid = {
-            "id": 1, "module_type": "policy", "tag_id": 11,
+            "id": 1, "include": True, "species_scope": "rice", "tag_id": 11,
             "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
         }
         cases = {
@@ -98,23 +101,23 @@ class AIFilterModuleContractTests(unittest.TestCase):
             "duplicate_id": [valid, dict(valid)],
             "unknown_id": [
                 dict(valid, id=999),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, include=False, species_scope="not_applicable", summary="无关", tag_id=11),
             ],
-            "unknown_module": [
-                dict(valid, module_type="unknown"),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+            "ai_module_override": [
+                dict(valid, module_type="research"),
+                dict(valid, id=2, include=False, species_scope="not_applicable", summary="无关", tag_id=11),
             ],
             "missing_persisted_tag": [
                 {key: value for key, value in valid.items() if key != "tag_id"},
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, include=False, species_scope="not_applicable", summary="无关", tag_id=11),
             ],
             "nan_score": [
                 dict(valid, score=float("nan")),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, include=False, species_scope="not_applicable", summary="无关", tag_id=11),
             ],
             "boolean_importance": [
                 dict(valid, importance_score=True),
-                dict(valid, id=2, module_type="exclude", summary="无关"),
+                dict(valid, id=2, include=False, species_scope="not_applicable", summary="无关", tag_id=11),
             ],
         }
         for name, payload in cases.items():
@@ -127,10 +130,13 @@ class AIFilterModuleContractTests(unittest.TestCase):
     def test_strict_classification_rejects_non_string_module_types(self):
         ai_filter = AIFilter.__new__(AIFilter)
         ai_filter.debug = False
-        titles = [{"id": 1, "title": "政策"}, {"id": 2, "title": "无关"}]
+        titles = [
+            {"id": 1, "title": "动态", "module_type": "current_events"},
+            {"id": 2, "title": "无关", "module_type": "current_events"},
+        ]
         tags = [{"id": 11, "tag": "政策"}]
         valid = {
-            "id": 1, "module_type": "policy", "tag_id": 11,
+            "id": 1, "include": True, "species_scope": "rice", "tag_id": 11,
             "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
         }
         for module_type in ([], {}):
@@ -138,7 +144,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
                 payload = [
                     dict(valid, module_type=module_type),
                     {
-                        "id": 2, "module_type": "exclude", "score": 0.1,
+                        "id": 2, "include": False, "species_scope": "not_applicable", "score": 0.1,
                         "importance_score": 0.1, "summary": "内容无关",
                     },
                 ]
@@ -156,21 +162,21 @@ class AIFilterModuleContractTests(unittest.TestCase):
         ai_filter.client = MagicMock()
         invalid = json.dumps([
             {
-                "id": 1, "module_type": [], "tag_id": 11,
+                "id": 1, "module_type": [], "include": True, "species_scope": "rice", "tag_id": 1,
                 "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
             },
             {
-                "id": 2, "module_type": "exclude", "score": 0.1,
+                "id": 2, "include": False, "species_scope": "not_applicable", "score": 0.1,
                 "importance_score": 0.1, "summary": "内容无关",
             },
         ])
         repaired = json.dumps([
             {
-                "id": 1, "module_type": "policy", "tag_id": 11,
+                "id": 1, "include": True, "species_scope": "rice", "tag_id": 1,
                 "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
             },
             {
-                "id": 2, "module_type": "exclude", "score": 0.1,
+                "id": 2, "include": False, "species_scope": "not_applicable", "score": 0.1,
                 "importance_score": 0.1, "summary": "内容无关",
             },
         ])
@@ -178,8 +184,8 @@ class AIFilterModuleContractTests(unittest.TestCase):
 
         result = ai_filter.classify_batch(
             [
-                {"id": 1, "title": "政策", "content": "政策"},
-                {"id": 2, "title": "无关", "content": "无关"},
+                {"id": 1, "title": "动态", "content": "动态", "module_type": "current_events"},
+                {"id": 2, "title": "无关", "content": "无关", "module_type": "current_events"},
             ],
             [{"id": 11, "tag": "政策"}],
             "政策优先",
@@ -194,14 +200,14 @@ class AIFilterModuleContractTests(unittest.TestCase):
         ai_filter.debug = False
         tags = [{"id": 1, "tag": "育种"}]
         titles = [
-            {"id": 1, "title": "标题", "content_level": "title_only"},
-            {"id": 2, "title": "摘要", "content_level": "summary"},
-            {"id": 3, "title": "正文", "content_level": "full_text"},
+            {"id": 1, "title": "标题", "module_type": "current_events", "content_level": "title_only"},
+            {"id": 2, "title": "摘要", "module_type": "research", "content_level": "summary"},
+            {"id": 3, "title": "正文", "module_type": "research", "content_level": "full_text"},
         ]
         response = json.dumps([
-            {"id": 1, "module_type": "policy", "tag_id": 1, "score": 0.1},
-            {"id": 2, "module_type": "research", "tag_id": 1, "score": 0.5},
-            {"id": 3, "module_type": "research", "tag_id": 1, "score": 0.9},
+            {"id": 1, "include": True, "species_scope": "rice", "tag_id": 1, "score": 0.1},
+            {"id": 2, "include": True, "species_scope": "rice", "tag_id": 1, "score": 0.5},
+            {"id": 3, "include": True, "species_scope": "rice", "tag_id": 1, "score": 0.9},
         ])
 
         results = ai_filter._parse_classify_response(response, titles, tags)
@@ -218,7 +224,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         ai_filter.client.chat.side_effect = ["[]", "[]"]
 
         result = ai_filter.classify_batch(
-            [{"id": 1, "title": "政策", "content": "政策"}],
+            [{"id": 1, "title": "动态", "content": "动态", "module_type": "current_events"}],
             [{"id": 11, "tag": "政策"}],
             "政策优先",
             strict=True,

@@ -22,7 +22,14 @@ class WeeklyConfigurationTests(unittest.TestCase):
         self.assertEqual(config["schedule"]["preset"], "custom")
         self.assertNotIn("freshness_filter", config["rss"])
         feeds = {feed["id"]: feed for feed in config["rss"]["feeds"]}
-        disabled_ids = {"hacker-news", "ruanyifeng", "yahoo-finance"}
+        disabled_ids = {
+            "hacker-news", "ruanyifeng", "yahoo-finance",
+            "philippines-da", "philrice-news", "natesc-rice",
+            "lswz-control", "lswz-transactions", "hunan-rice",
+            "jiangsu-rice", "jiangxi-rice", "amis-rice",
+            "japan-maff-rice", "fao-rice", "usda-ers-rice",
+            "india-agri-statistics", "india-food-distribution",
+        }
         self.assertEqual(
             {feed_id for feed_id, feed in feeds.items()
              if not feed.get("enabled", True)},
@@ -130,7 +137,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
                 with self.subTest(filename=filename, token=token):
                     self.assertIn(token, text)
 
-    def test_weekly_public_contract_uses_three_modules_only(self):
+    def test_weekly_public_contract_uses_source_evidence_three_modules(self):
         for relative in ("config/config.yaml", "config/config.en.yaml"):
             text = (ROOT / relative).read_text(encoding="utf-8")
             config = yaml.safe_load(text)
@@ -141,28 +148,32 @@ class WeeklyConfigurationTests(unittest.TestCase):
         prompt = (ROOT / "config/ai_filter/prompt.txt").read_text(
             encoding="utf-8"
         )
-        self.assertIn("policy、research 或 exclude", prompt)
-        self.assertIn("政策优先", prompt)
+        self.assertIn("不得返回 module_type", prompt)
+        self.assertIn("current_events", prompt)
+        self.assertIn("research", prompt)
+        self.assertIn("species_scope", prompt)
         self.assertIn("领导调研", prompt)
         self.assertIn(
-            "不得仅因会议、宣传稿或调研这种载体排除真实政策或科研信息",
+            "不得仅因载体形式排除",
             prompt,
         )
         self.assertNotIn("会议宣传、培训招生和纯营销内容", prompt)
 
         docs = {
             "README.md": (
-                "周二至周日", "上一自然周", "三个独立模块", "政策动态最多 20 条",
-                "科研进展最多 20 条", "气象", "独立", "0.5", "一个 PDF",
+                "周二至周日", "上一自然周", "三个模块",
+                "时事动态最多 20 条", "科研进展最多 20 条",
+                "全国农业气象周报", "0.5", "一个 PDF",
             ),
             "README-EN.md": (
                 "Tuesday through Sunday", "previous natural week",
-                "exactly three independent modules", "Policy: up to 20",
-                "Research: up to 20", "weather", "0.5", "one PDF",
+                "three modules", "Current events", "Research progress",
+                "weather", "0.5", "one PDF",
             ),
             "docs/news-push-technical-implementation.md": (
-                "周二至周日", "上一自然周", "三个独立模块", "政策动态最多 20 条",
-                "科研进展最多 20 条", "气象", "独立", "0.5", "一个 PDF",
+                "周二至周日", "上一自然周", "三个模块",
+                "时事动态最多 20 条", "科研进展最多 20 条",
+                "全国农业气象周报", "0.5", "一个 PDF",
             ),
         }
         for filename, required in docs.items():
@@ -175,7 +186,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
             encoding="utf-8"
         )
         weekly_analysis_prompt = weekly_analysis_prompt[
-            weekly_analysis_prompt.index("7. policy_trends："):
+            weekly_analysis_prompt.index("7. current_events_trends："):
             weekly_analysis_prompt.index("字符串内部需要换行时")
         ]
         weekly_product_texts = {

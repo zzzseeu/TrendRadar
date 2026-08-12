@@ -482,6 +482,63 @@ class SQLiteStorageMixin:
         if owns_transaction:
             conn.execute("BEGIN IMMEDIATE")
         try:
+            table_row = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'table' AND name = 'ai_filter_results'"
+            ).fetchone()
+            table_sql = (table_row[0] if table_row else "") or ""
+            if (
+                "module_type" in table_sql
+                and (
+                    "'current_events'" not in table_sql
+                    or "'policy'" in table_sql
+                    or "'industry'" in table_sql
+                )
+            ):
+                # SQLite 不能原地修改 CHECK 约束。旧 policy/industry
+                # 分类不能可靠映射成来源证据模块，因此必须整体失效，
+                # 禁止把历史行默认猜成 current_events。
+                conn.execute("DROP TABLE ai_filter_results")
+                conn.execute("""
+                    CREATE TABLE ai_filter_results (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        news_item_id INTEGER NOT NULL,
+                        source_type TEXT NOT NULL DEFAULT 'hotlist',
+                        tag_id INTEGER NOT NULL,
+                        module_type TEXT NOT NULL CHECK(
+                            module_type IN ('current_events', 'research')
+                        ),
+                        species_scope TEXT NOT NULL CHECK(
+                            species_scope IN (
+                                'rice', 'other_crop', 'not_applicable'
+                            )
+                        ),
+                        relevance_score REAL DEFAULT 0,
+                        content_level TEXT DEFAULT 'title_only',
+                        risk_warning TEXT DEFAULT '',
+                        content_excerpt TEXT DEFAULT '',
+                        importance_score REAL DEFAULT 0,
+                        ai_summary TEXT DEFAULT '',
+                        status TEXT DEFAULT 'active',
+                        deprecated_at TEXT,
+                        created_at TEXT NOT NULL,
+                        UNIQUE(news_item_id, source_type, tag_id)
+                    )
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ai_filter_results_status "
+                    "ON ai_filter_results(status)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ai_filter_results_news "
+                    "ON ai_filter_results(news_item_id, source_type)"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_ai_filter_results_tag "
+                    "ON ai_filter_results(tag_id)"
+                )
+                conn.execute("DELETE FROM ai_filter_analyzed_news")
+
             cursor = conn.execute("PRAGMA table_info(ai_filter_results)")
             columns = {row[1] for row in cursor.fetchall()}
             requires_reclassification = False
@@ -491,7 +548,15 @@ class SQLiteStorageMixin:
                 conn.execute(
                     "ALTER TABLE ai_filter_results ADD COLUMN "
                     "module_type TEXT "
-                    "CHECK(module_type IN ('policy', 'research'))"
+                    "CHECK(module_type IN ('current_events', 'research'))"
+                )
+                requires_reclassification = True
+            if "species_scope" not in columns:
+                conn.execute(
+                    "ALTER TABLE ai_filter_results ADD COLUMN "
+                    "species_scope TEXT "
+                    "CHECK(species_scope IN "
+                    "('rice', 'other_crop', 'not_applicable'))"
                 )
                 requires_reclassification = True
             if "content_level" not in columns:
@@ -2289,7 +2354,7 @@ class SQLiteStorageMixin:
                           WHERE r.news_item_id = a.news_item_id
                             AND r.source_type = a.source_type
                             AND r.status = 'active'
-                            AND r.module_type IN ('policy', 'research')
+                            AND r.module_type IN ('current_events', 'research')
                             AND t.status = 'active'
                             AND t.interests_file = a.interests_file
                             AND t.prompt_hash = a.prompt_hash
@@ -2357,8 +2422,12 @@ class SQLiteStorageMixin:
             for result in results:
                 if result.get("module_type") not in PERSISTED_MODULE_TYPES:
                     raise ValueError(
-                        "分类结果 module_type 必须是 policy 或 research"
+                        "分类结果 module_type 必须是 current_events 或 research"
                     )
+                if result.get("species_scope") not in {
+                    "rice", "other_crop", "not_applicable"
+                }:
+                    raise ValueError("分类结果 species_scope 无效")
             conn = self._get_connection(date)
             cursor = conn.cursor()
             now_str = self._get_configured_time().strftime("%Y-%m-%d %H:%M:%S")
@@ -2367,12 +2436,13 @@ class SQLiteStorageMixin:
             for r in results:
                 cursor.execute("""
                     INSERT INTO ai_filter_results
-                    (news_item_id, source_type, tag_id, module_type,
+                    (news_item_id, source_type, tag_id, module_type, species_scope,
                      relevance_score, content_level, risk_warning,
                      content_excerpt, importance_score, ai_summary, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(news_item_id, source_type, tag_id) DO UPDATE SET
                         module_type = excluded.module_type,
+                        species_scope = excluded.species_scope,
                         relevance_score = excluded.relevance_score,
                         content_level = excluded.content_level,
                         risk_warning = excluded.risk_warning,
@@ -2387,6 +2457,7 @@ class SQLiteStorageMixin:
                     r.get("source_type", "hotlist"),
                     r["tag_id"],
                     r["module_type"],
+                    r["species_scope"],
                     r.get("relevance_score", 0.0),
                     r.get("content_level", "title_only"),
                     r.get("risk_warning", ""),
@@ -2449,8 +2520,12 @@ class SQLiteStorageMixin:
             module_type = result.get("module_type")
             if module_type not in PERSISTED_MODULE_TYPES:
                 raise ValueError(
-                    "严格分类结果 module_type 必须是 policy 或 research"
+                    "严格分类结果 module_type 必须是 current_events 或 research"
                 )
+            if result.get("species_scope") not in {
+                "rice", "other_crop", "not_applicable"
+            }:
+                raise ValueError("严格分类结果 species_scope 无效")
             if (
                 source_type not in succeeded_by_type
                 or news_item_id not in succeeded_by_type[source_type]
@@ -2461,6 +2536,7 @@ class SQLiteStorageMixin:
                 source_type,
                 result.get("tag_id"),
                 module_type,
+                result.get("species_scope"),
             )
             if key in result_keys:
                 raise ValueError("分类结果包含重复 ID/tag")
@@ -2483,15 +2559,16 @@ class SQLiteStorageMixin:
             for result in results:
                 cursor.execute("""
                     INSERT INTO ai_filter_results
-                    (news_item_id, source_type, tag_id, module_type,
+                    (news_item_id, source_type, tag_id, module_type, species_scope,
                      relevance_score, content_level, risk_warning,
                      content_excerpt, importance_score, ai_summary, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     result["news_item_id"],
                     result.get("source_type", "hotlist"),
                     result["tag_id"],
                     result["module_type"],
+                    result["species_scope"],
                     result.get("relevance_score", 0.0),
                     result.get("content_level", "title_only"),
                     result.get("risk_warning", ""),
@@ -2525,7 +2602,7 @@ class SQLiteStorageMixin:
                     continue
                 placeholders = ",".join("?" * len(ids))
                 cursor.execute(
-                    f"SELECT news_item_id, source_type, tag_id, module_type "
+                    f"SELECT news_item_id, source_type, tag_id, module_type, species_scope "
                     f"FROM ai_filter_results WHERE status = 'active' "
                     f"AND source_type = ? AND news_item_id IN ({placeholders}) "
                     f"AND tag_id IN (SELECT id FROM ai_filter_tags "
@@ -2582,6 +2659,7 @@ class SQLiteStorageMixin:
             cursor.execute("""
                 SELECT
                     r.news_item_id, r.source_type, r.tag_id, r.module_type,
+                    r.species_scope,
                     r.relevance_score, r.content_level, r.risk_warning,
                     t.tag, t.description as tag_description, t.priority,
                     n.title, n.platform_id as source_id, p.name as source_name,
@@ -2607,20 +2685,21 @@ class SQLiteStorageMixin:
                 results.append({
                     "news_item_id": row[0], "source_type": row[1],
                     "tag_id": row[2], "module_type": row[3],
-                    "relevance_score": row[4],
-                    "content_level": row[5] or "title_only",
-                    "risk_warning": row[6] or "",
-                    "tag": row[7], "tag_description": row[8],
-                    "tag_priority": row[9],
-                    "title": row[10], "source_id": row[11],
-                    "source_name": row[12] or row[11],
-                    "url": row[13] or "", "mobile_url": row[14] or "",
-                    "rank": row[15],
-                    "first_time": row[16], "last_time": row[17],
-                    "count": row[18],
-                    "content_excerpt": row[19] or "",
-                    "importance_score": row[20] or 0.0,
-                    "ai_summary": row[21] or "",
+                    "species_scope": row[4],
+                    "relevance_score": row[5],
+                    "content_level": row[6] or "title_only",
+                    "risk_warning": row[7] or "",
+                    "tag": row[8], "tag_description": row[9],
+                    "tag_priority": row[10],
+                    "title": row[11], "source_id": row[12],
+                    "source_name": row[13] or row[12],
+                    "url": row[14] or "", "mobile_url": row[15] or "",
+                    "rank": row[16],
+                    "first_time": row[17], "last_time": row[18],
+                    "count": row[19],
+                    "content_excerpt": row[20] or "",
+                    "importance_score": row[21] or 0.0,
+                    "ai_summary": row[22] or "",
                 })
                 hotlist_news_ids.append(row[0])
 
@@ -2669,6 +2748,7 @@ class SQLiteStorageMixin:
                 # 从 news 库获取 rss 类型的分类结果 ID
                 cursor.execute("""
                     SELECT r.news_item_id, r.tag_id, r.module_type,
+                           r.species_scope,
                            r.relevance_score, r.content_level, r.risk_warning,
                            t.tag, t.description, t.priority,
                            r.content_excerpt, r.importance_score, r.ai_summary
@@ -2708,15 +2788,16 @@ class SQLiteStorageMixin:
                                 "source_type": "rss",
                                 "tag_id": fr_row[1],
                                 "module_type": fr_row[2],
-                                "relevance_score": fr_row[3],
-                                "content_level": fr_row[4] or "title_only",
-                                "risk_warning": fr_row[5] or "",
-                                "tag": fr_row[6],
-                                "tag_description": fr_row[7],
-                                "tag_priority": fr_row[8],
-                                "content_excerpt": fr_row[9] or "",
-                                "importance_score": fr_row[10] or 0.0,
-                                "ai_summary": fr_row[11] or "",
+                                "species_scope": fr_row[3],
+                                "relevance_score": fr_row[4],
+                                "content_level": fr_row[5] or "title_only",
+                                "risk_warning": fr_row[6] or "",
+                                "tag": fr_row[7],
+                                "tag_description": fr_row[8],
+                                "tag_priority": fr_row[9],
+                                "content_excerpt": fr_row[10] or "",
+                                "importance_score": fr_row[11] or 0.0,
+                                "ai_summary": fr_row[12] or "",
                                 "title": info[1],
                                 "source_id": info[2],
                                 "source_name": info[3] or info[2],
