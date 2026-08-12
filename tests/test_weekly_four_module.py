@@ -146,6 +146,7 @@ class WeeklyFourModuleContractTests(unittest.TestCase):
             self.assertIn(evidence, html)
         for item in (policy, industry, research):
             self.assertEqual(html.count(item["url"]), 1)
+        self.assertIn("摘要依据：基于正文", html)
         self.assertIn("来源采集状态", html)
         self.assertIn("blocked-source", html)
 

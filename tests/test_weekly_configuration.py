@@ -160,17 +160,20 @@ class WeeklyConfigurationTests(unittest.TestCase):
 
         docs = {
             "README.md": (
-                "周二至周日", "上一自然周", "三个独立模块", "政策动态最多 20 条",
-                "科研进展最多 20 条", "气象", "独立", "0.5", "一个 PDF",
+                "周二至周日", "上一自然周", "四个独立模块", "水稻育种政策最多 20 条",
+                "水稻产业时事动态最多 20 条", "农业育种科研文献最多 20 条",
+                "气象", "独立", "0.5", "一个 PDF",
             ),
             "README-EN.md": (
                 "Tuesday through Sunday", "previous natural week",
-                "exactly three independent modules", "Policy: up to 20",
-                "Research: up to 20", "weather", "0.5", "one PDF",
+                "four independent modules", "Rice breeding policy",
+                "Rice industry current affairs", "Breeding research",
+                "weather", "0.5", "one PDF",
             ),
             "docs/news-push-technical-implementation.md": (
-                "周二至周日", "上一自然周", "三个独立模块", "政策动态最多 20 条",
-                "科研进展最多 20 条", "气象", "独立", "0.5", "一个 PDF",
+                "周二至周日", "上一自然周", "四个独立模块", "政策动态最多 20 条",
+                "水稻产业动态最多 20 条", "科研进展最多 20 条",
+                "气象", "独立", "0.5", "一个 PDF",
             ),
         }
         for filename, required in docs.items():

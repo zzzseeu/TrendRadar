@@ -37,7 +37,7 @@ def _item(module_type, index, **overrides):
     return item
 
 
-class WeeklyThreeModuleSelectionTests(unittest.TestCase):
+class WeeklyModuleSelectionCompatibilityTests(unittest.TestCase):
     @staticmethod
     def _weekly_pipeline(*, max_news=0):
         tz = pytz.timezone("Asia/Shanghai")
@@ -209,7 +209,7 @@ class WeeklyThreeModuleSelectionTests(unittest.TestCase):
             {"policy", "research"},
         )
 
-    def test_ai_prompt_requests_three_grounded_sections_without_carrier_blacklist(self):
+    def test_ai_prompt_requests_four_grounded_sections_without_carrier_blacklist(self):
         prompt = (
             Path(__file__).resolve().parents[1] / "config" / "ai_analysis_prompt.txt"
         ).read_text(encoding="utf-8")

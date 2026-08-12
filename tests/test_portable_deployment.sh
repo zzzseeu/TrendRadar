@@ -105,8 +105,8 @@ assert_contains "${TECHNICAL_DOC}" 'PDFINFO_BIN'
 assert_contains "${TECHNICAL_DOC}" 'PDFTOTEXT_BIN'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'AI_API_KEY='
 assert_contains "${CONFIG}" '  api_key: ""'
-assert_contains "${CONFIG}" '  model: "openai//data/minimax-2.5-fp8"'
-assert_contains "${CONFIG}" '  fallback_models: ["openai//models/DeepSeek-R1-G2-static"]'
+assert_contains "${CONFIG}" '  model: "openai/deepseek-v4-flash"'
+assert_contains "${CONFIG}" '  fallback_models: ["openai/deepseek-v4-pro"]'
 
 if grep -Eq '^(WEWORK_WEBHOOK_URL|AI_API_KEY|EMAIL_PASSWORD|S3_SECRET_ACCESS_KEY)=.+' \
     "${DOCKER_ENV_EXAMPLE}"; then

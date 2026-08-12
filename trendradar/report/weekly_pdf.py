@@ -89,11 +89,17 @@ def _render_news_card(
     module_rank = _module_rank(item.get("module_rank"))
     evidence_id = f"[{module_type}:{module_rank}]"
     primary_topic = primary_weekly_topic(item)
+    evidence_label = {
+        "full_text": "基于正文",
+        "summary": "基于摘要",
+        "title_only": "仅基于标题",
+    }.get(str(item.get("content_level") or "title_only"), "仅基于标题")
     return (
         '<article class="news-card">'
         f'<h3>{marker}{title}</h3>'
         f'<p class="evidence-meta">模块排名：{module_rank}　'
-        f'证据ID：{_text(evidence_id)}　主主题：{_text(primary_topic)}</p>'
+        f'证据ID：{_text(evidence_id)}　主主题：{_text(primary_topic)}　'
+        f'摘要依据：{_text(evidence_label)}</p>'
         f'<p class="meta">来源：{source}　发布时间：{published_at}</p>'
         f'{summary_html}{links_html}'
         '</article>'
