@@ -103,6 +103,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
             ai_analysis=SimpleNamespace(
                 success=True,
                 policy_trends="政策趋势分析 [policy:1]",
+                industry_trends="产业趋势分析 [industry:none]",
                 research_trends="科研趋势分析 [research:1]",
                 weather_risks="气象风险分析 [weather:official]",
             ),
@@ -164,6 +165,7 @@ class WeeklyPdfReportTests(unittest.TestCase):
         analysis = SimpleNamespace(
             success=True,
             policy_trends="政策判断 [policy:1] [policy:2]",
+            industry_trends="产业判断 [industry:none]",
             research_trends="科研判断 [research:1] [research:2]",
             weather_risks="气象判断 [weather:official]",
         )
@@ -651,6 +653,7 @@ class WeeklyPdfGenerationValidationTests(unittest.TestCase):
             research_items=module_items("科研"),
             ai_analysis=SimpleNamespace(
                 success=True, policy_trends="政策趋势 [policy:1]",
+                industry_trends="产业暂无 [industry:none]",
                 research_trends="科研趋势 [research:1]",
                 weather_risks="暂无气象证据",
             ),
@@ -806,6 +809,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
             success=True,
             error="",
             policy_trends="政策暂无 [policy:none]",
+            industry_trends="产业暂无 [industry:none]",
             research_trends="科研趋势 [research:1]",
             weather_risks="气象风险 [weather:official]",
         ))
@@ -874,6 +878,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
                     SimpleNamespace(
                         success=True,
                         policy_trends="政策趋势 [policy:1]",
+                        industry_trends="产业暂无 [industry:none]",
                         research_trends="科研趋势 [research:1]",
                         weather_risks="气象风险 [weather:official]",
                     ),
@@ -949,6 +954,7 @@ class WeeklyPdfAnalyzerIntegrationTests(unittest.TestCase):
                 SimpleNamespace(
                     success=True,
                     policy_trends="政策暂无 [policy:none]",
+                    industry_trends="产业暂无 [industry:none]",
                     research_trends="科研暂无 [research:none]",
                     weather_risks="气象风险 [weather:official]",
                 ),

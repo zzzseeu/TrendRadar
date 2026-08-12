@@ -214,7 +214,10 @@ class WeeklyThreeModuleSelectionTests(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "config" / "ai_analysis_prompt.txt"
         ).read_text(encoding="utf-8")
 
-        for field in ("policy_trends", "research_trends", "weather_risks"):
+        for field in (
+            "policy_trends", "industry_trends", "research_trends",
+            "weather_risks",
+        ):
             self.assertIn(field, prompt)
         self.assertIn("会议", prompt)
         self.assertIn("调研", prompt)

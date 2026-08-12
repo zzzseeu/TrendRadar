@@ -1,9 +1,13 @@
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from trendradar.ai.analyzer import AIAnalysisResult, has_required_narrative
 from trendradar.ai.filter import AIFilter
-from trendradar.core.weekly import select_weekly_modules
+from trendradar.core.weekly import WeeklyRSSAggregator, select_weekly_modules
+from trendradar.report.weekly_pdf import render_weekly_pdf_html
+from trendradar.storage.base import RSSData, RSSItem
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +99,107 @@ class WeeklyFourModuleContractTests(unittest.TestCase):
             "rice", "other_crop", "not_applicable", "species_scope",
         ):
             self.assertIn(token, prompt)
+
+    def test_weekly_narrative_requires_industry_section(self):
+        result = AIAnalysisResult(
+            success=True,
+            policy_trends="政策判断 [policy:1]",
+            research_trends="科研判断 [research:1]",
+            weather_risks="气象判断 [weather:official]",
+        )
+        self.assertFalse(has_required_narrative(result, report_mode="weekly"))
+        result.industry_trends = "产业判断 [industry:1]"
+        self.assertTrue(has_required_narrative(result, report_mode="weekly"))
+
+    def test_pdf_renders_three_news_modules_and_weather_once(self):
+        policy = _item("policy", "rice", 1, module_rank=1,
+                       ai_summary="政策正文总结")
+        industry = _item("industry", "rice", 2, module_rank=1,
+                         ai_summary="产业正文总结")
+        research = _item("research", "rice", 3, module_rank=1,
+                         ai_summary="科研正文总结")
+        analysis = AIAnalysisResult(
+            success=True,
+            policy_trends="政策判断 [policy:1]",
+            industry_trends="产业判断 [industry:1]",
+            research_trends="科研判断 [research:1]",
+            weather_risks="气象判断 [weather:official]",
+        )
+        weather = SimpleNamespace(
+            title="全国农业气象周报", impact="影响", outlook="展望",
+            recommendations="建议", source_url="https://example.org/weather",
+            risk_regions=("长江中下游",), risk_crops=("水稻",),
+        )
+
+        html = render_weekly_pdf_html(
+            policy_items=[policy], industry_items=[industry],
+            research_items=[research], ai_analysis=analysis,
+            agro_weather=weather, period_label="2026-08-03—2026-08-09",
+            generated_at=__import__("datetime").datetime(2026, 8, 10, 10),
+            missing_dates=["2026-08-04"],
+            failed_sources={"2026-08-05": ["blocked-source"]},
+        )
+
+        for heading in ("一、政策动态", "二、水稻产业时事动态", "三、科研进展", "四、农业气象与灾害风险"):
+            self.assertIn(heading, html)
+        for evidence in ("[policy:1]", "[industry:1]", "[research:1]", "[weather:official]"):
+            self.assertIn(evidence, html)
+        for item in (policy, industry, research):
+            self.assertEqual(html.count(item["url"]), 1)
+        self.assertIn("来源采集状态", html)
+        self.assertIn("blocked-source", html)
+
+    def test_weekly_snapshot_keeps_partial_data_and_records_source_failures(self):
+        from unittest.mock import MagicMock
+        import pytz
+
+        storage = MagicMock()
+        available = RSSData(
+            date="2026-08-05", crawl_time="2026-08-05 10:00:00",
+            items={"journal": [RSSItem(
+                title="Rice paper", feed_id="journal", feed_name="Journal",
+                url="https://example.org/rice-paper",
+                published_at="2026-08-05T08:00:00+08:00",
+            )]}, id_to_name={"journal": "Journal"},
+            failed_ids=["blocked-source"],
+        )
+        empty = RSSData(
+            date="", crawl_time="10:00", items={},
+            id_to_name={"journal": "Journal"}, failed_ids=[],
+        )
+        storage.get_rss_data_strict.side_effect = lambda day: (
+            available if day == "2026-08-05" else
+            RSSData(**{**empty.__dict__, "date": day})
+        )
+        storage.save_rss_data.return_value = True
+        storage.get_all_rss_ids_strict.return_value = [{
+            "id": 9, "source_id": "journal", "source_name": "Journal",
+            "title": "Rice paper", "url": "https://example.org/rice-paper",
+        }]
+
+        snapshot = WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
+            pytz.timezone("Asia/Shanghai").localize(
+                __import__("datetime").datetime(2026, 8, 10, 10)
+            )
+        )
+
+        self.assertEqual(snapshot.failed_sources, {
+            "2026-08-05": ["blocked-source"]
+        })
+        self.assertEqual([item.title for item in snapshot.iter_items()], ["Rice paper"])
+
+    def test_weekly_snapshot_rejects_when_every_source_is_unavailable(self):
+        from unittest.mock import MagicMock
+        import pytz
+
+        storage = MagicMock()
+        storage.get_rss_data_strict.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "没有任何可用来源"):
+            WeeklyRSSAggregator(storage, "Asia/Shanghai").build(
+                pytz.timezone("Asia/Shanghai").localize(
+                    __import__("datetime").datetime(2026, 8, 10, 10)
+                )
+            )
 
 
 if __name__ == "__main__":

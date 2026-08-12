@@ -256,19 +256,20 @@ class WeeklyRSSAggregator:
         total_read = 0
         filtered_out = 0
         duplicate_count = 0
+        available_source_observations = 0
 
         for date in window.storage_dates:
             daily_data = self.storage.get_rss_data_strict(date)
             if daily_data is None:
-                raise RuntimeError(
-                    f"周快照构建失败：RSS 日库缺失或没有抓取记录: {date}"
-                )
+                missing_dates.append(date)
+                continue
 
             if daily_data.failed_ids:
-                failed = ", ".join(sorted(daily_data.failed_ids))
-                raise RuntimeError(
-                    f"周快照构建失败：{date} RSS 来源失败: {failed}"
-                )
+                failed_sources[date] = sorted(set(daily_data.failed_ids))
+
+            available_source_observations += len(
+                set(daily_data.id_to_name) - set(daily_data.failed_ids)
+            )
 
             for feed_id, name in daily_data.id_to_name.items():
                 if name:
@@ -335,6 +336,11 @@ class WeeklyRSSAggregator:
                         candidate.pre_hot_score or 0.0,
                     )
                     merged.search_providers = ",".join(sorted(providers))
+
+        if available_source_observations == 0:
+            raise RuntimeError(
+                "周快照构建失败：统计窗口内没有任何可用来源"
+            )
 
         snapshot = WeeklyRSSSnapshot(
             window=window,

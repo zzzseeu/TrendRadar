@@ -40,11 +40,13 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
         result = analyzer._parse_response(json.dumps({
             "policy_trends": "政策事实与来源标题",
+            "industry_trends": "产业动态与来源标题",
             "research_trends": ["科研进展", "证据为摘要"],
             "weather_risks": "官方气象风险与建议",
         }, ensure_ascii=False))
 
         self.assertEqual(result.policy_trends, "政策事实与来源标题")
+        self.assertEqual(result.industry_trends, "产业动态与来源标题")
         self.assertEqual(result.research_trends, "科研进展\n证据为摘要")
         self.assertEqual(result.weather_risks, "官方气象风险与建议")
 
@@ -53,6 +55,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
 
         for field, invalid in (
             ("policy_trends", {"summary": "不接受对象"}),
+            ("industry_trends", {"summary": "不接受对象"}),
             ("research_trends", 42),
             ("weather_risks", True),
         ):
@@ -61,13 +64,14 @@ class AIAnalyzerResponseTests(unittest.TestCase):
                 self.assertFalse(result.success)
                 self.assertIn(field, result.error)
 
-    def test_weekly_requires_all_three_narratives_but_current_is_compatible(self):
+    def test_weekly_requires_all_four_narratives_but_current_is_compatible(self):
         ordinary = AIAnalysisResult(success=True, core_trends="普通摘要")
         self.assertTrue(has_required_narrative(ordinary, report_mode="current"))
 
         complete = AIAnalysisResult(
             success=True,
             policy_trends="政策事实可追溯",
+            industry_trends="产业事实可追溯",
             research_trends="科研事实可追溯",
             weather_risks="气象事实可追溯",
         )
@@ -90,7 +94,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         analyzer.include_standalone = False
         analyzer.grounding_review_enabled = True
         analyzer.language = "Chinese"
-        analyzer.system_prompt = "分别输出政策、科研与气象叙事"
+        analyzer.system_prompt = "分别输出政策、产业、科研与气象叙事"
         analyzer.user_prompt_template = (
             "{report_mode}\n{rss_content}\n官方气象证据：\n{weather_content}\n"
             "{report_type}{current_time}{news_count}{rss_count}{platforms}"
@@ -101,6 +105,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
     def test_weekly_prompt_serializes_modules_ranks_evidence_and_weather(self):
         response = json.dumps({
             "policy_trends": "政策趋势仅据「政策原文」 [policy:1]",
+            "industry_trends": "产业趋势仅据「产业原文」 [industry:1]",
             "research_trends": "科研趋势仅据「科研摘要」 [research:1]",
             "weather_risks": "气象风险仅据中央气象台周报 [weather:official]",
         }, ensure_ascii=False)
@@ -131,6 +136,14 @@ class AIAnalyzerResponseTests(unittest.TestCase):
                 "word": "周报",
                 "titles": [
                     {
+                        "title": "产业原文",
+                        "source_name": "行业机构",
+                        "module_type": "industry",
+                        "module_rank": 1,
+                        "content_level": "summary",
+                        "content_excerpt": "水稻订单生产增加",
+                    },
+                    {
                         "title": "政策原文",
                         "source_name": "部委",
                         "module_type": "policy",
@@ -160,6 +173,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
         self.assertIn("模块内排名：1", first_prompt)
         self.assertIn("证据内容：支持育种创新平台建设", first_prompt)
         self.assertIn("模块：research", first_prompt)
+        self.assertIn("模块：industry", first_prompt)
         self.assertIn("热榜政策证据", first_prompt)
         self.assertIn("证据ID：[policy:1]", first_prompt)
         self.assertIn("证据ID：[research:1]", first_prompt)
@@ -187,11 +201,13 @@ class AIAnalyzerResponseTests(unittest.TestCase):
     def test_weekly_grounding_that_drops_a_required_section_fails(self):
         draft = json.dumps({
             "policy_trends": "有证据的政策事实 [policy:1]",
+            "industry_trends": "本期无产业证据 [industry:none]",
             "research_trends": "有证据的科研事实 [research:1]",
             "weather_risks": "有证据的气象事实 [weather:official]",
         }, ensure_ascii=False)
         reviewed = json.dumps({
             "policy_trends": "",
+            "industry_trends": "本期无产业证据 [industry:none]",
             "research_trends": "有证据的科研事实 [research:1]",
             "weather_risks": "有证据的气象事实 [weather:official]",
         }, ensure_ascii=False)
@@ -226,6 +242,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
     def test_weekly_rejects_unknown_or_cross_module_grounding_citations(self):
         draft = json.dumps({
             "policy_trends": "政策事实 [policy:1]",
+            "industry_trends": "产业暂无 [industry:none]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)
@@ -242,6 +259,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
             with self.subTest(override=override):
                 reviewed = {
                     "policy_trends": "政策事实 [policy:1]",
+                    "industry_trends": "产业暂无 [industry:none]",
                     "research_trends": "科研事实 [research:1]",
                     "weather_risks": "气象事实 [weather:official]",
                     **override,
@@ -269,11 +287,13 @@ class AIAnalyzerResponseTests(unittest.TestCase):
     def test_weekly_rejects_invalid_draft_citation_without_grounding_call(self):
         invalid_draft = json.dumps({
             "policy_trends": "虚构政策 [policy:99]",
+            "industry_trends": "产业暂无 [industry:none]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)
         legal_review_that_must_not_be_used = json.dumps({
             "policy_trends": "政策事实 [policy:1]",
+            "industry_trends": "产业暂无 [industry:none]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)
@@ -303,6 +323,7 @@ class AIAnalyzerResponseTests(unittest.TestCase):
     def test_weekly_forces_selected_rss_evidence_when_include_rss_is_false(self):
         response = json.dumps({
             "policy_trends": "政策事实 [policy:1]",
+            "industry_trends": "产业暂无 [industry:none]",
             "research_trends": "科研事实 [research:1]",
             "weather_risks": "气象事实 [weather:official]",
         }, ensure_ascii=False)

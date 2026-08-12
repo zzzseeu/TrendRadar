@@ -845,23 +845,21 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
         analyzer._process_rss_data_by_mode.assert_not_called()
 
     @patch("trendradar.crawler.rss.RSSFetcher")
-    def test_weekly_current_fixed_rss_failure_aborts_before_snapshot(
+    def test_weekly_current_fixed_rss_failure_is_persisted_and_snapshot_continues(
         self, fetcher_class
     ):
         analyzer = self._analyzer(enabled=False)
         analyzer.report_mode = "weekly"
         fetcher_class.return_value.fetch_all.return_value = self._fixed_rss_data()
 
-        with self.assertRaisesRegex(
-            RuntimeError, "周报 RSS 来源失败.*fixed-failure"
-        ):
-            analyzer._crawl_rss_data()
+        analyzer._crawl_rss_data()
 
-        analyzer._process_rss_data_by_mode.assert_not_called()
+        analyzer._process_rss_data_by_mode.assert_called_once()
+        self.assertIn("fixed-failure", analyzer.storage_manager.saved[0].failed_ids)
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")
-    def test_weekly_current_news_search_partial_failure_aborts_before_snapshot(
+    def test_weekly_current_news_search_partial_failure_is_persisted_and_continues(
         self, fetcher_class, search_class
     ):
         analyzer = self._analyzer(enabled=True)
@@ -874,12 +872,10 @@ class NewsSearchRSSFlowTests(unittest.TestCase):
             failed_providers=["gdelt"],
         )
 
-        with self.assertRaisesRegex(
-            RuntimeError, "周报新闻搜索来源失败.*gdelt"
-        ):
-            analyzer._crawl_rss_data()
+        analyzer._crawl_rss_data()
 
-        analyzer._process_rss_data_by_mode.assert_not_called()
+        analyzer._process_rss_data_by_mode.assert_called_once()
+        self.assertIn(SEARCH_FEED_ID, analyzer.storage_manager.saved[0].failed_ids)
 
     @patch("trendradar.__main__.AgriculturalNewsSearch")
     @patch("trendradar.crawler.rss.RSSFetcher")

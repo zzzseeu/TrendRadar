@@ -750,6 +750,7 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
             success=True,
             policy_trends="政策趋势",
+            industry_trends="产业动态",
             research_trends="科研趋势",
             weather_risks="气象风险",
         )
@@ -778,6 +779,7 @@ class DailyDeliveryScheduleTests(unittest.TestCase):
         analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
             success=False,
             policy_trends="政策趋势",
+            industry_trends="产业动态",
             research_trends="科研趋势",
             weather_risks="",
             error="严格分析缺少必要摘要内容",

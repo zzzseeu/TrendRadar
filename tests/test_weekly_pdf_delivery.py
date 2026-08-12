@@ -145,6 +145,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             policy_trends="政策暂无" if not any(
                 item["module_type"] == "policy" for item in selected_items
             ) else "政策趋势 [policy:1]",
+            industry_trends="产业暂无 [industry:none]",
             research_trends="科研暂无" if not any(
                 item["module_type"] == "research" for item in selected_items
             ) else "科研趋势 [research:1]",
@@ -309,6 +310,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
                 policy_trends="政策趋势 [policy:1]",
+                industry_trends="产业暂无 [industry:none]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )
@@ -507,6 +509,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
         analyzer._run_ai_analysis.return_value = AIAnalysisResult(
             success=True,
             policy_trends="政策暂无 [policy:none]",
+            industry_trends="产业暂无 [industry:none]",
             research_trends="科研暂无 [research:none]",
             weather_risks="",
         )
@@ -550,6 +553,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
                 policy_trends="政策暂无 [policy:none]",
+                industry_trends="产业暂无 [industry:none]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )
@@ -578,6 +582,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
                 policy_trends="政策暂无 [policy:none]",
+                industry_trends="产业暂无 [industry:none]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )
@@ -638,6 +643,7 @@ class WeeklyPdfMainlineTests(unittest.TestCase):
             analyzer_class.return_value.analyze.return_value = AIAnalysisResult(
                 success=True,
                 policy_trends="政策暂无 [policy:none]",
+                industry_trends="产业暂无 [industry:none]",
                 research_trends="科研暂无 [research:none]",
                 weather_risks="气象风险 [weather:official]",
             )

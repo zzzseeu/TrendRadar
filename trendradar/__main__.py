@@ -202,7 +202,8 @@ class NewsAnalyzer:
         self._weekly_pdf_path = None
         self._weekly_artifact_contract_expected = None
         self._weekly_ai_filter_succeeded = False
-        self._weekly_news_modules = WeeklyNewsSelection(policy=[], research=[])
+        self._weekly_news_modules = WeeklyNewsSelection()
+        self._weekly_source_status = {"missing_dates": [], "failed_sources": {}}
         # A single run owns one immutable clock snapshot.  Strict storage keys,
         # delivery windows and scheduler decisions must never straddle midnight.
         self._run_at = None
@@ -1204,9 +1205,7 @@ class NewsAnalyzer:
                 self._freeze_weekly_artifact_contract()
             )
             self._weekly_ai_filter_succeeded = False
-            self._weekly_news_modules = WeeklyNewsSelection(
-                policy=[], research=[]
-            )
+            self._weekly_news_modules = WeeklyNewsSelection()
 
         strict_operation_date = None
         if mode == "daily_delivery":
@@ -1354,7 +1353,7 @@ class NewsAnalyzer:
             or not has_required_narrative(ai_result, report_mode="weekly")
         ):
             error = ai_result.error if ai_result is not None else "未执行 AI 分析"
-            raise RuntimeError(f"周报 AI 三段叙事失败: {error}")
+            raise RuntimeError(f"周报 AI 四段叙事失败: {error}")
 
         # 翻译 RSS 和独立展示区内容（如果启用）— 在 HTML 生成前执行，确保网页版也能展示翻译内容
         # standalone_data 在此翻译一次后贯穿到推送阶段复用，避免重复翻译并保证网页与推送译文一致
@@ -1476,6 +1475,7 @@ class NewsAnalyzer:
         grouped: dict[str, list[dict]] = {}
         for item in (
             self._weekly_news_modules.policy
+            + self._weekly_news_modules.industry
             + self._weekly_news_modules.research
         ):
             topic = primary_weekly_topic(item)
@@ -1497,7 +1497,9 @@ class NewsAnalyzer:
             raise RuntimeError(
                 "周报缺少显式 WeeklyNewsSelection，已拒绝生成 PDF"
             )
-        selected_news = [*modules.policy, *modules.research]
+        selected_news = [
+            *modules.policy, *modules.industry, *modules.research
+        ]
         weather = self._agro_weather_report
         if not selected_news and weather is None:
             raise RuntimeError("周报没有入选新闻和农业气象报告，无法生成 PDF")
@@ -1510,7 +1512,7 @@ class NewsAnalyzer:
             or not ai_result.success
             or not has_required_narrative(ai_result, report_mode="weekly")
         ):
-            raise RuntimeError("周报缺少成功且完整的 AI 三段叙事，无法生成 PDF")
+            raise RuntimeError("周报缺少成功且完整的 AI 四段叙事，无法生成 PDF")
 
         window = self._rss_window
         if window is None:
@@ -1519,11 +1521,18 @@ class NewsAnalyzer:
             )
         html = render_weekly_pdf_html(
             policy_items=modules.policy,
+            industry_items=modules.industry,
             research_items=modules.research,
             ai_analysis=ai_result,
             agro_weather=weather,
             period_label=window.label,
             generated_at=self._operation_run_at(),
+            missing_dates=getattr(
+                self, "_weekly_source_status", {}
+            ).get("missing_dates", []),
+            failed_sources=getattr(
+                self, "_weekly_source_status", {}
+            ).get("failed_sources", {}),
         )
         pdf_path = build_weekly_pdf(
             "output", window.start.date(), window.end.date(), html
@@ -1954,10 +1963,10 @@ class NewsAnalyzer:
             if self.storage_manager.save_rss_data(rss_data):
                 print(f"[RSS] 数据已保存到存储后端")
 
-                if search_failure:
+                if search_failure and self.report_mode == "daily_delivery":
                     raise RuntimeError(search_failure)
                 if (
-                    self._is_strict_delivery_mode(self.report_mode)
+                    self.report_mode == "daily_delivery"
                     and rss_data.failed_ids
                 ):
                     failed = ", ".join(rss_data.failed_ids)
@@ -2078,6 +2087,10 @@ class NewsAnalyzer:
             snapshot = WeeklyRSSAggregator(
                 self.storage_manager, self.ctx.timezone,
             ).build(self._operation_run_at())
+            self._weekly_source_status = {
+                "missing_dates": list(snapshot.missing_dates),
+                "failed_sources": dict(snapshot.failed_sources),
+            }
             self._rss_window = snapshot.window
             self._allowed_rss_ids = snapshot.allowed_rss_ids
             self._rss_ids_authoritative = True
