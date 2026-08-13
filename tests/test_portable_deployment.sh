@@ -68,7 +68,7 @@ assert_equal "${active_cron_times}" '0 10 * * *
 0 11 * * 1
 30 11 * * 1
 0 12 * * 1'
-assert_equal "${forced_cron_count}" '4'
+assert_equal "${forced_cron_count}" '0'
 assert_contains "${SCHEDULER}" '每天 10:00'
 assert_contains "${COMPOSE}" 'dockerfile: docker/Dockerfile'
 assert_contains "${COMPOSE}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-}'

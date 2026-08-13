@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +8,7 @@ import pytz
 
 from trendradar import __main__ as main_module
 from trendradar.__main__ import NewsAnalyzer
+from trendradar.ai.analyzer import AIAnalysisResult
 from trendradar.core.scheduler import Scheduler
 
 
@@ -161,6 +163,58 @@ class WeeklyCompatibilityTests(unittest.TestCase):
         scheduler.resolve.assert_called_once_with(
             run_at, force_period_key="monday_weekly"
         )
+
+    def test_manual_force_reanalyzes_despite_existing_analyze_checkpoint(self):
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = True
+        expected = AIAnalysisResult(
+            success=True,
+            current_events_trends="时事动态 [current_events:1]",
+            research_trends="科研进展 [research:1]",
+            weather_risks="气象影响 [weather:official]",
+        )
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.force_weekly = True
+        analyzer.ctx = SimpleNamespace(
+            config={
+                "AI": {},
+                "AI_ANALYSIS": {
+                    "ENABLED": True,
+                    "MODE": "follow_report",
+                },
+                "DEBUG": False,
+            },
+            create_scheduler=MagicMock(return_value=scheduler),
+        )
+        analyzer._delivery_checkpoint_date = MagicMock(
+            return_value="2026-08-10"
+        )
+        analyzer._operation_run_at = MagicMock(return_value=at(
+            2026, 8, 12, 15, 0
+        ))
+        analyzer._agro_weather_report = SimpleNamespace(title="气象周报")
+
+        with patch("trendradar.__main__.AIAnalyzer") as analyzer_class:
+            analyzer_class.return_value.analyze.return_value = expected
+            result = analyzer._run_ai_analysis(
+                [{"word": "育种"}],
+                [{"title": "水稻动态"}],
+                "weekly",
+                "自然周周报",
+                {},
+                schedule=schedule(),
+            )
+
+        self.assertIs(result, expected)
+        analyzer_class.return_value.analyze.assert_called_once()
+
+    def test_automatic_retry_crontab_never_uses_manual_force_flag(self):
+        crontab = (
+            Path(__file__).resolve().parents[1]
+            / "config" / "daily.crontab"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("--force-weekly", crontab)
 
     def test_scheduler_preset_resolves_weekly_and_collect_only_periods(self):
         for run_at, expected in (

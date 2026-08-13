@@ -325,6 +325,19 @@ class WeeklyScheduleTests(unittest.TestCase):
         analyzer._fetch_agro_weather.assert_not_called()
         analyzer._crawl_data.assert_not_called()
 
+    def test_manual_force_ignores_success_checkpoint_and_runs_full_pipeline(self):
+        analyzer, scheduler, _ = self.make_analyzer()
+        analyzer.force_weekly = True
+        scheduler.already_executed.return_value = True
+
+        self.assertTrue(analyzer.run())
+
+        analyzer._resume_weekly_pdf_delivery.assert_not_called()
+        analyzer._fetch_agro_weather.assert_called_once_with()
+        analyzer._crawl_data.assert_called_once_with()
+        analyzer._crawl_rss_data.assert_called_once_with()
+        analyzer._execute_mode_strategy.assert_called_once()
+
     def test_manual_weather_fetch_uses_weekly_window_end_anchor(self):
         run_at = pytz.timezone("Asia/Shanghai").localize(
             datetime(2026, 8, 12, 15, 0)

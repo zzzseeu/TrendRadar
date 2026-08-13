@@ -322,6 +322,14 @@ class NewsAnalyzer:
         self.interests_file = schedule.interests_file
         return schedule
 
+    def _is_manual_weekly_rerun(
+        self, schedule: Optional[ResolvedSchedule] = None
+    ) -> bool:
+        """Return whether this run is an explicit full weekly rerun."""
+        if not getattr(self, "force_weekly", False):
+            return False
+        return schedule is None or schedule.report_mode == "weekly"
+
     def _delivery_checkpoint_date(self, report_mode: str) -> str:
         """返回交付周期稳定的幂等键日期。"""
         if report_mode == "weekly":
@@ -531,7 +539,8 @@ class NewsAnalyzer:
         )
         scheduler = self.ctx.create_scheduler()
         if (
-            schedule.once_push
+            not self._is_manual_weekly_rerun(schedule)
+            and schedule.once_push
             and schedule.period_key
             and scheduler.already_executed(
                 schedule.period_key, "push", checkpoint_date
@@ -557,20 +566,26 @@ class NewsAnalyzer:
                 expected_contract_hash, pdf_digest, account_hash
             )
 
-        if not dispatcher.dispatch_weekly_pdf(
-            self._weekly_pdf_path,
-            self.proxy_url,
-            is_delivered=lambda account_hash: scheduler.already_executed(
-                schedule.period_key,
-                account_action(account_hash),
-                checkpoint_date,
-            ),
-            record_delivery=lambda account_hash: scheduler.record_execution(
-                schedule.period_key,
-                account_action(account_hash),
-                checkpoint_date,
-            ),
-        ):
+        if self._is_manual_weekly_rerun(schedule):
+            delivered = dispatcher.dispatch_weekly_pdf(
+                self._weekly_pdf_path, self.proxy_url
+            )
+        else:
+            delivered = dispatcher.dispatch_weekly_pdf(
+                self._weekly_pdf_path,
+                self.proxy_url,
+                is_delivered=lambda account_hash: scheduler.already_executed(
+                    schedule.period_key,
+                    account_action(account_hash),
+                    checkpoint_date,
+                ),
+                record_delivery=lambda account_hash: scheduler.record_execution(
+                    schedule.period_key,
+                    account_action(account_hash),
+                    checkpoint_date,
+                ),
+            )
+        if not delivered:
             return False
         return scheduler.record_execution(
             schedule.period_key, "push", checkpoint_date
@@ -582,6 +597,8 @@ class NewsAnalyzer:
         expected_contract_hash: str,
     ) -> Optional[bool]:
         """Resume a durable partial delivery without regenerating its PDF."""
+        if self._is_manual_weekly_rerun(schedule):
+            return None
         if not schedule.period_key:
             return None
         if (
@@ -804,7 +821,10 @@ class NewsAnalyzer:
             print("[AI] 调度器: 当前时间段不执行 AI 分析")
             return None
 
-        if schedule.once_analyze and schedule.period_key:
+        manual_weekly_rerun = self._is_manual_weekly_rerun(schedule)
+        if manual_weekly_rerun:
+            print("[AI] 手动强制周报：忽略已有分析检查点，重新分析")
+        elif schedule.once_analyze and schedule.period_key:
             scheduler = self.ctx.create_scheduler()
             date_str = self._delivery_checkpoint_date(mode)
             if scheduler.already_executed(schedule.period_key, "analyze", date_str):
@@ -2676,6 +2696,7 @@ class NewsAnalyzer:
             schedule = self._resolve_and_apply_schedule()
 
             if schedule.report_mode == "weekly":
+                manual_weekly_rerun = self._is_manual_weekly_rerun(schedule)
                 checkpoint_date = self._delivery_checkpoint_date("weekly")
                 attempt_lock = self._create_weekly_attempt_lock(checkpoint_date)
                 if not attempt_lock.acquire():
@@ -2684,7 +2705,8 @@ class NewsAnalyzer:
                 weekly_attempt_lock = attempt_lock
                 scheduler = self.ctx.create_scheduler()
                 if (
-                    schedule.once_push
+                    not manual_weekly_rerun
+                    and schedule.once_push
                     and schedule.period_key
                     and scheduler.already_executed(
                         schedule.period_key, "push", checkpoint_date
@@ -2692,14 +2714,20 @@ class NewsAnalyzer:
                 ):
                     print("[周报] 本周 PDF 已成功发送，跳过重试")
                     return True
+                if manual_weekly_rerun:
+                    print(
+                        "[周报] 手动强制执行：重新在线采集上一完整自然周、"
+                        "重建 PDF 并向全部账号发送"
+                    )
                 expected_contract_hash = (
                     self._freeze_weekly_artifact_contract()
                 )
-                resumed = self._resume_weekly_pdf_delivery(
-                    schedule, expected_contract_hash
-                )
-                if resumed is not None:
-                    return resumed
+                if not manual_weekly_rerun:
+                    resumed = self._resume_weekly_pdf_delivery(
+                        schedule, expected_contract_hash
+                    )
+                    if resumed is not None:
+                        return resumed
                 self._agro_weather_report = self._fetch_agro_weather()
                 if self._agro_weather_report is None:
                     raise RuntimeError("本期全国农业气象周报尚未发布")
@@ -2810,7 +2838,7 @@ def main():
         epilog="""
 调度状态命令:
   --show-schedule        显示当前调度状态（时间段、行为开关）
-  --force-weekly         只采集上一个完整自然周的候选并生成、推送周报
+  --force-weekly         忽略本周完成状态，重新采集上一自然周并再次推送
 诊断命令:
   --doctor               运行环境与配置体检
   --test-notification    发送测试通知到已配置渠道
@@ -2818,7 +2846,7 @@ def main():
 示例:
   python -m trendradar                    # 正常运行
   python -m trendradar --show-schedule    # 查看当前调度状态
-  python -m trendradar --force-weekly     # 只处理上一个完整自然周，不处理本周内容
+  python -m trendradar --force-weekly     # 重新采集上一自然周、重建 PDF 并再次发送
   python -m trendradar --doctor           # 运行一键体检
   python -m trendradar --test-notification # 测试通知渠道连通性
 """
@@ -2829,7 +2857,7 @@ def main():
     parser.add_argument(
         "--force-weekly",
         action="store_true",
-        help="只采集上一个完整自然周的候选并生成、推送农业周报",
+        help="忽略已有周期结果，重新采集上一自然周并再次推送农业周报",
     )
 
     args = parser.parse_args()

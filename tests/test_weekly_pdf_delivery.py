@@ -909,6 +909,45 @@ class WeeklyPdfDeliveryTests(unittest.TestCase):
             "monday_weekly", "push", "2026-08-10"
         )
 
+    def test_manual_force_sends_every_account_despite_existing_ledgers(self):
+        scheduler = MagicMock()
+        scheduler.already_executed.return_value = True
+        scheduler.record_execution.return_value = True
+        dispatcher = MagicMock()
+        dispatcher.dispatch_weekly_pdf.return_value = True
+        run_at = pytz.timezone("Asia/Shanghai").localize(
+            datetime(2026, 8, 12, 15, 0)
+        )
+        analyzer = NewsAnalyzer.__new__(NewsAnalyzer)
+        analyzer.ctx = SimpleNamespace(
+            create_notification_dispatcher=MagicMock(return_value=dispatcher),
+            create_scheduler=MagicMock(return_value=scheduler),
+            timezone="Asia/Shanghai",
+            config={},
+        )
+        analyzer.force_weekly = True
+        analyzer.proxy_url = ""
+        analyzer._run_at = run_at
+        analyzer._rss_window = previous_natural_week(
+            run_at, "Asia/Shanghai"
+        )
+        analyzer._weekly_pdf_path = str(self._pdf())
+        expected_contract = analyzer._weekly_artifact_contract_hash()
+
+        self.assertTrue(
+            analyzer._deliver_weekly_pdf(
+                self.schedule, expected_contract
+            )
+        )
+
+        dispatcher.dispatch_weekly_pdf.assert_called_once_with(
+            str(self._pdf()), ""
+        )
+        scheduler.already_executed.assert_not_called()
+        scheduler.record_execution.assert_called_once_with(
+            "monday_weekly", "push", "2026-08-10"
+        )
+
     def test_partial_account_retry_sends_only_the_failed_account(self):
         first_webhook = f"{WEBHOOK}-account-a"
         second_webhook = f"{WEBHOOK}-account-b"
