@@ -131,6 +131,8 @@ rss:
       - moa.gov.cn
       - cgiar.org
       - irri.org
+      - hainan.gov.cn
+      - sanya.gov.cn
     topics:
       - id: gene-editing
         zh: "作物 基因编辑 分子育种"
@@ -150,6 +152,9 @@ rss:
       - id: breeding-policy-implementation
         zh: "种业政策 会议部署 领导调研 行业倡议 企业响应"
         en: "seed policy implementation meeting deployment leadership inspection industry initiative enterprise response"
+      - id: nanfan-breeding
+        zh: "南繁 水稻 育种 制种 种业"
+        en: "Hainan Nanfan rice breeding seed industry"
 
   feeds:
     - id: "hacker-news"
