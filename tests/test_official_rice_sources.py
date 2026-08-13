@@ -152,6 +152,129 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
             "https://www.irri.org/news-and-events/news/rice-update",
         )
 
+    def test_nanfan_official_profiles_parse_real_list_structures(self):
+        cases = (
+            (
+                "hainan-nanfan-news",
+                "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/",
+                "https://example.gov.cn/nanfan-update",
+                "南繁育种创新取得新进展",
+                "海南省农业农村厅中国南繁",
+            ),
+            (
+                "sanya-agri-documents",
+                "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
+                "/nyjsite/bmwjxx/202608/abc.shtml",
+                "三亚市南繁小院建设方案",
+                "三亚市农业农村局",
+            ),
+            (
+                "sanya-agri-news",
+                "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
+                "/nyjsite/gzdt/202608/abc.shtml",
+                "三亚水稻育种工作取得新进展",
+                "三亚市农业农村局",
+            ),
+        )
+        html_by_feed = {
+            "hainan-nanfan-news": """
+                <ul><li>
+                  <a href="https://example.gov.cn/nanfan-update">南繁育种创新取得新进展</a>
+                  <span>2026-08-09</span>
+                </li></ul>
+            """,
+            "sanya-agri-documents": """
+                <div class="list-item">
+                  <a href="/nyjsite/bmwjxx/202608/abc.shtml" title="三亚市南繁小院建设方案">三亚市南繁小院建设方案</a>
+                  <span>发布日期：2026-08-09</span>
+                </div>
+            """,
+            "sanya-agri-news": """
+                <ul><li>
+                  <em>2026-08-09</em>
+                  <a href="/nyjsite/gzdt/202608/abc.shtml">三亚水稻育种工作取得新进展</a>
+                </li></ul>
+            """,
+        }
+
+        for feed_id, page_url, article_url, title, author in cases:
+            with self.subTest(feed_id=feed_id):
+                items = parse_web_news_html(html_by_feed[feed_id], feed_id, page_url)
+                self.assertEqual(len(items), 1)
+                self.assertEqual(items[0].title, title)
+                self.assertEqual(items[0].url, article_url)
+                self.assertEqual(items[0].published_at, "2026-08-09")
+                self.assertEqual(items[0].author, author)
+
+    def test_sanya_general_sections_keep_nanfan_terms_and_drop_unrelated_items(self):
+        accepted_titles = (
+            "国家南繁科研育种基地建设取得新进展",
+            "三亚种质资源平台投入使用",
+            "水稻新品种进入示范阶段",
+        )
+        unrelated_title = "三亚开展海洋牧场建后管护工作"
+        sources = (
+            (
+                "sanya-agri-documents",
+                "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
+                "/nyjsite/bmwjxx/202608/abc.shtml",
+                lambda title: f"""
+                    <div class=\"list-item\">
+                      <a href=\"/nyjsite/bmwjxx/202608/abc.shtml\" title=\"{title}\">{title}</a>
+                      <span>发布日期：2026-08-09</span>
+                    </div>
+                """,
+            ),
+            (
+                "sanya-agri-news",
+                "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
+                "/nyjsite/gzdt/202608/abc.shtml",
+                lambda title: f"""
+                    <ul><li><em>2026-08-09</em>
+                      <a href=\"/nyjsite/gzdt/202608/abc.shtml\">{title}</a>
+                    </li></ul>
+                """,
+            ),
+        )
+
+        for feed_id, page_url, article_url, list_html in sources:
+            for title in accepted_titles:
+                with self.subTest(feed_id=feed_id, title=title):
+                    items = parse_web_news_html(list_html(title), feed_id, page_url)
+                    self.assertEqual(len(items), 1)
+                    self.assertEqual(items[0].title, title)
+                    self.assertEqual(items[0].url, article_url)
+
+            with self.subTest(feed_id=feed_id, title=unrelated_title):
+                with self.assertRaisesRegex(ValueError, "未找到新闻条目"):
+                    parse_web_news_html(
+                        list_html(unrelated_title), feed_id, page_url
+                    )
+
+    def test_nanfan_official_sources_are_enabled_in_both_configs(self):
+        expected = {
+            "hainan-nanfan-news": "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/",
+            "sanya-agri-documents": "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
+            "sanya-agri-news": "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
+        }
+        config_dir = Path(__file__).resolve().parents[1] / "config"
+
+        for filename in ("config.yaml", "config.en.yaml"):
+            config = yaml.safe_load(
+                (config_dir / filename).read_text(encoding="utf-8")
+            )
+            for feed_id, url in expected.items():
+                with self.subTest(filename=filename, feed_id=feed_id):
+                    matches = [
+                        feed for feed in config["rss"]["feeds"]
+                        if feed["id"] == feed_id
+                    ]
+                    self.assertEqual(len(matches), 1)
+                    feed = matches[0]
+                    self.assertEqual(feed["url"], url)
+                    self.assertEqual(feed["source_type"], "web_news")
+                    self.assertTrue(feed.get("enabled", True))
+
 
 class OfficialDocumentSourceTests(unittest.TestCase):
     def test_amis_and_maff_extract_dated_official_documents(self):
