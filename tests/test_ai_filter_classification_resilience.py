@@ -18,14 +18,15 @@ class ClassificationResponseResilienceTests(unittest.TestCase):
             "title": "木豆端粒到端粒基因组完成",
             "content": "木豆端粒到端粒基因组完成",
             "content_level": "title_only",
+            "module_type": "research",
         }]
         self.tags = [{"id": 18, "tag": "其他作物育种", "description": "其他作物育种进展"}]
 
     def test_valid_match_uses_zero_temperature(self):
         self.ai_filter.client.chat.return_value = (
-            '{"items":[{"id":1,"module_type":"research","tag_id":1,'
-            '"score":0.82,"importance_score":0.78,'
-            '"summary":"仅标题显示：木豆基因组完成"}]}'
+            '{"items":[{"id":1,"include":true,"species_scope":"other_crop",'
+            '"tag_id":1,"score":0.82,"importance_score":0.78,'
+            '"summary":"仅标题显示：木豆基因组完成。"}]}'
         )
         result = self.ai_filter.classify_batch(self.titles, self.tags, "育种")
         self.assertEqual(result[0]["news_item_id"], 1)
@@ -61,6 +62,7 @@ class ClassificationPipelineRetryTests(unittest.TestCase):
         pipeline._content_config = {"ENABLED": False}
         pipeline._rss_use_proxy = False
         pipeline._rss_proxy_url = ""
+        pipeline._rss_feeds = []
         pipeline._enrich_pending_items = Mock(side_effect=lambda items, _label: items)
         ai_filter = Mock()
         ai_filter.classify_batch.return_value = None

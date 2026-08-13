@@ -656,7 +656,7 @@ class DailyDeliveryStrictClassificationProtocolTests(unittest.TestCase):
                 "id": 1, "include": True, "species_scope": "rice",
                 "tag_id": 1,
                 "score": 0.82, "importance_score": 0.78,
-                "summary": "第一条新闻的证据摘要",
+                "summary": "第一条新闻的证据摘要。",
             },
             {
                 "id": 2, "include": False,

@@ -71,9 +71,9 @@ class AIFilterModuleContractTests(unittest.TestCase):
         tags = [{"id": 11, "tag": "政策"}, {"id": 12, "tag": "科研"}]
         response = json.dumps([
             {"id": 1, "include": True, "species_scope": "rice", "tag_id": 11,
-             "score": 0.50, "importance_score": 0.80, "summary": "政策部署"},
+             "score": 0.50, "importance_score": 0.80, "summary": "政策部署。"},
             {"id": 2, "include": True, "species_scope": "rice", "tag_id": 12,
-             "score": 0.49, "importance_score": 0.90, "summary": "科研成果"},
+             "score": 0.49, "importance_score": 0.90, "summary": "科研成果。"},
             {"id": 3, "include": False, "species_scope": "not_applicable",
              "score": 0.10, "importance_score": 0.10, "summary": "内容无关"},
         ])
@@ -94,7 +94,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         tags = [{"id": 11, "tag": "政策"}]
         valid = {
             "id": 1, "include": True, "species_scope": "rice", "tag_id": 11,
-            "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
+            "score": 0.5, "importance_score": 0.8, "summary": "政策部署。",
         }
         cases = {
             "missing_id": [valid],
@@ -137,7 +137,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         tags = [{"id": 11, "tag": "政策"}]
         valid = {
             "id": 1, "include": True, "species_scope": "rice", "tag_id": 11,
-            "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
+            "score": 0.5, "importance_score": 0.8, "summary": "政策部署。",
         }
         for module_type in ([], {}):
             with self.subTest(module_type=module_type):
@@ -163,7 +163,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         invalid = json.dumps([
             {
                 "id": 1, "module_type": [], "include": True, "species_scope": "rice", "tag_id": 1,
-                "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
+                "score": 0.5, "importance_score": 0.8, "summary": "政策部署。",
             },
             {
                 "id": 2, "include": False, "species_scope": "not_applicable", "score": 0.1,
@@ -173,7 +173,7 @@ class AIFilterModuleContractTests(unittest.TestCase):
         repaired = json.dumps([
             {
                 "id": 1, "include": True, "species_scope": "rice", "tag_id": 1,
-                "score": 0.5, "importance_score": 0.8, "summary": "政策部署",
+                "score": 0.5, "importance_score": 0.8, "summary": "政策部署。",
             },
             {
                 "id": 2, "include": False, "species_scope": "not_applicable", "score": 0.1,

@@ -540,17 +540,19 @@ class StrictClassificationScalarTypeTests(unittest.TestCase):
             "title": "Rice",
             "content": "Rice evidence",
             "content_level": "full_text",
+            "module_type": "research",
         }]
         self.tags = [{"id": 9, "tag": "rice"}]
 
     def test_strict_scalar_types_reject_json_coercions_and_nonfinite_numbers(self):
         valid = {
             "id": 1,
-            "module_type": "research",
+            "include": True,
+            "species_scope": "rice",
             "tag_id": 9,
             "score": 0.8,
             "importance_score": 0.7,
-            "summary": "evidence",
+            "summary": "Evidence。",
         }
         invalid_values = {
             "bool_news_id": ("id", True),
@@ -581,19 +583,21 @@ class StrictClassificationScalarTypeTests(unittest.TestCase):
     def test_invalid_scalar_triggers_one_repair_and_accepts_valid_repair(self):
         invalid = json.dumps([{
             "id": 1,
-            "module_type": "research",
-            "tag_id": 9,
+            "include": True,
+            "species_scope": "rice",
+            "tag_id": 1,
             "score": "0.8",
             "importance_score": 0.7,
-            "summary": "evidence",
+            "summary": "Evidence。",
         }])
         valid = json.dumps([{
             "id": 1,
-            "module_type": "research",
-            "tag_id": 9,
+            "include": True,
+            "species_scope": "rice",
+            "tag_id": 1,
             "score": 0.8,
             "importance_score": 0.7,
-            "summary": "evidence",
+            "summary": "Evidence。",
         }])
         self.filter.client.chat.side_effect = [invalid, valid]
         result = self.filter.classify_batch(
@@ -605,11 +609,12 @@ class StrictClassificationScalarTypeTests(unittest.TestCase):
     def test_invalid_scalar_after_repair_rejects_entire_batch(self):
         invalid = json.dumps([{
             "id": 1,
-            "module_type": "research",
-            "tag_id": 9,
+            "include": True,
+            "species_scope": "rice",
+            "tag_id": 1,
             "score": True,
             "importance_score": 0.7,
-            "summary": "evidence",
+            "summary": "Evidence。",
         }])
         self.filter.client.chat.side_effect = [invalid, invalid]
         self.assertIsNone(self.filter.classify_batch(
