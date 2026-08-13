@@ -360,6 +360,49 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
 
         self.assertEqual(items[0].title, "南繁育种项目建设方案")
 
+    def test_sanya_profiles_reject_navigation_and_plain_div_links(self):
+        sources = (
+            (
+                "sanya-agri-documents",
+                "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
+                "/nyjsite/bmwjxx/202608/abc.shtml",
+            ),
+            (
+                "sanya-agri-news",
+                "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
+                "/nyjsite/gzdt/202608/abc.shtml",
+            ),
+        )
+        for feed_id, page_url, article_url in sources:
+            for wrapper in ("nav", "div"):
+                with self.subTest(feed_id=feed_id, wrapper=wrapper):
+                    with self.assertRaisesRegex(ValueError, "未找到新闻条目"):
+                        parse_web_news_html(
+                            f"""
+                            <{wrapper}>
+                              <a href="{article_url}">三亚南繁水稻种业育种制种种质品种工作部署</a>
+                              <span>2026-08-09</span>
+                            </{wrapper}>
+                            """,
+                            feed_id,
+                            page_url,
+                        )
+
+    def test_hainan_nanfan_preserves_external_article_url(self):
+        article_url = "http://authority.example/article?id=7#section"
+        items = parse_web_news_html(
+            f"""
+            <ul><li>
+              <a href="{article_url}">南繁外链新闻取得新进展</a>
+              <span>2026-08-09</span>
+            </li></ul>
+            """,
+            "hainan-nanfan-news",
+            "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/",
+        )
+
+        self.assertEqual(items[0].url, article_url)
+
     def test_other_required_term_profiles_ignore_incidental_container_terms(self):
         with self.assertRaisesRegex(ValueError, "未找到新闻条目"):
             parse_web_news_html(

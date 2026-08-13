@@ -85,6 +85,7 @@ class _WebNewsProfile:
     require_item_container: bool = False
     allow_url_date_fallback: bool = True
     required_terms_from_container: bool = False
+    preserve_article_url: bool = False
 
     def accepts(self, url: str) -> bool:
         return any(pattern.search(url) for pattern in self.patterns)
@@ -198,12 +199,14 @@ _PROFILES: Dict[str, _WebNewsProfile] = {
         require_date=True,
         require_item_container=True,
         allow_url_date_fallback=False,
+        preserve_article_url=True,
     ),
     "sanya-agri-documents": _WebNewsProfile(
         "三亚市农业农村局",
         _patterns(r"^https://ny\.sanya\.gov\.cn/nyjsite/bmwjxx/20\d{4}/[0-9a-f]+\.shtml$"),
         require_date=True,
         required_terms=_NANFAN_RICE_TERMS,
+        require_item_container=True,
         required_terms_from_container=True,
     ),
     "sanya-agri-news": _WebNewsProfile(
@@ -211,6 +214,7 @@ _PROFILES: Dict[str, _WebNewsProfile] = {
         _patterns(r"^https://ny\.sanya\.gov\.cn/nyjsite/gzdt/20\d{4}/[0-9a-f]+\.shtml$"),
         require_date=True,
         required_terms=_NANFAN_RICE_TERMS,
+        require_item_container=True,
         required_terms_from_container=True,
     ),
     "philrice-news": _WebNewsProfile(
@@ -290,6 +294,12 @@ def _nearest_container(anchor: _Node) -> _Node:
         node = node.parent
         depth += 1
     return weak_match or fallback
+
+
+def _is_item_container(node: _Node) -> bool:
+    return node.tag in {"article", "li"} or (
+        node.tag == "div" and "list-item" in _classes(node).split()
+    )
 
 
 def _is_title(value: str) -> bool:
@@ -447,12 +457,13 @@ def parse_web_news_html(
         if not _text(anchor) and "pic" in _classes(anchor).split():
             continue
 
-        url = _canonical_url(urljoin(page_url, href))
+        joined_url = urljoin(page_url, href)
+        url = joined_url if profile.preserve_article_url else _canonical_url(joined_url)
         if url in seen_urls or not profile.accepts(url):
             continue
 
         container = _nearest_container(anchor)
-        if profile.require_item_container and container.tag not in {"li", "article"}:
+        if profile.require_item_container and not _is_item_container(container):
             continue
         title = _best_title(anchor, container)
         if not title:
