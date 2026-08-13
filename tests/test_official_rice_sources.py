@@ -321,6 +321,59 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
                         page_url,
                     )
 
+    def test_hainan_nanfan_accepts_only_dated_list_items(self):
+        items = parse_web_news_html(
+            """
+            <ul>
+              <li>
+                <a href="/hnsnyt/zgnf/xwzx/xwjx/202608/t20260808_123.shtml">海南南繁基地建设取得新进展</a>
+                <span>2026-08-08</span>
+              </li>
+            </ul>
+            <nav>
+              <a href="/hnsnyt/zgnf/xwzx/xwjx/202608/t20260809_456.shtml">栏目导航水稻资讯</a>
+            </nav>
+            <footer>
+              <a href="/hnsnyt/zgnf/xwzx/xwjx/202608/t20260809_789.shtml">页脚南繁链接</a>
+            </footer>
+            """,
+            "hainan-nanfan-news",
+            "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/",
+        )
+
+        self.assertEqual(
+            [(item.title, item.published_at) for item in items],
+            [("海南南繁基地建设取得新进展", "2026-08-08")],
+        )
+
+    def test_sanya_terms_include_title_attribute_and_container_text(self):
+        items = parse_web_news_html(
+            """
+            <div class="list-item">
+              <a href="/nyjsite/bmwjxx/202608/abc.shtml" title="南繁育种项目建设方案">查看详情</a>
+              <span>发布日期：2026-08-09</span>
+            </div>
+            """,
+            "sanya-agri-documents",
+            "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
+        )
+
+        self.assertEqual(items[0].title, "南繁育种项目建设方案")
+
+    def test_other_required_term_profiles_ignore_incidental_container_terms(self):
+        with self.assertRaisesRegex(ValueError, "未找到新闻条目"):
+            parse_web_news_html(
+                """
+                <article class="news-card">
+                  <a href="/nynct/c115394/202608/c00_123.shtml">生猪屠宰管理工作通知</a>
+                  <span>水稻产业周报</span>
+                  <time datetime="2026-08-09">2026-08-09</time>
+                </article>
+                """,
+                "heilongjiang-rice",
+                "https://nynct.hlj.gov.cn/nynct/c115377/xwdt.shtml",
+            )
+
     def test_nanfan_official_sources_are_enabled_in_both_configs(self):
         expected = {
             "hainan-nanfan-news": "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/",

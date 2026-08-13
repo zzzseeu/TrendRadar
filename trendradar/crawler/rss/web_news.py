@@ -82,6 +82,9 @@ class _WebNewsProfile:
     patterns: tuple[Pattern[str], ...]
     require_date: bool = False
     required_terms: tuple[str, ...] = ()
+    require_item_container: bool = False
+    allow_url_date_fallback: bool = True
+    required_terms_from_container: bool = False
 
     def accepts(self, url: str) -> bool:
         return any(pattern.search(url) for pattern in self.patterns)
@@ -193,18 +196,22 @@ _PROFILES: Dict[str, _WebNewsProfile] = {
         "海南省农业农村厅中国南繁",
         _patterns(r"^https?://"),
         require_date=True,
+        require_item_container=True,
+        allow_url_date_fallback=False,
     ),
     "sanya-agri-documents": _WebNewsProfile(
         "三亚市农业农村局",
         _patterns(r"^https://ny\.sanya\.gov\.cn/nyjsite/bmwjxx/20\d{4}/[0-9a-f]+\.shtml$"),
         require_date=True,
         required_terms=_NANFAN_RICE_TERMS,
+        required_terms_from_container=True,
     ),
     "sanya-agri-news": _WebNewsProfile(
         "三亚市农业农村局",
         _patterns(r"^https://ny\.sanya\.gov\.cn/nyjsite/gzdt/20\d{4}/[0-9a-f]+\.shtml$"),
         require_date=True,
         required_terms=_NANFAN_RICE_TERMS,
+        required_terms_from_container=True,
     ),
     "philrice-news": _WebNewsProfile(
         "PhilRice",
@@ -360,7 +367,12 @@ def _parse_date_value(value: str) -> Optional[str]:
         return None
 
 
-def _extract_date(container: _Node, url: str) -> Optional[str]:
+def _extract_date(
+    container: _Node,
+    url: str,
+    *,
+    allow_url_fallback: bool = True,
+) -> Optional[str]:
     for node in _iter_nodes(container):
         if node.tag == "time":
             date = _parse_date_value(node.attrs.get("datetime", "")) or _parse_date_value(_text(node))
@@ -384,6 +396,9 @@ def _extract_date(container: _Node, url: str) -> Optional[str]:
             date = _parse_date_value(match.group(0))
             if date:
                 return date
+
+    if not allow_url_fallback:
+        return None
 
     # 中科院、农业农村部等站点将发布日期编码在 URL 中。
     match = re.search(r"/(?:t)?(20\d{2})(\d{2})(\d{2})(?:_|/)", url)
@@ -437,17 +452,26 @@ def parse_web_news_html(
             continue
 
         container = _nearest_container(anchor)
+        if profile.require_item_container and container.tag not in {"li", "article"}:
+            continue
         title = _best_title(anchor, container)
         if not title:
             continue
 
-        published_at = _extract_date(container, url)
+        published_at = _extract_date(
+            container,
+            url,
+            allow_url_fallback=profile.allow_url_date_fallback,
+        )
         if profile.require_date and not published_at:
             continue
 
         summary = _best_summary(container, title)
         if profile.required_terms:
-            evidence = _text(container).casefold()
+            evidence = f"{title} {summary or ''}"
+            if profile.required_terms_from_container:
+                evidence = f"{evidence} {_text(container)}"
+            evidence = evidence.casefold()
             if not any(term.casefold() in evidence for term in profile.required_terms):
                 continue
 
