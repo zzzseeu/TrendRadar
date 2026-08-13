@@ -178,10 +178,16 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
         )
         html_by_feed = {
             "hainan-nanfan-news": """
-                <ul><li>
-                  <a href="https://example.gov.cn/nanfan-update">南繁育种创新取得新进展</a>
-                  <span>2026-08-09</span>
-                </li></ul>
+                <ul>
+                  <li>
+                    <a href="/hnsnyt/zgnf/xwzx/xwjx/202608/t20260809_123.shtml">海南南繁基地建设取得新进展</a>
+                    <span>2026-08-08</span>
+                  </li>
+                  <li>
+                    <a href="https://example.gov.cn/nanfan-update">南繁育种创新取得新进展</a>
+                    <span>2026-08-09</span>
+                  </li>
+                </ul>
             """,
             "sanya-agri-documents": """
                 <div class="list-item">
@@ -200,11 +206,28 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
         for feed_id, page_url, article_url, title, author in cases:
             with self.subTest(feed_id=feed_id):
                 items = parse_web_news_html(html_by_feed[feed_id], feed_id, page_url)
-                self.assertEqual(len(items), 1)
-                self.assertEqual(items[0].title, title)
-                self.assertEqual(items[0].url, article_url)
-                self.assertEqual(items[0].published_at, "2026-08-09")
-                self.assertEqual(items[0].author, author)
+                if feed_id == "hainan-nanfan-news":
+                    self.assertEqual(
+                        [
+                            (item.title, item.url, item.published_at, item.author)
+                            for item in items
+                        ],
+                        [
+                            (
+                                "海南南繁基地建设取得新进展",
+                                "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/202608/t20260809_123.shtml",
+                                "2026-08-08",
+                                author,
+                            ),
+                            (title, article_url, "2026-08-09", author),
+                        ],
+                    )
+                else:
+                    self.assertEqual(len(items), 1)
+                    self.assertEqual(items[0].title, title)
+                    self.assertEqual(items[0].url, article_url)
+                    self.assertEqual(items[0].published_at, "2026-08-09")
+                    self.assertEqual(items[0].author, author)
 
     def test_sanya_general_sections_keep_nanfan_terms_and_drop_unrelated_items(self):
         accepted_titles = (
@@ -218,10 +241,11 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
                 "sanya-agri-documents",
                 "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
                 "/nyjsite/bmwjxx/202608/abc.shtml",
-                lambda title: f"""
+                lambda title, summary="": f"""
                     <div class=\"list-item\">
                       <a href=\"/nyjsite/bmwjxx/202608/abc.shtml\" title=\"{title}\">{title}</a>
                       <span>发布日期：2026-08-09</span>
+                      <p class=\"summary\">{summary}</p>
                     </div>
                 """,
             ),
@@ -229,9 +253,10 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
                 "sanya-agri-news",
                 "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
                 "/nyjsite/gzdt/202608/abc.shtml",
-                lambda title: f"""
+                lambda title, summary="": f"""
                     <ul><li><em>2026-08-09</em>
                       <a href=\"/nyjsite/gzdt/202608/abc.shtml\">{title}</a>
+                      <p class=\"summary\">{summary}</p>
                     </li></ul>
                 """,
             ),
@@ -245,10 +270,46 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
                     self.assertEqual(items[0].title, title)
                     self.assertEqual(items[0].url, article_url)
 
+            for term in ("南繁", "种质", "水稻"):
+                title = "三亚市农业科技项目建设进展"
+                with self.subTest(feed_id=feed_id, summary_term=term):
+                    items = parse_web_news_html(
+                        list_html(title, f"本项目服务{term}产业高质量发展"),
+                        feed_id,
+                        page_url,
+                    )
+                    self.assertEqual(len(items), 1)
+                    self.assertEqual(items[0].title, title)
+                    self.assertEqual(items[0].url, article_url)
+
             with self.subTest(feed_id=feed_id, title=unrelated_title):
                 with self.assertRaisesRegex(ValueError, "未找到新闻条目"):
                     parse_web_news_html(
                         list_html(unrelated_title), feed_id, page_url
+                    )
+
+    def test_nanfan_profiles_fail_closed_for_navigation_only_pages(self):
+        sources = (
+            (
+                "hainan-nanfan-news",
+                "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/",
+            ),
+            (
+                "sanya-agri-documents",
+                "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
+            ),
+            (
+                "sanya-agri-news",
+                "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
+            ),
+        )
+        for feed_id, page_url in sources:
+            with self.subTest(feed_id=feed_id):
+                with self.assertRaisesRegex(ValueError, "未找到新闻条目"):
+                    parse_web_news_html(
+                        "<html><nav><a href='/'>栏目导航</a></nav></html>",
+                        feed_id,
+                        page_url,
                     )
 
     def test_nanfan_official_sources_are_enabled_in_both_configs(self):
