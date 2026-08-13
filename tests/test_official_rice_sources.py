@@ -235,6 +235,10 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
             "三亚种质资源平台投入使用",
             "水稻新品种进入示范阶段",
         )
+        nanfan_terms = (
+            "水稻", "稻米", "稻谷", "稻作", "南繁",
+            "种业", "育种", "制种", "种质", "品种",
+        )
         unrelated_title = "三亚开展海洋牧场建后管护工作"
         sources = (
             (
@@ -270,7 +274,7 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
                     self.assertEqual(items[0].title, title)
                     self.assertEqual(items[0].url, article_url)
 
-            for term in ("南繁", "种质", "水稻"):
+            for term in nanfan_terms:
                 title = "三亚市农业科技项目建设进展"
                 with self.subTest(feed_id=feed_id, summary_term=term):
                     items = parse_web_news_html(
@@ -285,7 +289,12 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
             with self.subTest(feed_id=feed_id, title=unrelated_title):
                 with self.assertRaisesRegex(ValueError, "未找到新闻条目"):
                     parse_web_news_html(
-                        list_html(unrelated_title), feed_id, page_url
+                        list_html(
+                            unrelated_title,
+                            "聚焦海洋牧场建后管护工作",
+                        ),
+                        feed_id,
+                        page_url,
                     )
 
     def test_nanfan_profiles_fail_closed_for_navigation_only_pages(self):
