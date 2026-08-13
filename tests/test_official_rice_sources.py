@@ -164,14 +164,14 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
             (
                 "sanya-agri-documents",
                 "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
-                "/nyjsite/bmwjxx/202608/abc.shtml",
+                "https://ny.sanya.gov.cn/nyjsite/bmwjxx/202608/abc.shtml",
                 "三亚市南繁小院建设方案",
                 "三亚市农业农村局",
             ),
             (
                 "sanya-agri-news",
                 "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
-                "/nyjsite/gzdt/202608/abc.shtml",
+                "https://ny.sanya.gov.cn/nyjsite/gzdt/202608/abc.shtml",
                 "三亚水稻育种工作取得新进展",
                 "三亚市农业农村局",
             ),
@@ -244,7 +244,7 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
             (
                 "sanya-agri-documents",
                 "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml",
-                "/nyjsite/bmwjxx/202608/abc.shtml",
+                "https://ny.sanya.gov.cn/nyjsite/bmwjxx/202608/abc.shtml",
                 lambda title, summary="": f"""
                     <div class=\"list-item\">
                       <a href=\"/nyjsite/bmwjxx/202608/abc.shtml\" title=\"{title}\">{title}</a>
@@ -256,7 +256,7 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
             (
                 "sanya-agri-news",
                 "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml",
-                "/nyjsite/gzdt/202608/abc.shtml",
+                "https://ny.sanya.gov.cn/nyjsite/gzdt/202608/abc.shtml",
                 lambda title, summary="": f"""
                     <ul><li><em>2026-08-09</em>
                       <a href=\"/nyjsite/gzdt/202608/abc.shtml\">{title}</a>

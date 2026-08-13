@@ -162,6 +162,21 @@ rss:
       url: "https://www.stats.gov.cn/sj/zxfb/"
       source_type: "web_news"
       max_items: 30
+    - id: "hainan-nanfan-news"
+      name: "海南省农业农村厅中国南繁新闻"
+      url: "https://agri.hainan.gov.cn/hnsnyt/zgnf/xwzx/xwjx/"
+      source_type: "web_news"
+      max_items: 30
+    - id: "sanya-agri-documents"
+      name: "三亚市农业农村局部门文件"
+      url: "https://ny.sanya.gov.cn/nyjsite/bmwjxx/newxxgklist.shtml"
+      source_type: "web_news"
+      max_items: 30
+    - id: "sanya-agri-news"
+      name: "三亚市农业农村局工作动态"
+      url: "https://ny.sanya.gov.cn/nyjsite/gzdt/list2.shtml"
+      source_type: "web_news"
+      max_items: 30
     - id: "heilongjiang-rice"
       name: "Heilongjiang Department of Agriculture"
       url: "https://nynct.hlj.gov.cn/nynct/c115377/xwdt.shtml"

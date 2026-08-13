@@ -31,6 +31,10 @@ _STRONG_CONTAINER_HINTS = (
 )
 _TITLE_HINTS = ("headline", "title")
 _SUMMARY_HINTS = ("body", "description", "summary", "text")
+_NANFAN_RICE_TERMS = (
+    "水稻", "稻米", "稻谷", "稻作", "南繁",
+    "种业", "育种", "制种", "种质", "品种",
+)
 
 
 @dataclass
@@ -184,6 +188,23 @@ _PROFILES: Dict[str, _WebNewsProfile] = {
         ),
         require_date=True,
         required_terms=("水稻", "稻米", "稻谷", "稻作"),
+    ),
+    "hainan-nanfan-news": _WebNewsProfile(
+        "海南省农业农村厅中国南繁",
+        _patterns(r"^https?://"),
+        require_date=True,
+    ),
+    "sanya-agri-documents": _WebNewsProfile(
+        "三亚市农业农村局",
+        _patterns(r"^https://ny\.sanya\.gov\.cn/nyjsite/bmwjxx/20\d{4}/[0-9a-f]+\.shtml$"),
+        require_date=True,
+        required_terms=_NANFAN_RICE_TERMS,
+    ),
+    "sanya-agri-news": _WebNewsProfile(
+        "三亚市农业农村局",
+        _patterns(r"^https://ny\.sanya\.gov\.cn/nyjsite/gzdt/20\d{4}/[0-9a-f]+\.shtml$"),
+        require_date=True,
+        required_terms=_NANFAN_RICE_TERMS,
     ),
     "philrice-news": _WebNewsProfile(
         "PhilRice",
@@ -426,7 +447,7 @@ def parse_web_news_html(
 
         summary = _best_summary(container, title)
         if profile.required_terms:
-            evidence = f"{title} {summary or ''}".casefold()
+            evidence = _text(container).casefold()
             if not any(term.casefold() in evidence for term in profile.required_terms):
                 continue
 
