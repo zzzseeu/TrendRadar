@@ -26,6 +26,8 @@ English documentation: [README-EN.md](README-EN.md)。
 
 ## 配置与运行
 
+首次部署、密钥配置、定时运行、项目更新和故障排查，请参阅 [项目接手与运维指南](docs/project-handover-guide.md)。
+
 使用 `config/config.yaml` 配置 RSS 来源、AI 凭据和企业微信凭据。RSS 来源仅需标识、名称和 URL，例如：
 
 ```yaml

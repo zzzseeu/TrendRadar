@@ -544,7 +544,7 @@ docker compose --env-file docker/.env \
 ```bash
 docker compose --env-file docker/.env \
   -f docker/docker-compose-build.yml \
-  exec trendradar env | rg '^(RUN_MODE|CRON_SCHEDULES|TZ)='
+  exec trendradar env | grep -E '^(RUN_MODE|CRON_SCHEDULES|TZ)='
 
 docker compose --env-file docker/.env \
   -f docker/docker-compose-build.yml \
@@ -667,4 +667,3 @@ docker compose --env-file docker/.env -f docker/docker-compose-build.yml up -d -
 ```bash
 docker compose --env-file docker/.env -f docker/docker-compose-build.yml config --quiet
 ```
-
