@@ -13,6 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WeeklyConfigurationTests(unittest.TestCase):
+    def test_unreachable_gramene_feed_is_not_configured(self):
+        for relative in ("config/config.yaml", "config/config.en.yaml"):
+            config = yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
+            feed_ids = {feed["id"] for feed in config["rss"]["feeds"]}
+            with self.subTest(relative=relative):
+                self.assertNotIn("gramene-news", feed_ids)
+
     def test_runtime_uses_custom_weekly_schedule(self):
         config = yaml.safe_load(
             (ROOT / "config/config.yaml").read_text(encoding="utf-8")

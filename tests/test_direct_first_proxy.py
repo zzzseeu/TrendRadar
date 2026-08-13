@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -124,6 +125,36 @@ class NewsFetcherIntegrationTests(unittest.TestCase):
         )
 
         self.assertIsInstance(fetcher.session, DirectFirstSession)
+
+    def test_web_news_requests_use_browser_compatible_headers(self):
+        feed = RSSFeedConfig(
+            id="heilongjiang-rice",
+            name="黑龙江省农业农村厅",
+            url="https://nynct.hlj.gov.cn/nynct/c115377/xwdt.shtml",
+            source_type="web_news",
+        )
+        fetcher = RSSFetcher(feeds=[feed])
+        response = MagicMock()
+        response.text = """
+        <article class="news-card">
+          <h2><a href="/nynct/c115383/202608/c00_31964982.shtml">
+            当前水稻应对高温热害技术意见
+          </a></h2>
+          <time datetime="2026-08-06">2026-08-06</time>
+        </article>
+        """
+        response.apparent_encoding = "utf-8"
+        response.encoding = "utf-8"
+        fetcher.session = MagicMock()
+        fetcher.session.get.return_value = response
+
+        items, error = fetcher.fetch_feed(feed, run_at=datetime(2026, 8, 13, 10))
+
+        self.assertIsNone(error)
+        self.assertEqual(len(items), 1)
+        request_headers = fetcher.session.get.call_args.kwargs["headers"]
+        self.assertIn("Mozilla/5.0", request_headers["User-Agent"])
+        self.assertIn("text/html", request_headers["Accept"])
 
     def test_article_fetcher_uses_direct_first_session(self):
         fetcher = ArticleContentFetcher(

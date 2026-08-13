@@ -146,7 +146,6 @@ rss:
       name: "CGIAR News & Events"
       url: "https://www.cgiar.org/news-events"
       source_type: "web_news"
-      fetch_url: "https://www-cgiar-org.translate.goog/news-events?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
     - id: "vietnam-ppd"
       name: "Vietnam Plant Production and Protection Department"
@@ -165,12 +164,12 @@ rss:
       max_items: 30
     - id: "heilongjiang-rice"
       name: "Heilongjiang Department of Agriculture"
-      url: "https://nynct.hlj.gov.cn/nynct/c115385/public_list.shtml"
+      url: "https://nynct.hlj.gov.cn/nynct/c115377/xwdt.shtml"
       source_type: "web_news"
       max_items: 30
     - id: "hubei-rice"
       name: "Hubei Department of Agriculture"
-      url: "https://nyt.hubei.gov.cn/bmdt/yw/gfxx/index.shtml"
+      url: "https://nyt.hubei.gov.cn/bmdt/"
       source_type: "web_news"
       max_items: 30
     - id: "philippines-da"
@@ -497,12 +496,12 @@ ai:
                                     #    so almost any provider can be hooked up.
 
 
-  timeout: 120                      # Request timeout (seconds)
+  timeout: 600                      # Request timeout (seconds)
 
   temperature: 1.0                  # Sampling temperature (0.0-2.0)
                                     # Note: some models (e.g. gpt-5) may require exactly 1.0, or they error
 
-  max_tokens: 5000                  # Max generated tokens
+  max_tokens: 32768                 # Max generated tokens
                                     # Note: if the API rejects this param (HTTP 400), set to 0 to stop sending it
   # Advanced options
   num_retries: 1                    # Retry count on failure

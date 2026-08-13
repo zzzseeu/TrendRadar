@@ -247,11 +247,6 @@ rss:
       max_items: 30
 
     # ── 育种数据库动态 ────────────────────────────────────────
-    - id: "gramene-news"
-      name: "Gramene News"
-      url: "https://news.gramene.org/rss.xml"
-      max_items: 30
-
     - id: "ensembl-news"
       name: "Ensembl News"
       url: "https://www.ensembl.info/feed/"
@@ -304,10 +299,8 @@ rss:
 
     - id: "aphis-biotech"
       name: "USDA APHIS Biotechnology"
-      url: "https://www.aphis.usda.gov/biotechnology"
+      url: "https://direct.aphis.usda.gov/biotechnology"
       source_type: "web_news"
-      # APHIS 主站在当前出口连接不稳定，代理只用于读取，文章链接会还原为官方域名。
-      fetch_url: "https://www-aphis-usda-gov.translate.goog/biotechnology?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
 
     - id: "eu-plants-policy"
@@ -320,8 +313,6 @@ rss:
       name: "CGIAR News"
       url: "https://www.cgiar.org/news-events"
       source_type: "web_news"
-      # CGIAR 的直接请求返回 403，代理只用于读取，文章链接会还原为官方域名。
-      fetch_url: "https://www-cgiar-org.translate.goog/news-events?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
       max_items: 30
 
     # ── 水稻官方时事来源（沿用 web_news） ────────────────────
@@ -345,13 +336,13 @@ rss:
 
     - id: "heilongjiang-rice"
       name: "黑龙江省农业农村厅"
-      url: "https://nynct.hlj.gov.cn/nynct/c115385/public_list.shtml"
+      url: "https://nynct.hlj.gov.cn/nynct/c115377/xwdt.shtml"
       source_type: "web_news"
       max_items: 30
 
     - id: "hubei-rice"
       name: "湖北省农业农村厅"
-      url: "https://nyt.hubei.gov.cn/bmdt/yw/gfxx/index.shtml"
+      url: "https://nyt.hubei.gov.cn/bmdt/"
       source_type: "web_news"
       max_items: 30
 
@@ -743,12 +734,12 @@ ai:
                                     #    这样几乎任何服务商都能接入。
 
 
-  timeout: 120                      # 请求超时（秒）
+  timeout: 600                      # 请求超时（秒）
 
   temperature: 1.0                  # 采样温度 (0.0-2.0)
                                     # 注意：部分模型(如 gpt-5)可能要求必须为 1.0，否则会报错
   
-  max_tokens: 10000                  # 最大生成 token 数
+  max_tokens: 32768                  # 最大生成 token 数
                                     # 注意：如果 API 不支持此参数(报 HTTP 400)，请设为 0 以禁用发送
   # 高级选项
   num_retries: 1                    # 失败重试次数

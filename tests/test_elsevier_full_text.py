@@ -448,7 +448,7 @@ class ElsevierConfigurationTests(unittest.TestCase):
         )
 
     def test_compose_and_example_declare_empty_server_side_credentials(self):
-        compose = (PROJECT_ROOT / "docker/docker-compose.yml").read_text()
+        compose = (PROJECT_ROOT / "docker/docker-compose-build.yml").read_text()
         example = (PROJECT_ROOT / "docker/.env.example").read_text()
         trendradar_service, mcp_service = compose.split("\n  trendradar-mcp:", 1)
 

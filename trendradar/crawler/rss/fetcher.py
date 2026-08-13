@@ -97,7 +97,17 @@ class RSSFetcher:
         try:
             now = run_at or self.get_time()
             request_url = (feed.fetch_url or feed.url).format(year=now.year)
-            response = self.session.get(request_url, timeout=self.timeout)
+            request_kwargs = {"timeout": self.timeout}
+            if feed.source_type == "web_news":
+                request_kwargs["headers"] = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0 Safari/537.36"
+                    ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
+            response = self.session.get(request_url, **request_kwargs)
             response.raise_for_status()
 
             if feed.source_type == "irri_news":

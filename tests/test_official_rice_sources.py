@@ -1,9 +1,13 @@
 import unittest
+from pathlib import Path
+
+import yaml
 
 from trendradar.crawler.rss.web_news import (
     parse_official_document_html,
     parse_web_news_html,
 )
+from trendradar.crawler.rss.irri import parse_irri_news_html
 
 
 def _page(article_url, title, *, date="2026-08-09", summary="水稻产业发展取得明确进展"):
@@ -25,9 +29,9 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
         ("ndrc-rice", "https://www.ndrc.gov.cn/fzggw/jgsj/jgs/sjdt/", "/fzggw/jgsj/jgs/sjdt/202608/t20260809_123.html"),
         ("stats-grain", "https://www.stats.gov.cn/sj/zxfb/", "/sj/zxfb/202608/t20260809_123.html"),
         ("moa-seed-notices", "https://zys.moa.gov.cn/gsgg/", "/gsgg/202608/t20260809_123.htm"),
-        ("heilongjiang-rice", "https://nynct.hlj.gov.cn/nynct/c115385/public_list.shtml", "/nynct/c115394/202608/c00_123.shtml"),
+        ("heilongjiang-rice", "https://nynct.hlj.gov.cn/nynct/c115377/xwdt.shtml", "/nynct/c115394/202608/c00_123.shtml"),
         ("hunan-rice", "https://agri.hunan.gov.cn/agri/xxgk/tzgg/", "/agri/xxgk/tzgg/202608/t20260809_123.html"),
-        ("hubei-rice", "https://nyt.hubei.gov.cn/bmdt/yw/gfxx/index.shtml", "/bmdt/yw/gfxx/202608/t20260809_123.shtml"),
+        ("hubei-rice", "https://nyt.hubei.gov.cn/bmdt/", "/bmdt/yw/zwxx/202608/t20260809_123.shtml"),
         ("jiangsu-rice", "https://nynct.jiangsu.gov.cn/col/col12433/index.html", "/art/2026/8/9/art_12433_123.html"),
         ("philrice-news", "https://www.philrice.gov.ph/news/", "/rice-seed-program-expands/"),
     )
@@ -63,6 +67,90 @@ class OrdinaryOfficialSourceProfileTests(unittest.TestCase):
                 "ndrc-rice",
                 "https://www.ndrc.gov.cn/fzggw/jgsj/jgs/sjdt/",
             )
+
+    def test_hubei_and_heilongjiang_use_active_rice_news_sections(self):
+        config_dir = Path(__file__).resolve().parents[1] / "config"
+        for filename in ("config.yaml", "config.en.yaml"):
+            with self.subTest(filename=filename):
+                with (config_dir / filename).open("r", encoding="utf-8") as handle:
+                    config = yaml.safe_load(handle)
+
+                feeds = {
+                    feed["id"]: feed
+                    for feed in config["rss"]["feeds"]
+                }
+                self.assertEqual(
+                    feeds["hubei-rice"]["url"],
+                    "https://nyt.hubei.gov.cn/bmdt/",
+                )
+                self.assertEqual(
+                    feeds["heilongjiang-rice"]["url"],
+                    "https://nynct.hlj.gov.cn/nynct/c115377/xwdt.shtml",
+                )
+
+    def test_aphis_uses_parseable_official_direct_host(self):
+        items = parse_web_news_html(
+            _page(
+                "/news/program-update/usda-deregulates-rice",
+                "USDA Deregulates Rice Developed Using Genetic Engineering",
+                date="2026-08-06",
+            ),
+            "aphis-biotech",
+            "https://direct.aphis.usda.gov/biotechnology",
+        )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0].published_at, "2026-08-06")
+        self.assertEqual(
+            items[0].url,
+            "https://direct.aphis.usda.gov/news/program-update/usda-deregulates-rice",
+        )
+
+        config = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "config/config.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        feed = next(
+            feed for feed in config["rss"]["feeds"]
+            if feed["id"] == "aphis-biotech"
+        )
+        self.assertEqual(
+            feed["url"], "https://direct.aphis.usda.gov/biotechnology"
+        )
+        self.assertNotIn("fetch_url", feed)
+
+    def test_cgiar_uses_official_page_without_translate_proxy(self):
+        config_dir = Path(__file__).resolve().parents[1] / "config"
+        for filename in ("config.yaml", "config.en.yaml"):
+            with self.subTest(filename=filename):
+                config = yaml.safe_load(
+                    (config_dir / filename).read_text(encoding="utf-8")
+                )
+                feed = next(
+                    feed for feed in config["rss"]["feeds"]
+                    if feed["id"] == "cgiar-news"
+                )
+                self.assertEqual(feed["url"], "https://www.cgiar.org/news-events")
+                self.assertNotIn("fetch_url", feed)
+
+    def test_irri_translate_input_is_normalized_to_official_article_url(self):
+        html = """
+        <div class="related-news-content">
+          <a class="card-wrapper" href="https://www-irri-org.translate.goog/news-and-events/news/rice-update?_x_tr_sl=auto">
+            <h3 class="card-title">Rice research update</h3>
+            <span class="date">August 06, 2026</span>
+          </a>
+        </div>
+        """
+
+        items = parse_irri_news_html(html)
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(
+            items[0].url,
+            "https://www.irri.org/news-and-events/news/rice-update",
+        )
 
 
 class OfficialDocumentSourceTests(unittest.TestCase):

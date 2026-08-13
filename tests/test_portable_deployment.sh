@@ -32,8 +32,8 @@ assert_equal() {
 
 SCHEDULER="${PROJECT_ROOT}/scripts/start_daily_scheduler.sh"
 CRONTAB="${PROJECT_ROOT}/config/daily.crontab"
-COMPOSE="${PROJECT_ROOT}/docker/docker-compose.yml"
 COMPOSE_BUILD="${PROJECT_ROOT}/docker/docker-compose-build.yml"
+LEGACY_COMPOSE="${PROJECT_ROOT}/docker/docker-compose.yml"
 ENTRYPOINT="${PROJECT_ROOT}/docker/entrypoint.sh"
 DOCKER_ENV_EXAMPLE="${PROJECT_ROOT}/docker/.env.example"
 GITIGNORE="${PROJECT_ROOT}/.gitignore"
@@ -70,26 +70,33 @@ assert_equal "${active_cron_times}" '0 10 * * *
 0 12 * * 1'
 assert_equal "${forced_cron_count}" '0'
 assert_contains "${SCHEDULER}" '每天 10:00'
-assert_contains "${COMPOSE}" 'dockerfile: docker/Dockerfile'
-assert_contains "${COMPOSE}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-}'
-assert_contains "${COMPOSE}" 'CRON_SCHEDULE=${CRON_SCHEDULE:-}'
+if [[ -e "${LEGACY_COMPOSE}" ]]; then
+    echo "FAIL: ${LEGACY_COMPOSE} 与本地构建配置重复" >&2
+    exit 1
+fi
+
+assert_contains "${COMPOSE_BUILD}" 'dockerfile: docker/Dockerfile'
+assert_contains "${COMPOSE_BUILD}" 'dockerfile: docker/Dockerfile.mcp'
 assert_contains "${COMPOSE_BUILD}" 'CRON_SCHEDULES=${CRON_SCHEDULES:-}'
 assert_contains "${COMPOSE_BUILD}" 'CRON_SCHEDULE=${CRON_SCHEDULE:-}'
 assert_contains "${ENTRYPOINT}" 'CRON_LIST="$(resolve_cron_list)"'
 assert_contains "${ENTRYPOINT}" "IFS=';' read -ra EXPRESSIONS"
-assert_not_contains "${COMPOSE}" 'image: wantcat/trendradar:latest'
-assert_contains "${COMPOSE}" 'HTTP_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'HTTPS_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'http_proxy: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'https_proxy: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'HTTP_PROXY=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'HTTPS_PROXY=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'http_proxy=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'https_proxy=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'NEWS_PROXY_URL=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
-assert_contains "${COMPOSE}" 'NO_PROXY=${DOCKER_NO_PROXY:-apigw.hnaicc.cn,qyapi.weixin.qq.com}'
-assert_contains "${COMPOSE}" 'no_proxy=${DOCKER_NO_PROXY:-apigw.hnaicc.cn,qyapi.weixin.qq.com}'
-assert_contains "${COMPOSE}" '"host.docker.internal:host-gateway"'
+assert_not_contains "${COMPOSE_BUILD}" 'image: wantcat/trendradar:latest'
+assert_not_contains "${COMPOSE_BUILD}" 'image: wantcat/trendradar-mcp:latest'
+assert_contains "${COMPOSE_BUILD}" 'HTTP_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'HTTPS_PROXY: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'http_proxy: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'https_proxy: ${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'HTTP_PROXY=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'HTTPS_PROXY=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'http_proxy=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'https_proxy=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'NEWS_PROXY_URL=${DOCKER_PROXY_URL:-http://host.docker.internal:7892}'
+assert_contains "${COMPOSE_BUILD}" 'NO_PROXY=${DOCKER_NO_PROXY:-apigw.hnaicc.cn,qyapi.weixin.qq.com}'
+assert_contains "${COMPOSE_BUILD}" 'no_proxy=${DOCKER_NO_PROXY:-apigw.hnaicc.cn,qyapi.weixin.qq.com}'
+assert_contains "${COMPOSE_BUILD}" 'ELSEVIER_API_KEY=${ELSEVIER_API_KEY:-}'
+assert_contains "${COMPOSE_BUILD}" 'ELSEVIER_INST_TOKEN=${ELSEVIER_INST_TOKEN:-}'
+assert_contains "${COMPOSE_BUILD}" '"host.docker.internal:host-gateway"'
 assert_contains "${GITIGNORE}" 'docker/.env'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'DOCKER_PROXY_URL=http://host.docker.internal:7892'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'DOCKER_NO_PROXY=apigw.hnaicc.cn,qyapi.weixin.qq.com'

@@ -125,7 +125,7 @@ _PROFILES: Dict[str, _WebNewsProfile] = {
     "aphis-biotech": _WebNewsProfile(
         "USDA APHIS Biotechnology Regulatory Services",
         _patterns(
-            r"^https://www\.aphis\.usda\.gov/news/(?:program-update|agency-announcements)/"
+            r"^https://(?:www|direct)\.aphis\.usda\.gov/news/(?:program-update|agency-announcements)/"
         ),
     ),
     "eu-plants-policy": _WebNewsProfile(
