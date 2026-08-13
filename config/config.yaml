@@ -180,6 +180,12 @@ rss:
       max_items: 30
 
     # ── 国际期刊与预印本 ──────────────────────────────────────
+    - id: "nature"
+      name: "Nature"
+      url: "https://www.nature.com/nature.rss"
+      content_category: "scholarly"
+      max_items: 30
+
     - id: "nature-plants"
       name: "Nature Plants"
       url: "https://www.nature.com/nplants.rss"
@@ -201,6 +207,12 @@ rss:
     - id: "science"
       name: "Science"
       url: "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=science"
+      content_category: "scholarly"
+      max_items: 30
+
+    - id: "cell"
+      name: "Cell"
+      url: "https://www.cell.com/cell/current.rss"
       content_category: "scholarly"
       max_items: 30
 

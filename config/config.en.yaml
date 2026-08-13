@@ -127,6 +127,19 @@ rss:
       name: "Yahoo Finance"
       url: "https://finance.yahoo.com/news/rssindex"
 
+    # International flagship scholarly journals
+    - id: "nature"
+      name: "Nature"
+      url: "https://www.nature.com/nature.rss"
+      content_category: "scholarly"
+      max_items: 30
+
+    - id: "cell"
+      name: "Cell"
+      url: "https://www.cell.com/cell/current.rss"
+      content_category: "scholarly"
+      max_items: 30
+
     # Official rice current-events sources. Sources that are currently
     # blocked by SSL/403 or lack a stable list endpoint remain configured but disabled.
     - id: "cgiar-news"

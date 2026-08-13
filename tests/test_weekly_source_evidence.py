@@ -28,9 +28,11 @@ class WeeklySourceEvidenceTests(unittest.TestCase):
                 if category == "scholarly"
             },
             {
+                "nature",
                 "nature-plants",
                 "nature-genetics",
                 "nature-biotechnology",
+                "cell",
                 "science",
                 "molecular-plant",
                 "plant-communications",
@@ -39,6 +41,40 @@ class WeeklySourceEvidenceTests(unittest.TestCase):
                 "biorxiv-plant-biology",
             },
         )
+
+    def test_nature_and_cell_main_journals_use_official_scholarly_feeds(self):
+        root = Path(__file__).resolve().parents[1]
+        expected = {
+            "nature": ("Nature", "https://www.nature.com/nature.rss"),
+            "cell": ("Cell", "https://www.cell.com/cell/current.rss"),
+        }
+
+        for relative in ("config/config.yaml", "config/config.en.yaml"):
+            config = yaml.safe_load(
+                (root / relative).read_text(encoding="utf-8")
+            )
+            feeds = {feed["id"]: feed for feed in config["rss"]["feeds"]}
+            for source_id, (name, url) in expected.items():
+                with self.subTest(relative=relative, source_id=source_id):
+                    self.assertEqual(feeds[source_id]["name"], name)
+                    self.assertEqual(feeds[source_id]["url"], url)
+                    self.assertEqual(
+                        feeds[source_id].get("content_category"),
+                        "scholarly",
+                    )
+
+    def test_nature_and_cell_names_are_publication_evidence(self):
+        for journal in ("Nature", "Cell"):
+            with self.subTest(journal=journal):
+                evidence = classify_source_evidence(
+                    {
+                        "source_id": "research-institute-news",
+                        "content": f"The complete study was published in {journal}.",
+                    },
+                    {},
+                )
+                self.assertEqual(evidence.module_type, "research")
+                self.assertEqual(evidence.reason, "journal_name")
 
     def test_scholarly_feed_is_always_research(self):
         evidence = classify_source_evidence(
