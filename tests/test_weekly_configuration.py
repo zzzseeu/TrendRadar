@@ -221,3 +221,23 @@ class WeeklyConfigurationTests(unittest.TestCase):
             for phrase in obsolete_weekly_phrases:
                 with self.subTest(relative=relative, phrase=phrase):
                     self.assertNotIn(phrase, text)
+
+    def test_weekly_current_events_prompt_splits_domestic_and_international(self):
+        prompt = (ROOT / "config/ai_analysis_prompt.txt").read_text(
+            encoding="utf-8"
+        )
+
+        domestic = prompt.index("【国内动态】")
+        international = prompt.index("【国外动态】")
+        self.assertLess(domestic, international)
+        for token in (
+            "中国大陆中央与地方政府",
+            "国内科研机构、企业和产业动态",
+            "其他国家、境外机构及国际组织",
+            "国际组织按发布主体归入国外动态",
+            "本期暂无相关动态",
+            "同一新闻不得在两部分重复",
+            "不得引用另一部分新闻补齐",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, prompt)
