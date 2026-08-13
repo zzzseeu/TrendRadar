@@ -132,7 +132,7 @@ git commit -m "test(docs): 定义项目交接指南契约"
 - 日常维护：直接查看“更新项目”“故障排查”和“常用命令速查”。
 ```
 
-随后说明项目根目录、`config/`、`docker/`、`output/rss/`、`output/news/` 和 `output/weekly/` 的当前职责。
+随后说明项目根目录、`config/`、`docker/`、`output/rss/`、`output/news/` 和 `output/pdf/` 的当前职责。
 
 - [ ] **步骤 2：编写环境安装、克隆和密钥准备**
 
@@ -349,4 +349,3 @@ git log -4 --oneline
 ```
 
 预期：工作树干净；最近提交依次包含文档契约、主文档和 README 入口。
-

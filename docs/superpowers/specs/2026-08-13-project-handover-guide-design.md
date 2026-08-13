@@ -193,7 +193,7 @@ git pull --ff-only origin main
 - `config/`：新闻源、AI Prompt、兴趣和调度规则。
 - `output/rss/`：RSS 日数据库和首次发现账本。
 - `output/news/`：AI 结果、周期执行和投递账本。
-- `output/weekly/`：正式周报 HTML 与 PDF。
+- `output/pdf/`：正式周报 HTML 与 PDF。
 
 备份应在停止人工任务后进行，至少包含 `docker/.env` 和完整 `output/`。恢复时先停止服务、恢复文件、检查权限，再启动服务。文档不得给出宽泛删除命令。
 
