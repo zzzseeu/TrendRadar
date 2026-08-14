@@ -265,6 +265,98 @@ class ElsevierFullTextClientTests(unittest.TestCase):
 
 
 class ArticleContentElsevierIntegrationTests(unittest.TestCase):
+    @patch("builtins.print")
+    @patch("trendradar.crawler.article_content.time.sleep")
+    def test_transient_api_failures_retry_until_third_attempt_succeeds(
+        self,
+        sleep,
+        print_mock,
+    ):
+        api_client = MagicMock()
+        api_client.fetch.side_effect = [
+            ElsevierFetchResult("", "request_failed"),
+            ElsevierFetchResult("", "http_503"),
+            ElsevierFetchResult("A" * 800, "full_text"),
+        ]
+        fetcher = ArticleContentFetcher(
+            min_body_chars=300,
+            elsevier_client=api_client,
+        )
+        fetcher.session = MagicMock()
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.fetch_status, "elsevier_full_text")
+        self.assertEqual(api_client.fetch.call_count, 3)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [0.5, 1.0],
+        )
+        messages = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
+        self.assertIn(TEST_ARTICLE_PII, messages)
+        self.assertIn("1/3", messages)
+        self.assertIn("request_failed", messages)
+        self.assertIn("2/3", messages)
+        self.assertIn("http_503", messages)
+        fetcher.session.get.assert_not_called()
+
+    @patch("trendradar.crawler.article_content.time.sleep")
+    def test_three_transient_api_failures_then_fall_back_to_html(self, sleep):
+        api_client = MagicMock()
+        api_client.fetch.side_effect = [
+            ElsevierFetchResult("", "timeout"),
+            ElsevierFetchResult("", "http_429"),
+            ElsevierFetchResult("", "http_500"),
+        ]
+        fetcher = ArticleContentFetcher(elsevier_client=api_client)
+        fetcher.session = build_html_session(
+            "<article><p>" + "B" * 400 + "</p></article>"
+        )
+        fetcher._is_public_http_url = MagicMock(return_value=True)
+
+        result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+        self.assertEqual(result.fetch_status, "full_text")
+        self.assertEqual(api_client.fetch.call_count, 3)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [0.5, 1.0],
+        )
+        fetcher.session.get.assert_called_once()
+
+    @patch("trendradar.crawler.article_content.time.sleep")
+    def test_non_retryable_api_results_fall_back_without_retry(self, sleep):
+        results = [
+            ElsevierFetchResult("", "http_400"),
+            ElsevierFetchResult("", "http_401"),
+            ElsevierFetchResult("", "http_403"),
+            ElsevierFetchResult("", "http_404"),
+            ElsevierFetchResult("", "invalid_xml"),
+            ElsevierFetchResult("", "body_unavailable"),
+            ElsevierFetchResult("A" * 299, "full_text"),
+        ]
+
+        for api_result in results:
+            with self.subTest(status=api_result.status, text_length=len(api_result.text)):
+                api_client = MagicMock()
+                api_client.fetch.return_value = api_result
+                fetcher = ArticleContentFetcher(
+                    min_body_chars=300,
+                    elsevier_client=api_client,
+                )
+                fetcher.session = build_html_session(
+                    "<article><p>" + "B" * 400 + "</p></article>"
+                )
+                fetcher._is_public_http_url = MagicMock(return_value=True)
+
+                result = fetcher.get({"title": "Paper", "url": SCIENCEDIRECT_URL})
+
+                self.assertEqual(result.fetch_status, "full_text")
+                api_client.fetch.assert_called_once_with(SCIENCEDIRECT_URL)
+                fetcher.session.get.assert_called_once()
+        sleep.assert_not_called()
+
     def test_sciencedirect_api_full_text_is_used_before_html(self):
         api_client = MagicMock()
         api_client.fetch.return_value = ElsevierFetchResult("A" * 800, "full_text")
@@ -318,7 +410,8 @@ class ArticleContentElsevierIntegrationTests(unittest.TestCase):
         self.assertEqual(result.fetch_status, "full_text")
         self.assertEqual(result.text, "B" * 400)
 
-    def test_api_exception_falls_back_to_existing_html(self):
+    @patch("trendradar.crawler.article_content.time.sleep")
+    def test_api_exception_retries_then_falls_back_to_existing_html(self, sleep):
         api_client = MagicMock()
         api_client.fetch.side_effect = requests.RequestException("API unavailable")
         fetcher = ArticleContentFetcher(elsevier_client=api_client)
@@ -329,6 +422,11 @@ class ArticleContentElsevierIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.level, "full_text")
         self.assertEqual(result.fetch_status, "full_text")
+        self.assertEqual(api_client.fetch.call_count, 3)
+        self.assertEqual(
+            [call.args[0] for call in sleep.call_args_list],
+            [0.5, 1.0],
+        )
 
     def test_api_runtime_error_falls_back_to_existing_html(self):
         api_client = MagicMock()

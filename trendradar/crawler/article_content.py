@@ -8,6 +8,7 @@ import ipaddress
 import json
 import re
 import socket
+import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Dict, List, Optional
@@ -15,7 +16,11 @@ from urllib.parse import urlsplit
 
 import requests
 
-from trendradar.crawler.elsevier import ElsevierFullTextClient, extract_sciencedirect_pii
+from trendradar.crawler.elsevier import (
+    ElsevierFetchResult,
+    ElsevierFullTextClient,
+    extract_sciencedirect_pii,
+)
 from trendradar.crawler.http import DirectFirstSession
 
 
@@ -40,6 +45,20 @@ _PAYWALL_MARKERS = (
     "institutional access", "sign in to access", "register to read",
     "this article is available to subscribers", "付费阅读", "订阅后阅读",
 )
+_ELSEVIER_MAX_ATTEMPTS = 3
+_ELSEVIER_RETRY_DELAYS = (0.5, 1.0)
+
+
+def _is_retryable_elsevier_status(status: str) -> bool:
+    if status in {"timeout", "request_failed", "http_429"}:
+        return True
+    if not status.startswith("http_"):
+        return False
+    try:
+        status_code = int(status.removeprefix("http_"))
+    except ValueError:
+        return False
+    return 500 <= status_code <= 599
 
 
 @dataclass(frozen=True)
@@ -210,20 +229,17 @@ class ArticleContentFetcher:
 
         if url and self._is_public_http_url(url):
             if self.elsevier_client and extract_sciencedirect_pii(url):
-                try:
-                    api_result = self.elsevier_client.fetch(url)
-                    if (
-                        api_result.status == "full_text"
-                        and len(api_result.text) >= self.min_body_chars
-                    ):
-                        return self._build_full_text_content(
-                            api_result.text,
-                            fetch_status="elsevier_full_text",
-                            source_note="正文来自 Elsevier Article Retrieval API",
-                        )
-                except Exception:
-                    # API 客户端异常不能中断既有 HTML → RSS → 标题降级链路。
-                    pass
+                api_result = self._fetch_elsevier_with_retry(url)
+                if (
+                    api_result is not None
+                    and api_result.status == "full_text"
+                    and len(api_result.text) >= self.min_body_chars
+                ):
+                    return self._build_full_text_content(
+                        api_result.text,
+                        fetch_status="elsevier_full_text",
+                        source_note="正文来自 Elsevier Article Retrieval API",
+                    )
             try:
                 request_url = _build_fetch_url(url)
                 response = self.session.get(request_url, timeout=self.timeout)
@@ -282,6 +298,42 @@ class ArticleContentFetcher:
             ),
             fetch_status=fetch_status,
         )
+
+    def _fetch_elsevier_with_retry(self, url: str) -> Optional[ElsevierFetchResult]:
+        """Retry transient Elsevier API failures before the existing HTML fallback."""
+        pii = extract_sciencedirect_pii(url) or "unknown"
+        last_result: Optional[ElsevierFetchResult] = None
+
+        for attempt in range(1, _ELSEVIER_MAX_ATTEMPTS + 1):
+            try:
+                last_result = self.elsevier_client.fetch(url)
+            except requests.RequestException:
+                last_result = ElsevierFetchResult("", "request_failed")
+            except Exception as exc:
+                print(
+                    f"[Elsevier] PII {pii}: API 第 {attempt}/"
+                    f"{_ELSEVIER_MAX_ATTEMPTS} 次请求异常 ({type(exc).__name__})，"
+                    "回退 ScienceDirect 网页"
+                )
+                return None
+
+            if (
+                last_result.status == "full_text"
+                and len(last_result.text) >= self.min_body_chars
+            ):
+                return last_result
+
+            if not _is_retryable_elsevier_status(last_result.status):
+                return last_result
+
+            print(
+                f"[Elsevier] PII {pii}: API 第 {attempt}/"
+                f"{_ELSEVIER_MAX_ATTEMPTS} 次请求失败 ({last_result.status})"
+            )
+            if attempt < _ELSEVIER_MAX_ATTEMPTS:
+                time.sleep(_ELSEVIER_RETRY_DELAYS[attempt - 1])
+
+        return last_result
 
     def _build_full_text_content(
         self,
