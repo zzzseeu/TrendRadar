@@ -71,8 +71,8 @@ class WeeklyConfigurationTests(unittest.TestCase):
             monday_weekly,
             {
                 "name": "每周农业新闻 PDF",
-                "start": "10:00",
-                "end": "12:01",
+                "start": "12:10",
+                "end": "13:31",
                 "collect": True,
                 "analyze": True,
                 "push": True,
@@ -97,7 +97,7 @@ class WeeklyConfigurationTests(unittest.TestCase):
 
         resolved = Scheduler(
             config["schedule"], timeline_data, MagicMock(),
-            lambda: datetime(2026, 8, 10, 10, 30),
+            lambda: datetime(2026, 8, 10, 12, 30),
         ).resolve()
         self.assertEqual(resolved.period_key, "monday_weekly")
         self.assertTrue(resolved.collect)
@@ -108,11 +108,11 @@ class WeeklyConfigurationTests(unittest.TestCase):
         self.assertTrue(resolved.once_analyze)
         self.assertTrue(resolved.once_push)
 
-    def test_example_cron_runs_daily_at_ten(self):
+    def test_example_cron_collects_tuesday_to_sunday_and_retries_monday(self):
         text = (ROOT / "docker/.env.example").read_text(encoding="utf-8")
         self.assertIn(
-            'CRON_SCHEDULES="0 10 * * *;30 10 * * 1;'
-            '0,30 11 * * 1;0 12 * * 1"',
+            'CRON_SCHEDULES="0 10 * * 0,2-6;10,30 12 * * 1;'
+            '0,30 13 * * 1"',
             text,
         )
 

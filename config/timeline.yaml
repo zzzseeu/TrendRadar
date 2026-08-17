@@ -28,7 +28,7 @@
 #                           默认每小时运行一次（如每小时第 33 分钟）
 #
 #     Docker 用户         → 由 docker/.env 中的 CRON_SCHEDULES 定时触发
-#                           默认每天 10:00，周一另在 10:30、11:00、11:30、12:00 重试
+#                           周二至周日 10:00；周一 12:10 首次运行，12:30、13:00、13:30 失败重试
 #
 #   每次被唤醒后，程序按以下三个阶段依次执行：
 #
@@ -415,8 +415,8 @@ custom:
       report_mode: "current"
     monday_weekly:
       name: "每周农业新闻 PDF"
-      start: "10:00"
-      end: "12:01"
+      start: "12:10"
+      end: "13:31"
       collect: true
       analyze: true
       push: true

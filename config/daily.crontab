@@ -1,9 +1,9 @@
 SHELL=/bin/bash
 TZ=Asia/Shanghai
 
-# 每天静默采集，周一生成上一自然周 PDF；周一 10:30—12:00 为气象周报重试。
-0 10 * * * cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
-30 10 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
-0 11 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
-30 11 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
-0 12 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
+# 周二至周日 10:00 静默采集；周一 12:10 首次运行；12:30、13:00、13:30 仅在尚未成功时自动重试。
+0 10 * * 0,2-6 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
+10 12 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
+30 12 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
+0 13 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1
+30 13 * * 1 cd "$PROJECT_DIR" && "$UV_BIN" run --no-sync --env-file docker/.env python -m trendradar >> output/daily-cron.log 2>&1

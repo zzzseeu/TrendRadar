@@ -28,7 +28,7 @@
 #                           runs once per hour by default (e.g. at minute 33 of each hour)
 #
 #     Docker users         → triggered by CRON_SCHEDULES in docker/.env
-#                           defaults to 10:00 daily, plus four Monday retries through 12:00
+#                           10:00 Tuesday-Sunday; Monday starts at 12:10 and retries at 12:30, 13:00, 13:30
 #
 #   Each time it's woken, the program runs through three phases in order:
 #
@@ -416,8 +416,8 @@ custom:
       report_mode: "current"
     monday_weekly:
       name: "Weekly Agricultural News PDF"
-      start: "10:00"
-      end: "12:01"
+      start: "12:10"
+      end: "13:31"
       collect: true
       analyze: true
       push: true

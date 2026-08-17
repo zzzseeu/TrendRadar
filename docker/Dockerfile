@@ -7,8 +7,8 @@ ARG TARGETARCH
 ENV SUPERCRONIC_VERSION=v0.2.39
 
 RUN set -ex && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends curl ca-certificates chromium fonts-noto-cjk poppler-utils && \
+    env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy apt-get update && \
+    env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy apt-get install -y --no-install-recommends curl ca-certificates chromium fonts-noto-cjk poppler-utils && \
     case ${TARGETARCH} in \
     amd64) \
     export SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64; \
@@ -26,10 +26,10 @@ RUN set -ex && \
     ;; \
     esac && \
     echo "Downloading supercronic for ${TARGETARCH} from ${SUPERCRONIC_URL}" && \
-    # 重试机制：最多3次，每次超时30秒
+    # 重试机制：最多 3 次；慢速代理链路允许单次下载最多 300 秒
     for i in 1 2 3; do \
         echo "Download attempt $i/3"; \
-        if curl -fsSL --connect-timeout 30 --max-time 60 -o "$SUPERCRONIC" "$SUPERCRONIC_URL"; then \
+        if curl -fsSL --connect-timeout 30 --max-time 300 -o "$SUPERCRONIC" "$SUPERCRONIC_URL"; then \
             echo "Download successful"; \
             break; \
         else \

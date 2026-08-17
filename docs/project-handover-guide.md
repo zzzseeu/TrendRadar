@@ -161,7 +161,7 @@ Elsevier 凭据用于尝试获取期刊正文。接口无法提供正文时，�
 当前定时触发配置为：
 
 ```dotenv
-CRON_SCHEDULES="0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1"
+CRON_SCHEDULES="0 10 * * 0,2-6;10,30 12 * * 1;0,30 13 * * 1"
 RUN_MODE=cron
 IMMEDIATE_RUN=false
 ```
@@ -185,7 +185,7 @@ WEWORK_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=<your-ke
 ELSEVIER_API_KEY=<your-elsevier-api-key>
 ELSEVIER_INST_TOKEN=<your-elsevier-inst-token>
 
-CRON_SCHEDULES="0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1"
+CRON_SCHEDULES="0 10 * * 0,2-6;10,30 12 * * 1;0,30 13 * * 1"
 RUN_MODE=cron
 IMMEDIATE_RUN=false
 ```
@@ -274,8 +274,8 @@ docker compose --env-file docker/.env \
 当前调度规则：
 
 - 周二至周日北京时间 10:00 静默采集，只保存候选与来源状态。
-- 周一处理上一完整自然周，并生成、推送三模块 PDF。
-- 周一 10:30、11:00、11:30、12:00 是普通幂等重试；本周期已成功时自动跳过。
+- 周一 12:10 首次处理上一完整自然周，并生成、推送三模块 PDF。
+- 周一 12:30、13:00、13:30 是普通幂等重试，仅在本周期尚未成功时继续；本周期已成功时自动跳过。
 
 查看当前调度结果：
 

@@ -20,7 +20,7 @@ Current events 20 + Research progress 20 + national agricultural weather report 
 one PDF → WeCom file message
 ```
 
-If the current official agricultural weather report is unavailable on Monday, the system retries between 10:30 and 12:00. The weekly success checkpoint confirms that the PDF was generated and delivered as a file.
+The first Monday report run starts at 12:10. If it has not succeeded, the system retries at 12:30, 13:00, and 13:30. The weekly success checkpoint confirms that the PDF was generated and delivered; later triggers skip an already successful report instead of sending it again.
 
 Fixed sources reuse the existing RSS, web-list, and shared official-document parsers. If some sources are temporarily unavailable, the report is still produced from available sources and the PDF lists missing dates and failed source IDs. Generation stops only when the whole reporting window has no usable source evidence.
 

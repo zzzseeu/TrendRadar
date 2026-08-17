@@ -46,7 +46,7 @@ bash -n "${SCHEDULER}"
 bash -n "${ENTRYPOINT}"
 # shellcheck source=/dev/null
 source "${ENTRYPOINT}"
-DEFAULT_CRONS='0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1'
+DEFAULT_CRONS='0 10 * * 0,2-6;10,30 12 * * 1;0,30 13 * * 1'
 assert_equal "$(CRON_SCHEDULES= CRON_SCHEDULE='5 6 * * *' resolve_cron_list)" '5 6 * * *'
 assert_equal "$(CRON_SCHEDULES='7 8 * * *' CRON_SCHEDULE='5 6 * * *' resolve_cron_list)" '7 8 * * *'
 assert_equal "$(CRON_SCHEDULES= CRON_SCHEDULE= resolve_cron_list)" "${DEFAULT_CRONS}"
@@ -57,17 +57,17 @@ assert_contains "${SCHEDULER}" 'command -v supercronic'
 assert_contains "${SCHEDULER}" 'command -v uv'
 assert_contains "${CRONTAB}" '"$PROJECT_DIR"'
 assert_contains "${CRONTAB}" '"$UV_BIN"'
-assert_contains "${CRONTAB}" '0 10 * * *'
-assert_contains "${CRONTAB}" '每天静默采集，周一生成上一自然周 PDF；周一 10:30—12:00 为气象周报重试'
+assert_contains "${CRONTAB}" '0 10 * * 0,2-6'
+assert_contains "${CRONTAB}" '周一 12:10 首次运行；12:30、13:00、13:30 仅在尚未成功时自动重试'
 active_cron_count="$(awk '$1 ~ /^[0-9]/ { count++ } END { print count + 0 }' "${CRONTAB}")"
 active_cron_times="$(awk '$1 ~ /^[0-9]/ { print $1, $2, $3, $4, $5 }' "${CRONTAB}")"
 forced_cron_count="$(awk '$1 ~ /^[0-9]/ && /--force-weekly/ { count++ } END { print count + 0 }' "${CRONTAB}")"
 assert_equal "${active_cron_count}" '5'
-assert_equal "${active_cron_times}" '0 10 * * *
-30 10 * * 1
-0 11 * * 1
-30 11 * * 1
-0 12 * * 1'
+assert_equal "${active_cron_times}" '0 10 * * 0,2-6
+10 12 * * 1
+30 12 * * 1
+0 13 * * 1
+30 13 * * 1'
 assert_equal "${forced_cron_count}" '0'
 assert_contains "${SCHEDULER}" '每天 10:00'
 if [[ -e "${LEGACY_COMPOSE}" ]]; then
@@ -100,10 +100,14 @@ assert_contains "${COMPOSE_BUILD}" '"host.docker.internal:host-gateway"'
 assert_contains "${GITIGNORE}" 'docker/.env'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'DOCKER_PROXY_URL=http://host.docker.internal:7892'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'DOCKER_NO_PROXY=apigw.hnaicc.cn,qyapi.weixin.qq.com'
-assert_contains "${DOCKER_ENV_EXAMPLE}" 'CRON_SCHEDULES="0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1"'
+assert_contains "${DOCKER_ENV_EXAMPLE}" 'CRON_SCHEDULES="0 10 * * 0,2-6;10,30 12 * * 1;0,30 13 * * 1"'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'IMMEDIATE_RUN=false'
 assert_contains "${DOCKER_ENV_EXAMPLE}" 'WEWORK_WEBHOOK_URL='
 assert_contains "${PROJECT_ROOT}/docker/Dockerfile" 'chromium fonts-noto-cjk poppler-utils'
+assert_contains "${PROJECT_ROOT}/docker/Dockerfile" 'env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy apt-get update'
+assert_contains "${PROJECT_ROOT}/docker/Dockerfile" 'env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy apt-get install'
+assert_contains "${PROJECT_ROOT}/docker/Dockerfile" '--connect-timeout 30 --max-time 300'
+assert_not_contains "${PROJECT_ROOT}/docker/Dockerfile" '--max-time 60'
 assert_contains "${README_ZH}" 'PDFINFO_BIN'
 assert_contains "${README_ZH}" 'PDFTOTEXT_BIN'
 assert_contains "${README_EN}" 'PDFINFO_BIN'

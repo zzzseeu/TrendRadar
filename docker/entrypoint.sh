@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-DEFAULT_CRON_SCHEDULES='0 10 * * *;30 10 * * 1;0,30 11 * * 1;0 12 * * 1'
+DEFAULT_CRON_SCHEDULES='0 10 * * 0,2-6;10,30 12 * * 1;0,30 13 * * 1'
 
 resolve_cron_list() {
     if [ -n "${CRON_SCHEDULES:-}" ]; then
